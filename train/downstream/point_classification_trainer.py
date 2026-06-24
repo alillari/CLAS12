@@ -363,9 +363,13 @@ class DownstreamTrainer():
         self.resumed = False
 
         ##### Pretraining checkpoint
-        print("Loading checkpoint %s"%self.params.pretrained_ckpt)
-        self.restore_checkpoint(self.params.pretrained_ckpt, load_optimizer_state=False)
-        self.resumed = True
+        if self.params.pretrained_ckpt is not None:
+            print("Loading checkpoint %s" % self.params.pretrained_ckpt)
+            self.restore_checkpoint(self.params.pretrained_ckpt, load_optimizer_state=False)
+            self.resumed = True
+        else:
+            print("No pretrained checkpoint provided; using randomly initialized backbone.")
+            self.resumed = False
 
         self.startEpoch = 0
         self.epoch = self.startEpoch
@@ -441,14 +445,14 @@ class DownstreamTrainer():
                 mask = grouped[..., 0] != -100 # B X N
                 reg = inputdict['reg_target'].to(self.device)  # B X N X 8
                 pid = inputdict['pid_target'].to(self.device)  # B X N tensor containing particle IDs
-                mid = inputdict['mid_target'].to(self.device)  # B X N tensor containing mother IDs
+                #mid = inputdict['mid_target'].to(self.device)  # B X N tensor containing mother IDs
 
                 trackinfo_noiselabel_dict = get_trackinfo_noiselabel(reg)
                 noise_labels = trackinfo_noiselabel_dict["noise_labels"]
                 pid_label_dict = get_pidlabel(pid)
                 pid_class = pid_label_dict["pid_class"]  # B X N tensor with particle class information
-                weak_decay_label_dict = get_weakdecaylabel(mid)
-                weak_decay_class = weak_decay_label_dict["weak_decay_class"]  # B X N tensor with weak decay labels
+                #weak_decay_label_dict = get_weakdecaylabel(mid)
+                #weak_decay_class = weak_decay_label_dict["weak_decay_class"]  # B X N tensor with weak decay labels
                 if self.params.task == "pid":
                     targets = {
                         'labels': pid_class,  # B X N tensor with particle class information
@@ -709,14 +713,14 @@ class DownstreamTrainer():
             mask = grouped[..., 0] != -100 # B X N
             reg = inputdict['reg_target'].to(self.device)  # B X N X 8
             pid = inputdict['pid_target'].to(self.device)  # B X N tensor containing particle IDs
-            mid = inputdict['mid_target'].to(self.device)  # B X N tensor containing mother IDs
+            #mid = inputdict['mid_target'].to(self.device)  # B X N tensor containing mother IDs
 
             trackinfo_noiselabel_dict = get_trackinfo_noiselabel(reg)
             noise_labels = trackinfo_noiselabel_dict["noise_labels"]
             pid_label_dict = get_pidlabel(pid)
             pid_class = pid_label_dict["pid_class"]  # B X N tensor with particle class information
-            weak_decay_label_dict = get_weakdecaylabel(mid)
-            weak_decay_class = weak_decay_label_dict["weak_decay_class"]  # B X N tensor with weak decay labels
+            #weak_decay_label_dict = get_weakdecaylabel(mid)
+            #weak_decay_class = weak_decay_label_dict["weak_decay_class"]  # B X N tensor with weak decay labels
 
             if self.params.task == "pid":
                 targets = {
@@ -783,14 +787,14 @@ class DownstreamTrainer():
                 mask = grouped[..., 0] != -100 # B X N
                 reg = inputdict['reg_target'].to(self.device)  # B X N X 8
                 pid = inputdict['pid_target'].to(self.device)  # B X N tensor containing particle IDs
-                mid = inputdict['mid_target'].to(self.device)  # B X N tensor containing mother IDs
+                #mid = inputdict['mid_target'].to(self.device)  # B X N tensor containing mother IDs
 
                 trackinfo_noiselabel_dict = get_trackinfo_noiselabel(reg)
                 noise_labels = trackinfo_noiselabel_dict["noise_labels"]
                 pid_label_dict = get_pidlabel(pid)
                 pid_class = pid_label_dict["pid_class"]  # B X N tensor with particle class information
-                weak_decay_label_dict = get_weakdecaylabel(mid)
-                weak_decay_class = weak_decay_label_dict["weak_decay_class"]  # B X N tensor with weak decay labels
+                #weak_decay_label_dict = get_weakdecaylabel(mid)
+                #weak_decay_class = weak_decay_label_dict["weak_decay_class"]  # B X N tensor with weak decay labels
 
                 if self.params.task == "pid":
                     targets = {

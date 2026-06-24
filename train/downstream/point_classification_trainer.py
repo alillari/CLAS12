@@ -533,8 +533,6 @@ class DownstreamTrainer():
         self.bwd_hooks = register_param_backward_nan_hooks(self.model)
         ###%%%%%%%%
 
-        #Temp change
-
         def initialize_mamba2(model, num_layers, num_residuals=1):
             """ Properly initializes Mamba v2 to ensure stable learning. """
             for name, param in model.named_parameters():

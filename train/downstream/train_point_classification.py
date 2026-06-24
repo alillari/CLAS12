@@ -11,8 +11,6 @@ import torch
 
 # ensure your fm4npp modules can be found
 sys.path.append('../..')
-sys.path.append('/home/shuhang/FM4NPP/FM4NPP')
-sys.path.append('/home/shuhang/FM4NPP/FM4NPP/train/downstream')
 
 from fm4npp.utils import YParams
 from point_classification_trainer import DownstreamTrainer
@@ -22,11 +20,12 @@ def main():
     parser.add_argument("--yaml_config", default='', type=str, help="Path to YAML config file")
     parser.add_argument("--config", default='', type=str, help="Model config name")
     parser.add_argument("--run_num", default='0', type=str, help="Sub run number")
-    parser.add_argument("--root_dir", default='/home/shuhang/FM4NPP/downstream_log/', type=str, help="Root dir to store results")
+    parser.add_argument("--root_dir", default='./downstream_log/', type=str, help="Root dir to store results")
     parser.add_argument("--global_log_dir", default='globallogs', type=str, help="Global dir to store logging only")
-    parser.add_argument("--eventnumber", default=70000, type=int, help="downstream training event number")
-    parser.add_argument("--usepretrain", default=True, type=str, help="use pretrain model")
+    parser.add_argument("--eventnumber", default=50000, type=int, help="downstream training event number")
+    parser.add_argument("--usepretrain", default="store_true", type=str, help="use pretrain model")
     parser.add_argument("--train_batch_size", default=32, type=int, help="train batch size")
+    parser.add_argument("--pretrained_ckpt", default=None, type=str, help="Optional path to pretrained checkpoint if --usepretrain is set.")
     args = parser.parse_args()
 
     # Mapping from model name to log file and checkpoint paths
@@ -86,7 +85,15 @@ def main():
     params.limit_data = True
     params.limit_size = int(args.eventnumber)
     params.valid_batch_size = 1
-    params.pretrained_ckpt = model2ckpt[args.config]
+    
+     if args.usepretrain:
+        if args.pretrained_ckpt is None:
+            raise ValueError("--usepretrain requires --pretrained_ckpt")
+        params.pretrained_ckpt = args.pretrained_ckpt
+    else:
+        params.pretrained_ckpt = None
+
+
     params.log_file_name = f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}.log"
     params.num_embedder_layers = 0
 
@@ -94,7 +101,7 @@ def main():
     trainer = DownstreamTrainer(params, args)
     trainer.launch()
     checkpoint_path = None
-    trainer.train(pretrain=True, train_from_checkpoint=False, checkpoint_path=checkpoint_path)
+    trainer.train(pretrain=args.usepretrain, train_from_checkpoint=False, checkpoint_path=checkpoint_path)
 
     # Cleanup
     trainer.cleanup()

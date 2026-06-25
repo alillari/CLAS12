@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Downstream tracking training script.
+Downstream momentum regression training script.
 """
 import os
 import sys
@@ -13,10 +13,10 @@ import torch
 sys.path.append('../..')
 
 from fm4npp.utils import YParams
-from point_classification_trainer import DownstreamTrainer
+from momentum_regression_trainer import DownstreamTrainer
 
 def main():
-    parser = argparse.ArgumentParser(description="Downstream tracking training script")
+    parser = argparse.ArgumentParser(description="Downstream momentum training script")
     parser.add_argument("--yaml_config", default='', type=str, help="Path to YAML config file")
     parser.add_argument("--config", default='', type=str, help="Model config name")
     parser.add_argument("--run_num", default='0', type=str, help="Sub run number")
@@ -80,7 +80,7 @@ def main():
 
     # Initialize parameters
     params = YParams(os.path.abspath(args.yaml_config), args.config)
-    params.task = "point_classification"
+    params.task = "momentum_regression"
 
     params.continue_from_best = True
     params.batch_size = int(args.train_batch_size)
@@ -103,7 +103,7 @@ def main():
         f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}.log"
     )
     params.num_embedder_layers = 0
-     
+
     # Launch and train
     trainer = DownstreamTrainer(params, args)
     trainer.launch()

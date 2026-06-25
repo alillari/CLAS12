@@ -470,6 +470,141 @@ class MambaHead(nn.Module):
             'embedding_post_projection': embedding_post_projection
         }
 
+# very simple regression adapter head with few mamba layer for refinement and MLP head
+class MambaRegressionHead(nn.Module):
+    """
+    Track-level regression head.
+
+    Input:
+        x:              (B, N, C)
+        feature:        pretrained FM features, if pretrain=True
+        padding_mask:   (B, N), True for real hits, False for padding
+
+    Output:
+        pred_regression: (B, num_output_dim)
+    """
+
+    def __init__(self, input_dim, embed_dim=256, num_layers=3, d_state=64, d_conv=4, expand=2, 
+                 num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
+                 num_feature_layers=15, num_output_dim=3, return_embedding=False, dropout=0.0, pooling="mean"):
+        super().__init__()
+        self.input_dim = input_dim
+        self.embed_dim = embed_dim
+        self.return_embedding = return_embedding
+
+        self.pooling = pooling
+
+        if self.pooling == "attention":
+            self.pool_score = nn.Linear(embed_dim, 1)
+        elif self.pooling != "mean":
+            raise ValueError(f"Unknown pooling mode: {self.pooling}")
+
+        # Input processing
+        self.input_proj = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, embed_dim)
+        )
+
+
+        # Mamba feature extractor
+        self.mamba_layers = nn.ModuleList([
+            nn.Sequential(
+                RMSNorm(embed_dim),
+                Mamba2(
+                    d_model=embed_dim,
+                    d_state=d_state,
+                    d_conv=d_conv,
+                    expand=expand
+                )
+            ) for _ in range(num_layers)
+        ])
+        # if not using the pretrained mamba2, we can use the embedder layers
+        self.mamba_embedder_layers = nn.ModuleList([
+            nn.Sequential(
+                RMSNorm(input_dim),
+                Mamba2(
+                    d_model=input_dim,
+                    d_state=d_state_embedder,
+                    d_conv=d_conv_embedder,
+                    expand=expand_embedder
+                )
+            ) for _ in range(num_embedder_layers)
+        ])
+        self.embedder_norm = RMSNorm(input_dim)
+        self.norm = RMSNorm(embed_dim)
+
+        # Noise prediction head go from point embedding
+        self.out_mlp = MLPHead(embed_dim, num_output_dim, dropout=dropout)
+
+        self.embedder = Embedder(embed_dim=input_dim)
+        self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
+
+    def pool(self, x, padding_mask=None):
+    """
+    x:            (B, N, D)
+    padding_mask: (B, N), True for real hits, False for padding
+    """
+        if self.pooling == "mean":
+            if padding_mask is None:
+                return x.mean(dim=1)
+
+            mask = padding_mask.unsqueeze(-1).to(dtype=x.dtype)
+            denom = mask.sum(dim=1).clamp_min(1.0)
+            return (x * mask).sum(dim=1) / denom
+
+        if self.pooling == "attention":
+            scores = self.pool_score(x).squeeze(-1)  # B x N
+
+            if padding_mask is not None:
+                scores = scores.masked_fill(~padding_mask, torch.finfo(scores.dtype).min)
+
+            weights = torch.softmax(scores, dim=1).unsqueeze(-1)  # B x N x 1
+            return (x * weights).sum(dim=1)
+
+    def forward(self, x, feature=None, padding_mask=None, pretrain=False):
+        if pretrain:
+            x = feature.permute(1, 2, 0, 3)
+            weights = torch.softmax(self.weighted_avg_weights, dim=0)
+            weights = weights.to(x.dtype)
+            x = torch.einsum("bsnd,n->bsd", x, weights)
+        else:
+            x = self.embedder(x)
+
+            if isinstance(x, tuple):
+                x = x[0]
+
+            for layer in self.mamba_embedder_layers:
+                x = layer(x) + x
+
+            x = self.embedder_norm(x)
+
+        embedding_pre_projection = None
+        embedding_post_projection = None
+
+        if self.return_embedding:
+            embedding_pre_projection = x
+
+        x = self.input_proj(x)
+
+        if self.return_embedding:
+            embedding_post_projection = x
+
+        for layer in self.mamba_layers:
+            x = layer(x) + x
+
+        x = self.norm(x)
+
+        pooled = self.pool(x, padding_mask)
+
+        pred = self.out_mlp(pooled)                          # B x num_output_dim
+
+        return {
+            "pred_regression": pred,
+            "pooled_embedding": pooled,
+            "embedding_pre_projection": embedding_pre_projection,
+            "embedding_post_projection": embedding_post_projection,
+        } 
+
 # very simple adapter head with few SA for refinement and MLP head
 class AttentionHead(nn.Module):
     def __init__(self, input_dim, embed_dim=256, num_layers=3, num_heads = 4, 

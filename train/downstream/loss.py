@@ -571,6 +571,26 @@ def compute_point_loss(outputs, targets, mask, matcher, no_object_class=0):
         "loss_noise_ce": loss_noise_ce #this is normalized by all points in batch already so
     }
 
+
+def masked_momentum_loss(outputs, targets, mask, option="mse"):
+    pred = outputs["pred_momentum"]
+    truth = targets["momentum"]
+
+    valid = mask.unsqueeze(-1) & torch.isfinite(truth)
+
+    diff = pred - truth
+
+    if option == "huber":
+        loss = torch.nn.functional.smooth_l1_loss(
+            pred[valid],
+            truth[valid],
+            reduction="mean",
+        )
+    else:
+        loss = (diff[valid] ** 2).mean()
+
+    return {"loss": loss}
+
 # Helper functions ============================================================
 def _get_src_permutation_idx(indices):
     batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])

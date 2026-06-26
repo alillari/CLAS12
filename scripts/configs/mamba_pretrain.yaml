@@ -130,3 +130,553 @@ mamba_small:
   min_lr: 0.00002
   dropout: 0.1
   save_version: mamba_small
+
+# ============================================================================
+# CLAS12 Pretraining Configuration
+# Adapted from mamba_small for CLAS12 CVT data (no energy, 6 discrete layers,
+# ~5-40 hits/event). See CLAS12_CHANGES.md for the full rationale behind each
+# changed value.
+# ============================================================================
+clas12_pretrain:
+  <<: *default
+
+  # === Data Paths (container-relative, i.e. as seen inside the docker container) ===
+  data_root: /workspace/PP_collision/data/mmap          # features_pretrain / seg_target_pretrain / reg_target_pretrain live here
+  stat_dir:  /workspace/PP_collision/data/stats         # dummy loss_bin_pp.pkl / loss_weight_pp.pkl live here
+  checkpoint_dir: /workspace/PP_collision/checkpoints   # model checkpoints
+
+  # === CLAS12-specific overrides ===
+  klen: 3                       # "reduced space -> next nearest prediction" (was 30)
+  embed_method: pos_only        # no energy channel -> EmbedderPosOnly (was 'add')
+  voxelize: false               # Voxelizer/HRS removed entirely
+  space_filling_order: true     # CLAS12 ordering path (clas12_band_hilbert_order) is primary
+  # space_filling_curve is now irrelevant (our function replaces the z/hilbert string flag)
+
+  # === Missing attrs the training loop references but the original yaml omits ===
+  # (added explicitly to avoid AttributeError at runtime)
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+
+  # === Model size: start with the small preset (proportionate to CLAS12's
+  #     small, simple data); easily bumped to embed_dim=256 / 12 layers later ===
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+
+  # === Batch / optimization: TPC defaults kept for now (flagged as a tuning
+  #     opportunity — CLAS12 events are tiny, larger batches very likely afford) ===
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000 #5
+
+  save_version: clas12_pretrain
+
+# ============================================================================
+# CLAS12 Straight-Track Baseline (synthetic "easy ceiling" test)
+# Identical to clas12_pretrain except data_root points at the synthetic
+# perfectly-straight-track data. k=1 to compare directly against run0 (real k=1).
+# ============================================================================
+clas12_straight:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: clas12_straight
+
+
+
+
+# --- auto-generated sweep config: sweep_real_k1 ---
+sweep_real_k1:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_real_k1
+
+
+# --- auto-generated sweep config: sweep_real_k2 ---
+sweep_real_k2:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 2
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_real_k2
+
+
+# --- auto-generated sweep config: sweep_real_k3 ---
+sweep_real_k3:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 3
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_real_k3
+
+
+# --- auto-generated sweep config: sweep_real_k4 ---
+sweep_real_k4:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 4
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_real_k4
+
+
+# --- auto-generated sweep config: sweep_real_k5 ---
+sweep_real_k5:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 5
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_real_k5
+
+
+# --- auto-generated sweep config: sweep_straight_k1 ---
+sweep_straight_k1:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_k1
+
+
+# --- auto-generated sweep config: sweep_straight_k2 ---
+sweep_straight_k2:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 2
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_k2
+
+
+# --- auto-generated sweep config: sweep_straight_k3 ---
+sweep_straight_k3:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 3
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_k3
+
+
+# --- auto-generated sweep config: sweep_straight_k4 ---
+sweep_straight_k4:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 4
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_k4
+
+
+# --- auto-generated sweep config: sweep_straight_k5 ---
+sweep_straight_k5:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 5
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_k5
+
+# --- auto-generated single-track sweep config: sweep_single_k1 ---
+sweep_single_k1:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_single_track
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_single_k1
+
+
+# --- auto-generated single-track sweep config: sweep_single_k2 ---
+sweep_single_k2:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_single_track
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 2
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_single_k2
+
+
+# --- auto-generated single-track sweep config: sweep_single_k3 ---
+sweep_single_k3:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_single_track
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 3
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_single_k3
+
+
+# --- auto-generated single-track sweep config: sweep_single_k4 ---
+sweep_single_k4:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_single_track
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 4
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_single_k4
+
+
+# --- auto-generated single-track sweep config: sweep_single_k5 ---
+sweep_single_k5:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_single_track
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 5
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_single_k5

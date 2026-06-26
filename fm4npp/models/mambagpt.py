@@ -12,11 +12,13 @@ from fm4npp.models.rmsnorm import RMSNorm
 class MambaGPT(nn.Module):
     def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf'):
         super().__init__()
-        assert embed_method in ['concat', 'add'] 
+        assert embed_method in ['concat', 'add', 'pos_only']
         self.embed_dim = embed_dim
         
         if embed_method == 'concat':
             Embedder = EmbedderConcat
+        elif embed_method == 'pos_only':
+            Embedder = EmbedderPosOnly
         else:
             Embedder = EmbedderAdd
             
@@ -59,10 +61,12 @@ class MambaGPT(nn.Module):
 class Mamba1GPT(nn.Module):
     def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf'):
         super().__init__()
-        assert embed_method in ['concat', 'add'] 
+        assert embed_method in ['concat', 'add', 'pos_only']
         self.embed_dim = embed_dim
         if embed_method == 'concat':
             Embedder = EmbedderConcat
+        elif embed_method == 'pos_only':
+            Embedder = EmbedderPosOnly
         else:
             Embedder = EmbedderAdd
         self.embedder = Embedder(pe_method = pe_method, embed_dim = embed_dim, learnable_projection = False)

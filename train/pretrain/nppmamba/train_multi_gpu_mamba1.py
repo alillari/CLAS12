@@ -284,7 +284,9 @@ class Trainer():
             b, c = grouped.size(0), grouped.size(-1)
 
             # Prepare targets
-            targets = grouped.reshape(b, -1, 4)[:, :, 1:].to(self.device)
+            # CLAS12: grouped is 3 columns [eta, phi, r], no energy. Reshape to
+            # 3 (was reshape(...,4)[:,:,1:], which assumed a leading E column to strip).
+            targets = grouped.reshape(b, -1, 3).to(self.device)
             klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
             grouped = grouped.reshape(b, -1, c).to(self.device)
 
@@ -374,7 +376,8 @@ class Trainer():
         with torch.no_grad():
             for i, (grouped, _, knearest) in enumerate(self.valid_data_loader):
                 b, c = grouped.size(0), grouped.size(-1)
-                targets = grouped.reshape(b, -1, 4)[:, :, 1:].to(self.device)
+                # CLAS12: 3 columns [eta, phi, r], no energy (was reshape(...,4)[:,:,1:]).
+                targets = grouped.reshape(b, -1, 3).to(self.device)
                 klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
                 grouped = grouped.reshape(b, -1, c).to(self.device)
 

@@ -540,10 +540,10 @@ class MambaRegressionHead(nn.Module):
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
     def pool(self, x, padding_mask=None):
-    """
-    x:            (B, N, D)
-    padding_mask: (B, N), True for real hits, False for padding
-    """
+        """
+        x:            (B, N, D)
+        padding_mask: (B, N), True for real hits, False for padding
+        """
         if self.pooling == "mean":
             if padding_mask is None:
                 return x.mean(dim=1)

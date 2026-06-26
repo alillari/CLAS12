@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--root_dir", default='./downstream_log/', type=str, help="Root dir to store results")
     parser.add_argument("--global_log_dir", default='globallogs', type=str, help="Global dir to store logging only")
     parser.add_argument("--eventnumber", default=50000, type=int, help="downstream training event number")
-    parser.add_argument("--usepretrain", action="store_true", type=str, help="use pretrain model")
+    parser.add_argument("--usepretrain", action="store_true", help="use pretrain model")
     parser.add_argument("--train_batch_size", default=32, type=int, help="train batch size")
     parser.add_argument("--pretrained_ckpt", default=None, type=str, help="Optional path to pretrained checkpoint if --usepretrain is set.")
     args = parser.parse_args()

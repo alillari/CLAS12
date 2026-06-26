@@ -84,6 +84,8 @@ default: &default
   klen: 3
   dropout: 0.1
   mambaversion: mamba1
+  total_steps: 50000
+  task: mom
 
   # These are mostly harmless for momentum regression; some trainer/model code may still expect them.
   num_heads_backbone: 4

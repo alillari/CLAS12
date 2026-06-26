@@ -80,7 +80,9 @@ def main():
 
     # Initialize parameters
     params = YParams(os.path.abspath(args.yaml_config), args.config)
-    params.task = "momentum_regression"
+
+    if not hasattr(params, "task"):
+        raise ValueError("YAML config must define task: one of ['mom', 'momentum', '3vertex', '3vtx', 'Zvtx', 'Zvertex']")
 
     params.continue_from_best = True
     params.batch_size = int(args.train_batch_size)

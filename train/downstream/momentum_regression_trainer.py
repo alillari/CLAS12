@@ -218,7 +218,6 @@ class DownstreamTrainer():
             dist.destroy_process_group()
         print("Cleanup complete. All resources released.")
 
-
     def launch(self):
         print(self.root_dir, self.config, self.run_num)
         exp_dir = os.path.join(*[self.root_dir, self.config, self.run_num])

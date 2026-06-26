@@ -460,14 +460,15 @@ class DownstreamTrainer():
                 pid_class = pid_label_dict["pid_class"]  # B X N tensor with particle class information
                 #weak_decay_label_dict = get_weakdecaylabel(mid)
                 #weak_decay_class = weak_decay_label_dict["weak_decay_class"]  # B X N tensor with weak decay labels
-                if self.params.task == "pid":
-                    targets = {
-                        'labels': pid_class,  # B X N tensor with particle class information
-                    }
-                elif self.params.task == "nid":
-                    targets = {
-                        'labels': noise_labels,  # B X N tensor with noise id
-                    }
+                #if self.params.task == "pid":
+                #    targets = {
+                #        'labels': pid_class,  # B X N tensor with particle class information
+                #    }
+                #elif self.params.task == "nid":
+                #    targets = {
+                #        'labels': noise_labels,  # B X N tensor with noise id
+                #    }
+                targets = self.build_regression_targets(reg)
 
                 self.down_optimizer.zero_grad()
                 if pretrain:

@@ -72,8 +72,13 @@ class EmbedderPosOnly(nn.Module):
         self.embed = CoordinateEmbedder(method = pe_method, n_continuous_dim = 3, target_dim = embed_dim, learnable_projection = learnable_projection)
 
     def forward(self, neighborhood):
-        out = self.embed(neighborhood[..., 1:4])       
-        return out
+        # CLAS12: input is 3 columns [eta, phi, r], no energy column to skip.
+        # (was neighborhood[..., 1:4], which assumed a leading E column.)
+        out = self.embed(neighborhood)
+        # Return a 2-tuple to match EmbedderAdd/EmbedderConcat's (out, pos_embed)
+        # contract — Mamba1GPT.forward unpacks `x, pos = self.embedder(x)`.
+        # pos_embed == out here, since position is the only signal.
+        return out, out
         
 class CoordinateEmbedder(nn.Module):
     """

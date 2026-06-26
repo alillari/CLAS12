@@ -6,10 +6,16 @@ from pathlib import Path
 import os
 import glob
 import torch.nn as nn
+import torch.nn.functional as F
 
 import torch
 from fm4npp.utils import *
 from .voxelizer import *
+
+try:
+    from fm4npp.hilbert import clas12_band_hilbert_order
+except Exception:
+    clas12_band_hilbert_order = None
 
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
@@ -271,169 +277,216 @@ def set_simpler(inputs, target, nleave = 3, npoint_lower_thr = 5):
         return reduced_inputs, reduced_target
     
 class TPCBatchDataset(Dataset):
-    """TPC batch dataset for FM4NPP.
+    """Event-level ragged dataset for FM4NPP downstream/pretraining use.
 
-    Loads ragged sequences from memmap files under a given `data_root`:
-      - features_<split>:  (N, 4) raw Cartesian features [E, x, y, z]
-      - seg_target_<split>:(N,)   integer class/track ids
-      - reg_target_<split>:(N, D) regression targets
-      - pid_target_<split>:(N,)   particle IDs
+    This version keeps the downstream conveniences from the original dataset.py
+    while adding a CLAS12/CVT path for 3-column position-only inputs.
 
-    Pipeline (high level):
-      1) Read event arrays; optionally chunk in validation; convert to polar (η, φ, r)
-      2) Normalize features (z-normalize E, min-max for η/φ/r)
-      3) Sort by r (ascending) for a stable per-event ordering
-      4) Optionally compute K-nearest future neighbors per point (enforcing j > i)
-      5) Optionally reorder (space-filling or voxelize) once; apply the same sorter
-         to features, targets, and optionally knearest_* tensors
-      6) Optionally apply chunk-based slicing for training
+    Supported input layouts:
+      - input_layout='xyz'   : features are raw Cartesian [x, y, z]  (CLAS12/CVT)
+      - input_layout='exyz'  : features are raw Cartesian [E, x, y, z] (TPC/original)
+      - input_layout='etaphr': features are already [eta, phi, r]
+      - input_layout='eetaphr': features are already [E, eta, phi, r]
 
-    Args:
-        data_root: Directory containing ragged memmaps
-        split: One of ['pretrain', 'test'] selecting which memmaps to open
-        group_size: Tokenizer grouping size (if voxelize=True)
-        order: Global coordinate order key (e.g., 'EPR') for voxelizer dimensions
-        num_pred_points: k for KNN (controls knearest_* widths)
-        return_dict: If True, returns a dict with named tensors; else returns tuples
-        return_knn_target: If True, includes knearest_target (N, k) with 0 padding
-        get_cart: If True, skip polar transform and keep original Cartesian coords
-        voxelize / space_filling_order: Mutually exclusive reordering strategies
+    Returned point tensor layout after preprocessing:
+      - CLAS12/default input_layout='xyz' -> [eta, phi, r]
+      - TPC input_layout='exyz' -> [E, eta, phi, r]
+
+    The downstream-specific return modes are preserved:
+      - tuple: (points, target, knearest_points)
+      - tuple with return_reg: (..., reg_target)
+      - dict with return_dict: points, target, knearest_points, reg_target, plus optional pid/mid/knn target.
     """
-    def __init__(self, 
-                 data_root, 
-                 version = 'pp_100k',
-                 train = True,
-                 split = 'pretrain',
-                 nleave = 1e6,
-                 npoint_lower_thr = 5,                  
-                 group_size = 32, 
-                 normalize_by_center = False, 
-                 normalize = True,
-                 order = 'EPR', 
-                 num_pred_points = 10, 
-                 klen = 5,
-                 len_chunk = 512,
-                 chunk_training = False,
-                 limit_data = False,
-                 limit_size = 8000,
-                 return_reg = False,
-                 return_dict = False,
-                 return_knn_target = False,
-                 get_cart = False,
-                 voxelize = True,
-                 space_filling_order = None,
-                 space_filling_curve = 'z',
-                 bin_dir = ''):
-        
-        split = split
-        self.memmap_feature = RaggedMmap(os.path.join(data_root, 'features_{}'.format(split)))
-        self.memmap_seg_target = RaggedMmap(os.path.join(data_root, 'seg_target_{}'.format(split)))
-        self.memmap_reg_target = RaggedMmap(os.path.join(data_root, 'reg_target_{}'.format(split)))
-        self.memmap_pid_target = RaggedMmap(os.path.join(data_root, 'pid_target_{}'.format(split)))
+    def __init__(self,
+                 data_root,
+                 version='pp_100k',
+                 train=True,
+                 split='pretrain',
+                 nleave=1e6,
+                 npoint_lower_thr=5,
+                 group_size=32,
+                 normalize_by_center=False,
+                 normalize=True,
+                 order='EPR',
+                 num_pred_points=10,
+                 klen=5,
+                 len_chunk=512,
+                 chunk_training=False,
+                 limit_data=False,
+                 limit_size=8000,
+                 return_reg=False,
+                 return_dict=False,
+                 return_knn_target=False,
+                 get_cart=False,
+                 voxelize=True,
+                 space_filling_order=None,
+                 space_filling_curve='z',
+                 bin_dir='',
+                 input_layout='xyz',
+                 serialization='clas12_band_hilbert',
+                 low_thr=1,
+                 high_thr=100,
+                 max_tracks=150,
+                 require_reg_target=False,
+                 require_pid_target=False):
 
-        # Try to load mid_target if available
+        self.data_root = data_root
+        self.split = split
+        self.memmap_feature = RaggedMmap(os.path.join(data_root, f'features_{split}'))
+        self.memmap_seg_target = RaggedMmap(os.path.join(data_root, f'seg_target_{split}'))
+
+        # Downstream loaders often expect reg_target, but CLAS12 adapter-only may not need it.
+        # Load it when present; otherwise create a zero placeholder only for return_dict/return_reg compatibility.
         try:
-            self.memmap_mid_target = RaggedMmap(os.path.join(data_root, 'mid_target_{}'.format(split)))
+            self.memmap_reg_target = RaggedMmap(os.path.join(data_root, f'reg_target_{split}'))
+            self.has_reg_target = True
+        except (FileNotFoundError, OSError):
+            if require_reg_target:
+                raise
+            self.memmap_reg_target = None
+            self.has_reg_target = False
+
+        try:
+            self.memmap_pid_target = RaggedMmap(os.path.join(data_root, f'pid_target_{split}'))
+            self.has_pid_target = True
+        except (FileNotFoundError, OSError):
+            if require_pid_target:
+                raise
+            self.memmap_pid_target = None
+            self.has_pid_target = False
+
+        try:
+            self.memmap_mid_target = RaggedMmap(os.path.join(data_root, f'mid_target_{split}'))
             self.has_mid_target = True
         except (FileNotFoundError, OSError):
             self.memmap_mid_target = None
             self.has_mid_target = False
 
-        # voxelization ablation
-        self.voxelize = voxelize
-        self.space_filling_order = space_filling_order
-        self.space_filling_curve = space_filling_curve
-        
+        self.input_layout = input_layout.lower()
+        self.serialization = serialization
+        self.is_position_only = self.input_layout in {'xyz', 'etaphr'}
+        self.get_cart = get_cart
 
-        self.reco_cols = ['E', 'x', 'y', 'z']
+        if self.input_layout not in {'xyz', 'exyz', 'etaphr', 'eetaphr'}:
+            raise ValueError(f"Unsupported input_layout={input_layout!r}")
+        if self.get_cart and self.input_layout not in {'xyz', 'exyz'}:
+            raise ValueError('get_cart=True only makes sense for Cartesian input_layout xyz/exyz')
+
+        self.reco_cols = ['x', 'y', 'z'] if self.is_position_only else ['E', 'x', 'y', 'z']
         self.particle_reg_cols = ['px', 'py', 'pz', 'vtx_x', 'vtx_y', 'vtx_z', 'energy']
         self.particle_seg_col = 'track_id'
-        
-        # filtering out some trajectories
+
         self.nleave = nleave
         self.order = order
         self.npoint_lower_thr = npoint_lower_thr
         self.num_pred_points = num_pred_points
-        
-        # for normalization
-        self.eta_lim = {'min':-2, 'max':2}
-        self.phi_lim = {'min':-torch.pi, 'max':torch.pi}
-        self.r_lim = {'min': 31.371997833251953, 'max': 75.38493347167969}
-        self.E_mean, self.E_std = 253.0982, 268.7093
-        # (E)ta / (P)hi / (R)adius
-        self.orderdict = {
-            'EPR': {'dim_sweep_order':[2,1,0], 'revert_order':[2,1,0]},
-            'RPE': {'dim_sweep_order':[0,1,2], 'revert_order':[0,1,2]},
-            'REP': {'dim_sweep_order':[1,0,2], 'revert_order':[1,0,2]},
-            'PER': {'dim_sweep_order':[2,0,1], 'revert_order':[1,2,0]},
-                 }
 
-        dim_sweep_order = self.orderdict[self.order]['dim_sweep_order']
-        revert_order = self.orderdict[self.order]['revert_order']
-        
-        self.low_thr = 50
+        # Original TPC normalization constants; CLAS12/CVT constants for position-only data.
+        if self.is_position_only:
+            self.eta_lim = {'min': -2.5, 'max': 1.5}
+            self.phi_lim = {'min': -torch.pi, 'max': torch.pi}
+            self.r_lim = {'min': 6.0, 'max': 23.0}
+            self.E_mean, self.E_std = None, None
+        else:
+            self.eta_lim = {'min': -2, 'max': 2}
+            self.phi_lim = {'min': -torch.pi, 'max': torch.pi}
+            self.r_lim = {'min': 31.371997833251953, 'max': 75.38493347167969}
+            self.E_mean, self.E_std = 253.0982, 268.7093
+
+        self.orderdict = {
+            'EPR': {'dim_sweep_order': [2, 1, 0], 'revert_order': [2, 1, 0]},
+            'RPE': {'dim_sweep_order': [0, 1, 2], 'revert_order': [0, 1, 2]},
+            'REP': {'dim_sweep_order': [1, 0, 2], 'revert_order': [1, 0, 2]},
+            'PER': {'dim_sweep_order': [2, 0, 1], 'revert_order': [1, 2, 0]},
+        }
+        dim_sweep_order = self.orderdict.get(self.order, self.orderdict['EPR'])['dim_sweep_order']
+        revert_order = self.orderdict.get(self.order, self.orderdict['EPR'])['revert_order']
+
+        self.low_thr = low_thr
+        self.high_thr = high_thr
+        self.max_tracks = max_tracks
         self.normalize = normalize
-        
-        # Tokenizer
         self.group_size = group_size
         self.normalize_by_center = normalize_by_center
-        self.voxelizer = Voxelizer(bin_dir = bin_dir, bin_version = 'v3', n_bins = (8, 8, 6), dim_sweep_order=dim_sweep_order, revert_order=revert_order)
-        self.dim_sweep_order = dim_sweep_order
-        self.revert_order = revert_order
+        self.voxelize = voxelize
+        self.space_filling_order = space_filling_order
+        self.space_filling_curve = space_filling_curve
         self.limit_data = limit_data
         self.limit_size = limit_size
         self.len_chunk = len_chunk
-        
         self.train = train
         self.chunk_training = chunk_training
         self.return_reg = return_reg
         self.return_dict = return_dict
         self.return_knn_target = return_knn_target
-        self.get_cart = get_cart
-        self.filter_data(high_thr = 3200)
-        #self.filter_data(high_thr = 30000)
-        import math
-        self.data_scaler = 1 # [TOGGLE][TEMPORARY] SCALER
-        
+        self.data_scaler = 1
+
+        # Only construct the old TPC voxelizer when using the original 4-column path.
+        # The old voxelizer assumes an energy column and start_idx=1.
+        self.voxelizer = None
+        if (not self.is_position_only) and self.voxelize:
+            self.voxelizer = Voxelizer(
+                bin_dir=bin_dir,
+                bin_version='v3',
+                n_bins=(8, 8, 6),
+                dim_sweep_order=dim_sweep_order,
+                revert_order=revert_order,
+            )
+        elif self.is_position_only and self.voxelize and self.serialization not in {'clas12_band_hilbert', 'radius', 'none'}:
+            print('[WARN] Position-only CLAS12 input cannot use the old TPC Voxelizer safely; falling back to radius ordering.')
+            self.serialization = 'radius'
+
+        self.filter_data(low_thr=self.low_thr, high_thr=self.high_thr, max_tracks=self.max_tracks)
+
     def znormalize(self, arr, mean_, std_):
-        """z-normalize"""
         return (arr - mean_) / std_
-    
-    def z_unnormalize(self, arr, mean_, std_):        
-        return arr*std_ + mean_
-    
+
+    def z_unnormalize(self, arr, mean_, std_):
+        return arr * std_ + mean_
+
     def minmax_normalize(self, arr, max_, min_):
-        """Normalize between -1 and 1"""
         return (arr - min_) / (max_ - min_)
-    
+
     def minmax_unnormalize(self, arr, max_, min_):
-        return arr * (max_ - min_) + min_       
-    
+        return arr * (max_ - min_) + min_
+
     def apply_norm(self, features):
         fnorm = features.clone()
-        fnorm[..., 0] = self.znormalize(fnorm[..., 0], self.E_mean, self.E_std)
-        fnorm[..., 1] = self.minmax_normalize(fnorm[..., 1], self.eta_lim['max'], self.eta_lim['min'])
-        fnorm[..., 2] = self.minmax_normalize(fnorm[..., 2], self.phi_lim['max'], self.phi_lim['min'])
-        fnorm[..., 3] = self.minmax_normalize(fnorm[..., 3], self.r_lim['max'], self.r_lim['min']) 
+        if self.is_position_only:
+            # [eta, phi, r]
+            fnorm[..., 0] = self.minmax_normalize(fnorm[..., 0], self.eta_lim['max'], self.eta_lim['min'])
+            fnorm[..., 1] = self.minmax_normalize(fnorm[..., 1], self.phi_lim['max'], self.phi_lim['min'])
+            fnorm[..., 2] = self.minmax_normalize(fnorm[..., 2], self.r_lim['max'], self.r_lim['min'])
+        else:
+            # [E, eta, phi, r]
+            fnorm[..., 0] = self.znormalize(fnorm[..., 0], self.E_mean, self.E_std)
+            fnorm[..., 1] = self.minmax_normalize(fnorm[..., 1], self.eta_lim['max'], self.eta_lim['min'])
+            fnorm[..., 2] = self.minmax_normalize(fnorm[..., 2], self.phi_lim['max'], self.phi_lim['min'])
+            fnorm[..., 3] = self.minmax_normalize(fnorm[..., 3], self.r_lim['max'], self.r_lim['min'])
         return fnorm
-    
+
     def apply_unnorm(self, features):
         fnorm = features.clone()
-        fnorm[..., 0] = self.z_unnormalize(fnorm[..., 0], self.E_mean, self.E_std)
-        fnorm[..., 1] = self.minmax_unnormalize(fnorm[..., 1], self.eta_lim['max'], self.eta_lim['min'])
-        fnorm[..., 2] = self.minmax_unnormalize(fnorm[..., 2], self.phi_lim['max'], self.phi_lim['min'])
-        fnorm[..., 3] = self.minmax_unnormalize(fnorm[..., 3], self.r_lim['max'], self.r_lim['min']) 
+        if self.is_position_only:
+            fnorm[..., 0] = self.minmax_unnormalize(fnorm[..., 0], self.eta_lim['max'], self.eta_lim['min'])
+            fnorm[..., 1] = self.minmax_unnormalize(fnorm[..., 1], self.phi_lim['max'], self.phi_lim['min'])
+            fnorm[..., 2] = self.minmax_unnormalize(fnorm[..., 2], self.r_lim['max'], self.r_lim['min'])
+        else:
+            fnorm[..., 0] = self.z_unnormalize(fnorm[..., 0], self.E_mean, self.E_std)
+            fnorm[..., 1] = self.minmax_unnormalize(fnorm[..., 1], self.eta_lim['max'], self.eta_lim['min'])
+            fnorm[..., 2] = self.minmax_unnormalize(fnorm[..., 2], self.phi_lim['max'], self.phi_lim['min'])
+            fnorm[..., 3] = self.minmax_unnormalize(fnorm[..., 3], self.r_lim['max'], self.r_lim['min'])
         return fnorm
-    
-    def filter_data(self, low_thr = -1, high_thr = 10e10, max_tracks = 150):
+
+    def filter_data(self, low_thr=-1, high_thr=10e10, max_tracks=150):
         self.idxlist = []
         self.seqlens = []
         self.tooshort = []
         self.toolong = []
+        self.toomanytracks = []
         self.longest = 0
         self.shortest = 1e10
-        self.toomanytracks = []
-        print("[INFO] Filtering data by number of points. Low threshold: {}, High threshold: {}, Max tracks: {}".format(low_thr, high_thr, max_tracks))
+        print(f'[INFO] Filtering data by number of points. Low threshold: {low_thr}, High threshold: {high_thr}, Max tracks: {max_tracks}')
         for i in range(len(self.memmap_feature)):
             len_ = self.memmap_feature[i].shape[0]
             ntracks = np.unique(self.memmap_seg_target[i])
@@ -446,191 +499,190 @@ class TPCBatchDataset(Dataset):
             else:
                 self.idxlist.append(i)
                 self.seqlens.append(len_)
-                
-                if self.longest < len_:
-                    self.longest = len_
-                if self.shortest > len_:
-                    self.shortest = len_
-           
-            if self.limit_data and len(self.idxlist) == self.limit_size: 
+                self.longest = max(self.longest, len_)
+                self.shortest = min(self.shortest, len_)
+
+            if self.limit_data and len(self.idxlist) == self.limit_size:
                 break
 
-        # self.idxlist = create_sampled_lists_with_seq(self.idxlist, self.seqlens)
-        
-        print('[INFO] Filtering by N points. From {}, removed short {} long {}, too many tracks {}, remaining {}.'.format(len(self.memmap_feature), len(self.tooshort), len(self.toolong), len(self.toomanytracks), len(self.idxlist)))
-                                                                                                     
+        print('[INFO] Filtering by N points. From {}, removed short {} long {}, too many tracks {}, remaining {}.'.format(
+            len(self.memmap_feature), len(self.tooshort), len(self.toolong), len(self.toomanytracks), len(self.idxlist)))
         print('[INFO] Shortest: {}, Longest: {}'.format(self.shortest, self.longest))
 
-        
-        
         if not self.train and self.chunk_training:
             self.idxlist_chunking = []
             for k, idx in enumerate(self.idxlist):
                 seqlen = self.seqlens[k]
                 start_indices = get_chunk_start_indices(self.len_chunk, seqlen)
                 for sidx in start_indices:
-                    if seqlen - sidx > self.low_thr: # minimum multiplicity at 50 points.
+                    if seqlen - sidx > self.low_thr:
                         self.idxlist_chunking.append((idx, sidx))
-                    
             print('[INFO] Chunking the validation set. Original {} -> Chunk all {}'.format(len(self.idxlist), len(self.idxlist_chunking)))
-        
+
     def cut_chunk(self, sequence, maxlen):
-        """
-        Apply chunk-based training. 
-        If seq_len > maxlen, cut a sub-chunk from a random location.
-        If the seq_len <= maxlen, return as it is.
-        """
         N, D = sequence.shape
         start_idx = 0
-        
         if maxlen > N:
             return sequence, start_idx
-        
-        else:
-            # Select a random starting position
-            start_idx = torch.randint(0, N - self.low_thr + 1, (1,)).item()
-            
-            # Slice out the chunk
-            chunk = sequence[start_idx : start_idx + maxlen]
-            return chunk, start_idx
-        
-        
+        # Keep the original code's convention: random start is constrained by low_thr, not maxlen.
+        # This preserves old behavior but avoids crashes for very short CLAS12 events.
+        upper = max(N - self.low_thr + 1, 1)
+        start_idx = torch.randint(0, upper, (1,)).item()
+        chunk = sequence[start_idx:start_idx + maxlen]
+        return chunk, start_idx
+
     def __len__(self):
         if not self.train and self.chunk_training:
-            return len(self.idxlist_chunking)   
-        else:
-            return len(self.idxlist)    
-    
+            return len(self.idxlist_chunking)
+        return len(self.idxlist)
+
+    def _load_optional_reg_target(self, real_idx, n_hits, device=None):
+        if self.has_reg_target:
+            return torch.from_numpy(np.copy(self.memmap_reg_target[real_idx])).unsqueeze(0)
+        # Placeholder only for code compatibility. Do not use for a real regression task.
+        return torch.zeros((1, n_hits, 7), dtype=torch.float32, device=device)
+
+    def _to_model_features(self, features):
+        """Convert raw event feature tensor (1,N,C) to model feature layout."""
+        if self.get_cart:
+            return features
+        if self.input_layout == 'xyz':
+            return cartesian_to_polar_batched(features)             # -> [eta, phi, r]
+        if self.input_layout == 'exyz':
+            polar_coord = cartesian_to_polar_batched(features[..., 1:])
+            return torch.cat([features[..., 0:1], polar_coord], dim=-1)  # -> [E, eta, phi, r]
+        if self.input_layout == 'etaphr':
+            return features
+        if self.input_layout == 'eetaphr':
+            return features
+        raise RuntimeError('unreachable')
+
+    def _compute_sorter(self, norm_features):
+        """Return final serialization sorter for a single-event tensor (1,N,C)."""
+        N = norm_features.size(1)
+        device = norm_features.device
+        if self.serialization == 'none':
+            return torch.arange(N, device=device)
+
+        if self.is_position_only:
+            # norm_features: [eta, phi, r]
+            if self.serialization == 'clas12_band_hilbert' and clas12_band_hilbert_order is not None:
+                nf = norm_features.squeeze(0)
+                return clas12_band_hilbert_order(phi=nf[:, 1], eta=nf[:, 0], r=nf[:, 2]).squeeze()
+            # Robust fallback: radius-only ordering.
+            return norm_features[..., -1].argsort(dim=1).squeeze(0)
+
+        # Original TPC reorderings for [E, eta, phi, r].
+        if self.space_filling_order:
+            _, sorter = rescale_serialize_Rlast(norm_features, scaler=1e4, order=self.space_filling_curve)
+            return sorter.squeeze(0)
+        if self.voxelize and self.voxelizer is not None:
+            quantized = self.voxelizer.tokenize(norm_features, start_idx=1)
+            grouped = self.voxelizer.grouping(quantized)
+            _, sorter = grouped.sort(dim=-1, stable=True)
+            return sorter.squeeze(0)
+        return torch.arange(N, device=device)
+
     def __getitem__(self, index):
-        
         if not self.train and self.chunk_training:
             real_idx, start_idx = self.idxlist_chunking[index]
         else:
             real_idx = self.idxlist[index]
-            
-        features = torch.from_numpy(np.copy(self.memmap_feature[real_idx])).unsqueeze(0)
+
+        features = torch.from_numpy(np.copy(self.memmap_feature[real_idx])).float().unsqueeze(0)
         target = torch.from_numpy(np.copy(self.memmap_seg_target[real_idx])).unsqueeze(0)
-        reg_target = torch.from_numpy(np.copy(self.memmap_reg_target[real_idx])).unsqueeze(0)
+        reg_target = self._load_optional_reg_target(real_idx, features.size(1), device=features.device)
 
-        # print(features.shape, target.shape)
         if not self.train and self.chunk_training:
-            features = features[:, start_idx : start_idx+self.len_chunk]
-            target = target[:, start_idx : start_idx+self.len_chunk]
-            reg_target = reg_target[:, start_idx : start_idx+self.len_chunk]
-            # print(features.shape, target.shape)
-            
-        # features, target = set_simpler(features.unsqueeze(0), target.unsqueeze(0), nleave = self.nleave, npoint_lower_thr = self.npoint_lower_thr)
-        
-        ## To polar representation
-        if not self.get_cart:
-            polar_coord = cartesian_to_polar_batched(features[..., 1:])
-            E = features[..., 0:1]
-            polar_features = torch.cat([E, polar_coord], dim=-1)
+            features = features[:, start_idx:start_idx + self.len_chunk]
+            target = target[:, start_idx:start_idx + self.len_chunk]
+            reg_target = reg_target[:, start_idx:start_idx + self.len_chunk]
 
-        if self.get_cart:
-            polar_features = features
-        
-        ## Normalize the polar representation
-        if self.normalize:
-            norm_features = self.apply_norm(polar_features)
-        else:
-            norm_features = polar_features
+        model_features = self._to_model_features(features)
+        norm_features = self.apply_norm(model_features) if self.normalize else model_features
 
+        # First sort by radius before building k-NNN targets. This keeps the original k-NNN meaning:
+        # find the nearest future/outward points, where future is defined after radius sorting.
+        r_sort = norm_features[..., -1].argsort(dim=1)
+        r_sort_1d = r_sort.squeeze(0)
+        norm_features = norm_features[:, r_sort_1d]
+        norm_target = target[:, r_sort_1d]
+        norm_reg_target = reg_target[:, r_sort_1d]
 
-        
-        # Sort by R
-        ind = norm_features[..., -1].argsort(dim=1)           # (B, N, 1) → indices by ascending R
-        norm_features = norm_features[:, ind.squeeze()]      # reorder features by R
-        norm_target   = target[:,           ind.squeeze()]   # reorder classification target by R
-        norm_reg_target = reg_target[:,     ind.squeeze()]   # reorder regression target by R
+        # For CLAS12 position-only data, norm_features already has exactly 3 columns [eta,phi,r].
+        # For original TPC data, drop E and use only [eta,phi,r] for k-NNN targets.
+        knn_input = norm_features if self.is_position_only else norm_features[..., 1:]
         if self.return_knn_target:
             knearest_points, knearest_target = knn_later_indices_batch(
-                norm_features[..., 1:],
+                knn_input,
                 k=self.num_pred_points,
                 target=norm_target,
                 return_target=True,
                 pad_value_target=0,
             )
         else:
-            knearest_points = knn_later_indices_batch(norm_features[..., 1:], k=self.num_pred_points)
+            knearest_points = knn_later_indices_batch(knn_input, k=self.num_pred_points)
 
-        # 2) Compute your “space‐filling” or voxel sort ONCE
-
-
-        if self.space_filling_order:
-            _, sorter = rescale_serialize_Rlast(norm_features, scaler=1e4,
-                                                order=self.space_filling_curve)
-        elif self.voxelize:
-            quantized = self.voxelizer.tokenize(norm_features, start_idx=1)
-            grouped   = self.voxelizer.grouping(quantized)
-            _, sorter = grouped.sort(dim=-1, stable=True)
-        else:
-            # no further reordering
-            sorter = torch.arange(norm_features.size(1), device=norm_features.device).unsqueeze(0)
-
-        sorter = sorter.squeeze(0)  # shape (N,)
-
-        # 3) Apply sorter to **all** of your per‐point arrays
-        serialized_points     = norm_features[:, sorter].squeeze(0)
-        serialized_target     = norm_target[:,    sorter].squeeze(0)
-        serialized_reg_target = norm_reg_target[:,sorter].squeeze(0)
-        knearest_points = knearest_points[:,sorter].squeeze(0)
+        sorter = self._compute_sorter(norm_features)
+        serialized_points = norm_features[:, sorter].squeeze(0)
+        serialized_target = norm_target[:, sorter].squeeze(0)
+        serialized_reg_target = norm_reg_target[:, sorter].squeeze(0)
+        knearest_points = knearest_points[:, sorter].squeeze(0)
         if self.return_knn_target:
             knearest_target = knearest_target[:, sorter].squeeze(0)
 
-
-        # for return_dict branch, also do:
         if self.return_dict:
-            pid_target = torch.from_numpy(np.copy(self.memmap_pid_target[real_idx])).unsqueeze(0)
-            pid_target = pid_target[:, ind.squeeze()]
-            norm_pid_target = pid_target[:, sorter]
-            serialized_pid_target = norm_pid_target.squeeze(0)
+            if self.has_pid_target:
+                pid_target = torch.from_numpy(np.copy(self.memmap_pid_target[real_idx])).unsqueeze(0)
+                if not self.train and self.chunk_training:
+                    pid_target = pid_target[:, start_idx:start_idx + self.len_chunk]
+                pid_target = pid_target[:, r_sort_1d]
+                serialized_pid_target = pid_target[:, sorter].squeeze(0)
+            else:
+                serialized_pid_target = torch.full_like(serialized_target, -100)
 
-            # Only load mid_target if available
             if self.has_mid_target:
                 mid_target = torch.from_numpy(np.copy(self.memmap_mid_target[real_idx])).unsqueeze(0)
-                mid_target = mid_target[:, ind.squeeze()]
-                norm_mid_target = mid_target[:, sorter]
-                serialized_mid_target = norm_mid_target.squeeze(0)
+                if not self.train and self.chunk_training:
+                    mid_target = mid_target[:, start_idx:start_idx + self.len_chunk]
+                mid_target = mid_target[:, r_sort_1d]
+                serialized_mid_target = mid_target[:, sorter].squeeze(0)
 
-        # 4) chunk‐train: apply the same slicing to every serialized_* tensor
         if self.chunk_training and self.train:
             serialized_points, start_idx = self.cut_chunk(serialized_points, self.len_chunk)
-            serialized_target     = serialized_target    [start_idx : start_idx+self.len_chunk]
-            serialized_reg_target = serialized_reg_target[start_idx : start_idx+self.len_chunk]
+            serialized_target = serialized_target[start_idx:start_idx + self.len_chunk]
+            serialized_reg_target = serialized_reg_target[start_idx:start_idx + self.len_chunk]
+            knearest_points = knearest_points[start_idx:start_idx + self.len_chunk]
             if self.return_dict:
-                serialized_pid_target = serialized_pid_target[start_idx : start_idx+self.len_chunk]
+                serialized_pid_target = serialized_pid_target[start_idx:start_idx + self.len_chunk]
                 if self.has_mid_target:
-                    serialized_mid_target = serialized_mid_target[start_idx : start_idx+self.len_chunk]
+                    serialized_mid_target = serialized_mid_target[start_idx:start_idx + self.len_chunk]
             if self.return_knn_target:
-                knearest_points = knearest_points[start_idx : start_idx+self.len_chunk]
-                knearest_target = knearest_target[start_idx : start_idx+self.len_chunk]
+                knearest_target = knearest_target[start_idx:start_idx + self.len_chunk]
 
-
-        # 5) Return everything
         if self.return_dict:
             out = {
-                'points':          serialized_points  * self.data_scaler,
-                'knearest_points': knearest_points   * self.data_scaler,
-                'target':          serialized_target,
-                'reg_target':      serialized_reg_target,
-                'pid_target':      serialized_pid_target,
+                'points': serialized_points * self.data_scaler,
+                'knearest_points': knearest_points * self.data_scaler,
+                'target': serialized_target,
+                'reg_target': serialized_reg_target,
+                'pid_target': serialized_pid_target,
             }
-            # Only include mid_target if it was loaded
             if self.has_mid_target:
                 out['mid_target'] = serialized_mid_target
             if self.return_knn_target:
                 out['knearest_target'] = knearest_target
             return out
-        elif self.return_reg:
+
+        if self.return_reg:
             return (serialized_points * self.data_scaler,
                     serialized_target,
                     knearest_points * self.data_scaler,
                     serialized_reg_target)
-        else:
-            return (serialized_points * self.data_scaler,
-                    serialized_target,
-                    knearest_points * self.data_scaler)
+
+        return (serialized_points * self.data_scaler,
+                serialized_target,
+                knearest_points * self.data_scaler)
 
 class MyCollator:
     """Batch collator that pads variable-length sequences.
@@ -726,20 +778,25 @@ def get_data_loader(params, distributed):
                                     split = 'pretrain', 
                                     group_size = params.group_size, 
                                     normalize = True, 
-                                    limit_data = params.limit_data, 
-                                    limit_size = params.limit_size, 
+                                    limit_data = getattr(params, 'limit_data', False), 
+                                    limit_size = getattr(params, 'limit_size', 8000), 
                                     nleave = params.nleave, 
                                     order = params.order, 
                                     num_pred_points = params.klen, 
                                     len_chunk = params.len_chunk,
                                     chunk_training = params.chunk_training,
                                     bin_dir = params.stat_dir,
-                                    return_dict= params.return_dict,
+                                    return_dict=getattr(params, 'return_dict', False),
                                     return_knn_target = getattr(params, 'return_knn_target', False),
-                                    voxelize = params.voxelize,
-                                    space_filling_order = params.space_filling_order,
-                                    space_filling_curve = params.space_filling_curve,
-                                    train = True)
+                                    voxelize = getattr(params, 'voxelize', False),
+                                    space_filling_order = getattr(params, 'space_filling_order', None),
+                                    space_filling_curve = getattr(params, 'space_filling_curve', 'z'),
+                                    train = True,
+                                    input_layout=getattr(params, 'input_layout', 'xyz'),
+                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
+                                    low_thr=getattr(params, 'low_thr', 1),
+                                    high_thr=getattr(params, 'high_thr', 100),
+                                    max_tracks=getattr(params, 'max_tracks', 150))
     
     test_dataset = TPCBatchDataset(data_root = params.data_root_test, 
                                    version = params.data_version, 
@@ -751,14 +808,19 @@ def get_data_loader(params, distributed):
                                    chunk_training = params.chunk_training,
                                    bin_dir = params.stat_dir,
                                    order = params.order,
-                                   return_dict = params.return_dict,
+                                   return_dict = getattr(params, 'return_dict', False),
                                    return_knn_target = getattr(params, 'return_knn_target', False),
-                                   return_reg=params.return_reg_test,
-                                   voxelize = params.voxelize,
-                                   space_filling_order = params.space_filling_order,
-                                   space_filling_curve = params.space_filling_curve,
+                                   return_reg=getattr(params, 'return_reg_test', False),
+                                   voxelize = getattr(params, 'voxelize', False),
+                                   space_filling_order = getattr(params, 'space_filling_order', None),
+                                   space_filling_curve = getattr(params, 'space_filling_curve', 'z'),
                                    get_cart = False,
-                                   train = False)
+                                   train = False,
+                                   input_layout=getattr(params, 'input_layout', 'xyz'),
+                                   serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
+                                   low_thr=getattr(params, 'low_thr', 1),
+                                   high_thr=getattr(params, 'high_thr', 100),
+                                   max_tracks=getattr(params, 'max_tracks', 150))
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
@@ -787,39 +849,46 @@ def get_data_loader(params, distributed):
 
 def get_val_loader(params, distributed):
 
-    test_dataset = TPCBatchDataset(data_root = params.data_root, 
-                                   version = params.data_version, 
-                                   split = 'test', 
-                                   num_pred_points = params.klen,
-                                   group_size = params.group_size, 
-                                   normalize = True, 
-                                   **self.orderdict[params.order], 
-                                   nleave = params.nleave, 
-                                   chunk_training = params.chunk_training,
-                                   train = False,
-                                   order = params.order,)
+    test_dataset = TPCBatchDataset(data_root=params.data_root,
+                                   version=params.data_version,
+                                   split='test',
+                                   num_pred_points=params.klen,
+                                   group_size=params.group_size,
+                                   normalize=True,
+                                   nleave=params.nleave,
+                                   chunk_training=params.chunk_training,
+                                   train=False,
+                                   order=params.order,
+                                   input_layout=getattr(params, 'input_layout', 'xyz'),
+                                   serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
+                                   low_thr=getattr(params, 'low_thr', 1),
+                                   high_thr=getattr(params, 'high_thr', 100),
+                                   max_tracks=getattr(params, 'max_tracks', 150),
+                                   voxelize=getattr(params, 'voxelize', False),
+                                   space_filling_order=getattr(params, 'space_filling_order', None),
+                                   space_filling_curve=getattr(params, 'space_filling_curve', 'z'),
+                                   return_dict=getattr(params, 'return_dict', False),
+                                   return_knn_target=getattr(params, 'return_knn_target', False))
 
-   
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
-
     my_collate_fn = MyCollator()
-    
-        
+
     test_dataloader = DataLoader(test_dataset,
-                            batch_size=int(params.local_valid_batch_size),
-                            num_workers=params.num_data_workers,
-                            shuffle=False,
-                            sampler=test_sampler,
-                            drop_last=True,
-                            pin_memory=True,
-                            collate_fn = my_collate_fn)
-    
+                                 batch_size=int(params.local_valid_batch_size),
+                                 num_workers=params.num_data_workers,
+                                 shuffle=False,
+                                 sampler=test_sampler,
+                                 drop_last=True,
+                                 pin_memory=True,
+                                 collate_fn=my_collate_fn)
+
     return test_dataloader
 '''
 def get_centroid_offset(inputs, target):
     """Return point-level offset to respective cluster centroid"""
     newinputs = inputs.clone()
-    points = inputs[..., 1:]
+    coord_start = 1 if inputs.size(-1) == 4 else 0
+    points = inputs[..., coord_start:]
     b, n, _ = points.size()
     clID2centroid = {}
     for ID in torch.unique(target):
@@ -827,13 +896,14 @@ def get_centroid_offset(inputs, target):
         # print(bool_.shape)
         centroid = points[:, bool_, :].mean(1, keepdims = True)
         newinputs[:, bool_, 1:] = points[:, bool_, :] - centroid
-    return newinputs[..., 1:]
+    return newinputs[..., coord_start:]
 '''
 
 def get_centroid_offset(inputs, target):
     """Return point-level offset to respective cluster centroid with mask preservation"""
     newinputs = inputs.clone()
-    points = inputs[..., 1:]
+    coord_start = 1 if inputs.size(-1) == 4 else 0
+    points = inputs[..., coord_start:]
     b, n, _ = points.size()
     
     # Create mask for invalid points (-100)
@@ -862,6 +932,6 @@ def get_centroid_offset(inputs, target):
                 # Restore invalid points to -100
                 offsets[~valid_mask] = -100
                 # Update newinputs
-                newinputs[batch_idx, cluster_mask, 1:] = offsets
+                newinputs[batch_idx, cluster_mask, coord_start:] = offsets
     
-    return newinputs[..., 1:]
+    return newinputs[..., coord_start:]

@@ -284,7 +284,7 @@ class Trainer():
             b, c = grouped.size(0), grouped.size(-1)
 
             # Prepare targets
-            targets = grouped.reshape(b, -1, 4)[:, :, 1:].to(self.device)
+            targets = grouped.reshape(b, -1, 3)[:, :, 1:].to(self.device)
             klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
             grouped = grouped.reshape(b, -1, c).to(self.device)
 

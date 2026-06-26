@@ -301,3 +301,158 @@ def decode(hilberts, num_dims, num_bits):
 
     # Return them in the expected shape.
     return flat_locs.reshape((*orig_shape, num_dims))
+# ============================================================
+# CLAS12-specific addition: exact-layer-band radius grouping +
+# 2D Hilbert ordering within each band.
+#
+# Rationale (see CLAS12_CHANGES.md "Hilbert axis-priority" section):
+# CLAS12's CVT has exactly 6 known, physically fixed detector radii.
+# Neither encode() above nor the Z-order equivalent has a built-in
+# way to make one axis dominate the curve, and CLAS12's radius is
+# discrete enough that it doesn't need a curve at all -- it needs an
+# exact grouping. This sorts by that exact band first (guaranteeing
+# zero cross-layer interleaving), then runs the existing encode()
+# in 2D over (phi, eta) only as the within-layer tie-break.
+# ============================================================
+
+# The 6 real CLAS12 CVT layer radii, hardcoded from direct measurement
+# (see r_histogram_check.py output). Order is innermost (BST) to
+# outermost (BMT). Do not derive these from a live dataset -- they are
+# fixed physical detector constants, given here in RAW (unnormalized) units.
+CLAS12_LAYER_RADII_RAW = [
+    6.52944,    # BST region 1
+    9.28923,    # BST region 2
+    12.03261,   # BST region 3
+    14.76460,   # BMT region 1
+    19.26460,   # BMT region 2
+    22.26460,   # BMT region 3
+]
+
+# Single shared band half-width, chosen as the worst-case observed
+# deviation across all 6 layers (BST region 1), rounded up for margin.
+# Given in RAW (unnormalized) units.
+CLAS12_LAYER_DELTA_RAW = 0.3
+
+# r_lim used by TPCBatchDataset.apply_norm for CLAS12 (see
+# CLAS12_CHANGES.md "Normalization bounds" section) -- must match exactly,
+# since assign_clas12_layer is called on r AFTER apply_norm has already run
+# (confirmed: apply_norm executes before the space-filling-order branch in
+# __getitem__). Keeping this constant here, alongside the layer radii, so
+# the raw->normalized conversion below always stays consistent with
+# whatever r_lim TPCBatchDataset actually uses.
+CLAS12_R_LIM_MIN = 6.0
+CLAS12_R_LIM_MAX = 23.0
+
+
+def _normalize_r(r_raw, r_min=CLAS12_R_LIM_MIN, r_max=CLAS12_R_LIM_MAX):
+    """Same min-max formula as TPCBatchDataset.minmax_normalize."""
+    return (r_raw - r_min) / (r_max - r_min)
+
+
+# Layer radii and delta converted ONCE into the normalized [0,1] space that
+# assign_clas12_layer will actually receive at call time. Delta is divided
+# by the same (max-min) span since min-max normalization is a pure linear
+# rescale -- a fixed absolute raw-space tolerance maps to a fixed absolute
+# normalized-space tolerance, just scaled by 1/(r_max - r_min).
+CLAS12_LAYER_RADII = [_normalize_r(r) for r in CLAS12_LAYER_RADII_RAW]
+CLAS12_LAYER_DELTA = CLAS12_LAYER_DELTA_RAW / (CLAS12_R_LIM_MAX - CLAS12_R_LIM_MIN)
+
+
+def assign_clas12_layer(r, layer_radii=CLAS12_LAYER_RADII, delta=CLAS12_LAYER_DELTA):
+    """
+    Assign each point to exactly one of the 6 fixed CLAS12 layers based on
+    its measured radius r.
+
+    Params:
+    -------
+     r: 1D tensor of shape (N,), measured radius per point.
+     layer_radii: list of 6 fixed reference radii (innermost to outermost).
+     delta: shared band half-width around each reference radius.
+
+    Returns:
+    --------
+     layer_idx: 1D long tensor of shape (N,), values in [0, len(layer_radii)-1],
+                the assigned layer index per point.
+
+    Raises:
+    -------
+     AssertionError if any point's r does not fall within delta of exactly
+     one reference radius. Per CLAS12 detector geometry, every real hit
+     (signal or noise) must fall in one of these bands -- failure here
+     indicates corrupted input data, not a normal case to handle silently.
+    """
+    layer_radii_t = torch.tensor(layer_radii, dtype=r.dtype, device=r.device)  # (L,)
+    diffs = torch.abs(r.unsqueeze(-1) - layer_radii_t.unsqueeze(0))  # (N, L)
+    in_band = diffs <= delta  # (N, L)
+
+    n_bands_hit = in_band.sum(dim=-1)  # (N,)
+    assert torch.all(n_bands_hit == 1), (
+        "Found {} point(s) not matching exactly one CLAS12 layer band "
+        "(0 or 2+ matches). This indicates corrupted input data -- "
+        "check raw r values.".format((n_bands_hit != 1).sum().item())
+    )
+
+    layer_idx = in_band.float().argmax(dim=-1)  # (N,)
+    return layer_idx
+
+
+def clas12_band_hilbert_order(phi, eta, r, num_bits=10, scaler=1e4,
+                               layer_radii=CLAS12_LAYER_RADII,
+                               delta=CLAS12_LAYER_DELTA):
+    """
+    Order CLAS12 points by: (1) exact layer band [guaranteed, zero
+    cross-layer interleaving], then (2) 2D Hilbert curve over (phi, eta)
+    within each band [locality-preserving angular tie-break].
+
+    Params:
+    -------
+     phi, eta, r: 1D tensors of shape (N,), already in whatever normalized
+                  range apply_norm produces (expected ~[0,1] each, but this
+                  function only requires phi/eta to be non-negative after
+                  scaling -- see note below).
+     num_bits: bits of precision per axis for the 2D Hilbert encoding.
+               10 bits = 1024 distinct values per axis, comfortably more
+               resolution than needed for typical per-layer point counts.
+     scaler: float-to-integer scaling factor applied to phi/eta before
+             quantizing to the Hilbert hypercube. Must be large enough
+             that distinct phi/eta values don't collapse to the same
+             integer, but produce values < 2**num_bits after scaling.
+     layer_radii, delta: passed through to assign_clas12_layer.
+
+    Returns:
+    --------
+     sorter: 1D long tensor of shape (N,), the permutation that orders
+             the input points as described above. Apply via
+             tensor[sorter] to any (N, ...) array aligned with phi/eta/r.
+
+    Note on phi/eta sign: phi and eta can be negative (e.g. phi in
+    [-pi, pi]). Since encode() requires non-negative integer coordinates,
+    this function shifts both by a fixed offset before scaling. If phi/eta
+    are passed in already normalized to [0, 1] (i.e. apply_norm has already
+    run), no offset is needed -- this is the expected calling convention.
+    """
+    N = phi.shape[0]
+    assert eta.shape[0] == N and r.shape[0] == N
+
+    layer_idx = assign_clas12_layer(r, layer_radii=layer_radii, delta=delta)  # (N,)
+
+    # Quantize phi/eta to non-negative integers for the 2D Hilbert encode.
+    # Expects phi, eta already normalized to [0, 1] (apply_norm convention) --
+    # if not, shift to non-negative range before calling this function.
+    locs = torch.stack([phi, eta], dim=-1)  # (N, 2)
+    locs_int = (locs * scaler).long()
+    assert torch.all(locs_int >= 0), (
+        "phi/eta produced negative integers after scaling -- pass "
+        "already-normalized [0,1] values, or add an offset before scaling."
+    )
+    max_val = 2 ** num_bits - 1
+    locs_int = torch.clamp(locs_int, max=max_val)
+
+    hilbert_codes = encode(locs_int, num_dims=2, num_bits=num_bits)  # (N,)
+
+    # Composite sort key: layer dominates (exact, integer), Hilbert code
+    # breaks ties within a layer. Pack into one key so a single argsort
+    # produces the full two-level order in one pass.
+    composite_key = layer_idx.long() * (2 ** 48) + hilbert_codes.long()
+    sorter = torch.argsort(composite_key)
+    return sorter

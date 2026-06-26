@@ -386,25 +386,14 @@ class DownstreamTrainer():
         #                          num_embedder_layers= self.params.num_embedder_layers, 
         #                          ).to(self.device)
 
-
-        #Dirty fix
-        if self.params.task in ["mom", "momentum"]:
-            num_output_dim = 3
-        elif self.params.task in ["3vtx", "3vertex"]:
-            num_output_dim = 3
-        elif self.params.task in ["Zvtx", "Zvertex", "zvtx", "zvertex"]:
-            num_output_dim = 1
-        else:
-            num_output_dim = self.params.num_output_classes
-        
         if self.params.use_attention_head:
-            self.down_model = AttentionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = num_output_dim,
+            self.down_model = AttentionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
                           num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
                           num_embedder_layers= self.params.num_embedder_layers, 
                           ).to(self.device)
         
         else:
-            self.down_model = MambaRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=num_output_dim, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean")).to(self.device)
+            self.down_model = MambaRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean")).to(self.device)
 
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -581,6 +570,17 @@ class DownstreamTrainer():
         #                          num_embedder_layers= self.params.num_embedder_layers, 
         #                          ).to(self.device)
 
+        #Dirty fix
+        if self.params.task in ["mom", "momentum"]:
+            self.params.num_output_classes = 3
+        elif self.params.task in ["3vtx", "3vertex"]:
+            self.params.num_output_classes = 3
+        elif self.params.task in ["Zvtx", "Zvertex", "zvtx", "zvertex"]:
+            self.params.num_output_classes = 1
+        #else:
+        #    num_output_dim = self.params.num_output_classes
+
+
         if self.params.use_attention_head:
             self.down_model = AttentionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
                           num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
@@ -649,9 +649,12 @@ class DownstreamTrainer():
         self.warmup_steps = 20
         
 
-
-        self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
-        self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
+        if getattr(self.params, "loss_reweight", False):
+            self.loss_bin = pickle_load(f"{self.params.stat_dir}/loss_bin_pp.pkl")
+            self.loss_weight = pickle_load(f"{self.params.stat_dir}/loss_weight_pp.pkl")
+        else:
+            self.loss_bin = None
+            self.loss_weight = None
         
         for epoch in range(self.startEpoch, self.params.max_epochs):
             self.down_results['epoch'] = epoch

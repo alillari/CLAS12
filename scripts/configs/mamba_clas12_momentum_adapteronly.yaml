@@ -51,7 +51,7 @@ default: &default
   voxelize: false                # old TPC voxelizer assumes 4-column E+position path
   space_filling_order: false
   space_filling_curve: z
-  return_dict: false
+  return_dict: true
   return_reg: true               # momentum task should receive reg_target from dataset
   return_reg_test: true
   return_knn_target: false

@@ -357,8 +357,18 @@ class TPCBatchDataset(Dataset):
 
         try:
             self.memmap_mid_target = RaggedMmap(os.path.join(data_root, f'mid_target_{split}'))
-            self.has_mid_target = True
-        except (FileNotFoundError, OSError):
+
+            if len(self.memmap_mid_target) == len(self.memmap_feature):
+                self.has_mid_target = True
+            else:
+                print(
+                    f"[INFO] Ignoring mid_target_{split}: "
+                    f"len={len(self.memmap_mid_target)}, expected={len(self.memmap_feature)}"
+                )
+                self.memmap_mid_target = None
+                self.has_mid_target = False
+
+        except (FileNotFoundError, OSError, IndexError):
             self.memmap_mid_target = None
             self.has_mid_target = False
 

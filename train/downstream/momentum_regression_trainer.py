@@ -386,14 +386,14 @@ class DownstreamTrainer():
         #                          num_embedder_layers= self.params.num_embedder_layers, 
         #                          ).to(self.device)
 
-        if self.params.use_attention_head:
-            self.down_model = AttentionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
-                          num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
-                          num_embedder_layers= self.params.num_embedder_layers, 
-                          ).to(self.device)
+        #if self.params.use_attention_head:
+        #    self.down_model = AttentionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
+        #                  num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
+        #                  num_embedder_layers= self.params.num_embedder_layers, 
+        #                  ).to(self.device)
         
-        else:
-            self.down_model = MambaRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean")).to(self.device)
+        #else:
+        self.down_model = MambaRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean")).to(self.device)
 
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -470,9 +470,9 @@ class DownstreamTrainer():
                 else:
                     pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
 
-                pred_logits = pred_dict['pred_logits'] # (B, N, C_classes)
+                pred = pred_dict['pred'] # (B, N, C_classes)
                 outputs = {
-                    "pred_logits": pred_logits,  # B X N X C_classes
+                    "pred": pred,  # B X N X C_classes
                 }
 
                 losses = simple_point_loss(
@@ -481,7 +481,7 @@ class DownstreamTrainer():
                     mask=mask,
                 )
                 target_list.append(targets['labels'].cpu())
-                output_list.append(outputs['pred_logits'].cpu())
+                output_list.append(outputs['pred'].cpu())
                
                 loss = losses['loss']
                 loss_list.append(loss.cpu().numpy())
@@ -489,7 +489,7 @@ class DownstreamTrainer():
         all_logits = torch.cat(output_list, dim=1)   # shape: (total_batches * batch_size, N, C)
         all_labels = torch.cat(target_list, dim=1)   # shape: (total_batches * batch_size, N)
 
-        big_outputs = {"pred_logits": all_logits}
+        big_outputs = {"pred": all_logits}
         big_targets = {"labels":      all_labels}
 
         precision, recall, accuracy = compute_multiclass_metrics(
@@ -584,13 +584,13 @@ class DownstreamTrainer():
         if self.params.use_attention_head:
             self.down_model = AttentionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
                           num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
-                          num_embedder_layers= self.params.num_embedder_layers, 
+                          num_embedder_layers= self.params.num_embedder_layers, embed_method=self.params.embed_method, 
                           ).to(self.device)
         
         else:
             self.down_model = MambaHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
                                       d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone,
-                                      num_embedder_layers= self.params.num_embedder_layers, 
+                                      num_embedder_layers= self.params.num_embedder_layers, embed_method=self.params.embed_method,
                                       ).to(self.device)
 
         #print number of parameters in the model
@@ -775,13 +775,13 @@ class DownstreamTrainer():
             else:
                 pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
 
-            pred = pred_dict["pred_logits"]  # B x N x 3
+            pred = pred_dict["pred"]  # B x N x 3
 
             outputs = {
                 "pred": pred,
             }
 
-            losses = self.masked_regression_loss(outputs=outputs, targets=targets, mask=mask)
+            losses = masked_regression_loss(outputs=outputs, targets=targets, mask=mask)
 
             loss = losses['loss']
             # Compute loss and get matching indices
@@ -846,13 +846,13 @@ class DownstreamTrainer():
                 else:
                     pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
 
-                pred = pred_dict["pred_logits"]
+                pred = pred_dict["pred"]
 
                 outputs = {
                     "pred": pred,
                 }
 
-                losses = self.masked_regression_loss(outputs=outputs, targets=targets, mask=mask)
+                losses = masked_regression_loss(outputs=outputs, targets=targets, mask=mask)
 
                
                 loss = losses['loss']

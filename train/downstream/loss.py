@@ -572,12 +572,11 @@ def compute_point_loss(outputs, targets, mask, matcher, no_object_class=0):
     }
 
 
-def masked_momentum_loss(outputs, targets, mask, option="mse"):
-    pred = outputs["pred_momentum"]
-    truth = targets["momentum"]
+def masked_regression_loss(outputs, targets, mask, option="mse"):
+    pred = outputs["pred"]
+    truth = targets["target"]
 
     valid = mask.unsqueeze(-1) & torch.isfinite(truth)
-
     diff = pred - truth
 
     if option == "huber":

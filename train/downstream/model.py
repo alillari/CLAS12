@@ -617,8 +617,12 @@ class AttentionHead(nn.Module):
         self.FFN = adapter_FFN
         if embed_method == 'concat':
             Embedder = EmbedderConcat
-        else:
+        elif embed_method == 'pos_only':
+            Embedder = EmbedderPosOnly
+        elif embed_method == 'add':
             Embedder = EmbedderAdd
+        else:
+            raise ValueError(f"Unknown embed_method: {embed_method}")
 
         # Input processing
         self.input_proj = nn.Sequential(
@@ -712,7 +716,7 @@ class AttentionHead(nn.Module):
         out_logits = self.out_mlp(x) # (B, N, num_output_dim)
 
         return {
-            'pred_logits': out_logits,  # (B, N, num_output_dim)
+            'pred': out_logits,  # (B, N, num_output_dim)
             'embedding_pre_projection': embedding_pre_projection,
             'embedding_post_projection': embedding_post_projection
         }
@@ -1006,8 +1010,12 @@ class MultiTaskAttentionHead(nn.Module):
         # Embedding layers (reuse upstream embedder implementations)
         if embed_method == 'concat':
             embedder_cls = EmbedderConcat
-        else:
+        elif embed_method == 'pos_only':
+            embedder_cls = EmbedderPosOnly
+        elif embed_method == 'add':
             embedder_cls = EmbedderAdd
+        else:
+            raise ValueError(f"Unknown embed_method: {embed_method}")
         self.embedder = embedder_cls(
             pe_method=pe_method,
             embed_dim=input_dim,

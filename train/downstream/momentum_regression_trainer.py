@@ -427,6 +427,7 @@ class DownstreamTrainer():
 
         output_list = []
         target_list = []
+        target_valid_list = []
         loss_list = []
 
         with torch.no_grad():  # Disable gradient calculation
@@ -456,7 +457,7 @@ class DownstreamTrainer():
                 #    targets = {
                 #        'labels': noise_labels,  # B X N tensor with noise id
                 #    }
-                targets = self.build_regression_targets(reg)
+                targets = self.build_regression_targets(reg, mask)
 
                 self.down_optimizer.zero_grad()
                 if pretrain:
@@ -470,53 +471,28 @@ class DownstreamTrainer():
                 else:
                     pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
 
-                pred = pred_dict['pred'] # (B, N, C_classes)
+                pred = pred_dict['pred_regression']
                 outputs = {
-                    "pred": pred,  # B X N X C_classes
+                    "pred": pred,
                 }
 
-                losses = simple_point_loss(
-                    outputs=outputs,
-                    targets=targets,
-                    mask=mask,
-                )
-                target_list.append(targets['labels'].cpu())
+                losses = masked_regression_loss(outputs=outputs, targets=targets)
+                target_list.append(targets['target'].cpu())
+                target_valid_list.append(targets['target_valid'].cpu())
                 output_list.append(outputs['pred'].cpu())
                
                 loss = losses['loss']
                 loss_list.append(loss.cpu().numpy())
 
-        all_logits = torch.cat(output_list, dim=1)   # shape: (total_batches * batch_size, N, C)
-        all_labels = torch.cat(target_list, dim=1)   # shape: (total_batches * batch_size, N)
-
-        big_outputs = {"pred": all_logits}
-        big_targets = {"labels":      all_labels}
-
-        precision, recall, accuracy = compute_multiclass_metrics(
-            outputs=big_outputs,
-            targets=big_targets,
-            average=None
-        )
-
-        macro_precision = precision.mean()
-        macro_recall    = recall.mean()
+        all_predictions = torch.cat(output_list, dim=0)
+        all_targets = torch.cat(target_list, dim=0)
+        all_target_valid = torch.cat(target_valid_list, dim=0)
         avg_loss = np.mean(loss_list)
-        n_classes = precision.shape[0]
-        cols = ["Avg_Loss", "Avg_Acc", "Macro_Precision", "Macro_Recall"]
-        for c in range(n_classes):
-            cols += [f"Class{c}_Prec", f"Class{c}_Rec"]
-
-        header = " ".join(cols) + "\n"
-
-
-
-        # 4) Build the corresponding value row
-        vals = [f"{avg_loss:.4f}", f"{accuracy:.4f}",
-                f"{macro_precision:.4f}", f"{macro_recall:.4f}"]
-        for c in range(n_classes):
-            vals += [f"{precision[c]:.4f}", f"{recall[c]:.4f}"]
-
-        values = " ".join(vals) + "\n"
+        mae = torch.mean(
+            torch.abs(all_predictions[all_target_valid] - all_targets[all_target_valid])
+        ).item()
+        header = "Avg_Loss MAE\n"
+        values = f"{avg_loss:.4f} {mae:.4f}\n"
 
         # 5) Write (or append) to the log file
         with open(logfile, "w") as f:
@@ -581,17 +557,17 @@ class DownstreamTrainer():
         #    num_output_dim = self.params.num_output_classes
 
 
-        if self.params.use_attention_head:
-            self.down_model = AttentionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
-                          num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
-                          num_embedder_layers= self.params.num_embedder_layers, embed_method=self.params.embed_method, 
-                          ).to(self.device)
-        
-        else:
-            self.down_model = MambaHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
-                                      d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone,
-                                      num_embedder_layers= self.params.num_embedder_layers, embed_method=self.params.embed_method,
-                                      ).to(self.device)
+        self.down_model = MambaRegressionHead(
+            input_dim=self.params.embed_dim,
+            num_layers=1,
+            num_output_dim=self.params.num_output_classes,
+            d_state=64,
+            d_conv=4,
+            expand=2,
+            num_feature_layers=self.params.num_layers_backbone,
+            num_embedder_layers=self.params.num_embedder_layers,
+            pooling=getattr(self.params, "pooling", "mean"),
+        ).to(self.device)
 
         #print number of parameters in the model
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -702,7 +678,7 @@ class DownstreamTrainer():
             self.down_scheduler.step()
 
 
-    def build_regression_targets(self, reg):
+    def build_regression_targets(self, reg, hit_mask):
         """
         reg_target columns:
             0: px
@@ -714,14 +690,27 @@ class DownstreamTrainer():
             6: energy
         """
         if self.params.task in ["mom", "momentum"]:
-            return {"target": reg[..., 0:3]}
-
+            per_hit_target = reg[..., 0:3]
         elif self.params.task in ["3vtx", "3vertex"]:
-            return {"target": reg[..., 3:6]}
+            per_hit_target = reg[..., 3:6]
         elif self.params.task in ["Zvtx", "Zvertex", "zvtx", "zvertex"]:
-            return {"target": reg[..., 5]}
+            per_hit_target = reg[..., 5:6]
         else:
             raise ValueError(f"Unknown regression task: {self.params.task}")
+
+        # Regression truth is stored once per hit, although the prediction is
+        # event-level. Collapse valid, finite copies to one target per event.
+        valid = hit_mask.unsqueeze(-1) & torch.isfinite(per_hit_target)
+        counts = valid.sum(dim=1)
+        target = torch.where(
+            valid, per_hit_target, torch.zeros_like(per_hit_target)
+        ).sum(dim=1)
+        target = target / counts.clamp_min(1)
+
+        return {
+            "target": target,
+            "target_valid": counts > 0,
+        }
 
 
     def downstream_end_to_end_one_epoch(self, pretrain = False):
@@ -759,7 +748,7 @@ class DownstreamTrainer():
             #        'labels': noise_labels,  # B X N tensor with noise id
             #    }
 
-            targets = self.build_regression_targets(reg)
+            targets = self.build_regression_targets(reg, mask)
 
             self.down_optimizer.zero_grad()
             if pretrain:
@@ -775,13 +764,13 @@ class DownstreamTrainer():
             else:
                 pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
 
-            pred = pred_dict["pred"]  # B x N x 3
+            pred = pred_dict["pred_regression"]  # B x num_output_classes
 
             outputs = {
                 "pred": pred,
             }
 
-            losses = masked_regression_loss(outputs=outputs, targets=targets, mask=mask)
+            losses = masked_regression_loss(outputs=outputs, targets=targets)
 
             loss = losses['loss']
             # Compute loss and get matching indices
@@ -832,7 +821,7 @@ class DownstreamTrainer():
                 #        'labels': noise_labels,  # B X N tensor with noise id
                 #    }
 
-                targets = self.build_regression_targets(reg)
+                targets = self.build_regression_targets(reg, mask)
 
                 self.down_optimizer.zero_grad()
                 if pretrain:
@@ -846,13 +835,13 @@ class DownstreamTrainer():
                 else:
                     pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
 
-                pred = pred_dict["pred"]
+                pred = pred_dict["pred_regression"]
 
                 outputs = {
                     "pred": pred,
                 }
 
-                losses = masked_regression_loss(outputs=outputs, targets=targets, mask=mask)
+                losses = masked_regression_loss(outputs=outputs, targets=targets)
 
                
                 loss = losses['loss']
@@ -986,7 +975,4 @@ class DownstreamTrainer():
             self.startEpoch = 0
             if self.world_rank == 0:
                 print(f"✅ Loaded pretrained weights only (optimizer state not loaded)")
-
-
-
 

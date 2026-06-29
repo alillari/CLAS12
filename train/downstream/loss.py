@@ -572,12 +572,21 @@ def compute_point_loss(outputs, targets, mask, matcher, no_object_class=0):
     }
 
 
-def masked_regression_loss(outputs, targets, mask, option="mse"):
+def masked_regression_loss(outputs, targets, option="mse"):
     pred = outputs["pred"]
     truth = targets["target"]
 
-    valid = mask.unsqueeze(-1) & torch.isfinite(truth)
-    diff = pred - truth
+    if pred.shape != truth.shape:
+        raise ValueError(
+            f"Regression prediction and target shapes must match, got "
+            f"{tuple(pred.shape)} and {tuple(truth.shape)}"
+        )
+
+    valid = targets["target_valid"] & torch.isfinite(pred) & torch.isfinite(truth)
+
+    if not valid.any():
+        # Return a differentiable zero if a batch contains no valid targets.
+        return {"loss": pred.sum() * 0.0}
 
     if option == "huber":
         loss = torch.nn.functional.smooth_l1_loss(
@@ -586,7 +595,7 @@ def masked_regression_loss(outputs, targets, mask, option="mse"):
             reduction="mean",
         )
     else:
-        loss = (diff[valid] ** 2).mean()
+        loss = ((pred[valid] - truth[valid]) ** 2).mean()
 
     return {"loss": loss}
 

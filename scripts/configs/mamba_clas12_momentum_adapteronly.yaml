@@ -12,9 +12,9 @@ default: &default
   #   reg_target_pretrain/, reg_target_test/   <-- must be real momentum targets
   # Optional, if your dataset.py return_dict path uses them:
   #   pid_target_pretrain/, pid_target_test/
-  data_root: /home/alessio/ML-work/HIPO_processing/multi_particle_storage
-  data_root_train: /home/alessio/ML-work/HIPO_processing/multi_particle_storage
-  data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage
+  data_root: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_raggedmmap/
+  data_root_train: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_raggedmmap/
+  data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_raggedmmap/
   stat_dir: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats
   downstream_dir: ./downstream_log/clas12_momentum_adapteronly
   checkpoint_dir: ./downstream_log/clas12_momentum_adapteronly/checkpoints
@@ -23,15 +23,15 @@ default: &default
   data_version: clas12_cvt
   input_layout: xyz              # our CLAS12 files are raw [x,y,z], no energy column
   serialization: radius          # safest first debug choice; switch to clas12_band_hilbert later
-  batch_size: 4                  # train_momentum_regression.py overrides this from --train_batch_size
-  local_batch_size: 4
-  valid_batch_size: 1            # train_momentum_regression.py also forces this to 1
-  local_valid_batch_size: 1
+  batch_size: 128                  # train_momentum_regression.py overrides this from --train_batch_size
+  local_batch_size: 128
+  valid_batch_size: 128            # train_momentum_regression.py also forces this to 1
+  local_valid_batch_size: 128
   limit_data: true               # train script overrides using --eventnumber
-  limit_size: 100
+  limit_size: 50000
   n_data_idx: 1000000
-  n_eval_steps: 100
-  num_data_workers: 0            # easiest stack traces while debugging
+  n_eval_steps: 200
+  num_data_workers: 4            # easiest stack traces while debugging
   log_to_screen: true
 
   # === Sequence / filtering ===
@@ -64,12 +64,13 @@ default: &default
   save_checkpoint: true
 
   # === Optimization ===
-  max_epochs: 50
-  max_lr: 0.0001
+  max_epochs: 30
+  max_lr: 0.0003
   min_lr: 0.00001
-  first_cycle_steps: 200
-  warmup_steps: 20
+  first_cycle_steps: 3000
+  warmup_steps: 300
   grad_clip_value: 0.1
+  total_steps: 30000
 
   # === Model / adapter configuration ===
   base_dim: 128
@@ -84,7 +85,6 @@ default: &default
   klen: 3
   dropout: 0.1
   mambaversion: mamba1
-  total_steps: 50000
   task: mom
 
   # These are mostly harmless for momentum regression; some trainer/model code may still expect them.

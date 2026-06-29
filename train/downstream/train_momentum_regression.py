@@ -88,7 +88,7 @@ def main():
     params.batch_size = int(args.train_batch_size)
     params.limit_data = True
     params.limit_size = int(args.eventnumber)
-    params.valid_batch_size = 1
+    params.valid_batch_size = params.batch_size
 
     if args.usepretrain:
         params.pretrained_ckpt = args.pretrained_ckpt or model2ckpt.get(args.config)

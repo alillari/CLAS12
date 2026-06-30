@@ -33,8 +33,8 @@ def main():
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default="",
-        help="Path to the trained checkpoint (optional; overrides default)",
+        required=True,
+        help="Path to the trained downstream regression checkpoint",
     )
     parser.add_argument(
         "--run_num",
@@ -107,9 +107,6 @@ def main():
         'ablate_novoxelize': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_novoxelize.ckpt',
     }
 
-    # Determine which checkpoint to use
-    
-
     # Prepare hyperparameters
     params = YParams(os.path.abspath(args.yaml_config), args.config)
     params.limit_data = True
@@ -126,13 +123,6 @@ def main():
         params.pretrained_ckpt = None
     params.log_file_name = f"{args.config}_eval_{params.task}_d{params.limit_size}_{args.run_num}.log"
     params.num_embedder_layers = 0
-    checkpoint_name = f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}_checkpoint.pth"
-    if args.checkpoint:
-        checkpoint_path = args.checkpoint
-    else:
-        checkpoint_path = os.path.join(params.checkpoint_dir, checkpoint_name)
-
-
     # Ensure output directory exists
     log_dir = args.root_dir
     os.makedirs(log_dir, exist_ok=True)
@@ -142,7 +132,7 @@ def main():
     trainer = DownstreamTrainer(params, args)
     trainer.launch()
     trainer.inference(
-        checkpoint_path=checkpoint_path,
+        checkpoint_path=args.checkpoint,
         pretrain=args.usepretrain,
         logfile=logfile
     )

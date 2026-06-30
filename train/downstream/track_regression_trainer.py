@@ -91,6 +91,11 @@ class DownstreamTrainer():
         stats_path = getattr(params, "regression_target_stats", default_stats_path)
         self.regression_target_stats = load_regression_target_stats(stats_path, params.task)
         self.params["regression_target_stats"] = stats_path
+        # The task mapping is the source of truth for the regression head width.
+        # Set it here so training and inference construct compatible heads.
+        self.params["num_output_classes"] = len(
+            regression_column_indices(params.task)
+        )
         print("running on rank {} with world size {}".format(self.world_rank, self.world_size))
 
 
@@ -425,9 +430,10 @@ class DownstreamTrainer():
     
         try:
             self.load_checkpoint(checkpoint_path, inference=True)
-        except Exception as e:
-            print(f"❌ Checkpoint loading failed: {str(e)}")
-            return None
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load regression checkpoint: {checkpoint_path}"
+            ) from exc
         
         self.down_model.eval()
         self.model.eval()
@@ -553,17 +559,6 @@ class DownstreamTrainer():
         #                          d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone,
         #                          num_embedder_layers= self.params.num_embedder_layers, 
         #                          ).to(self.device)
-
-        #Dirty fix
-        if self.params.task in ["mom", "momentum"]:
-            self.params.num_output_classes = 3
-        elif self.params.task in ["3vtx", "3vertex"]:
-            self.params.num_output_classes = 3
-        elif self.params.task in ["Zvtx", "Zvertex", "zvtx", "zvertex"]:
-            self.params.num_output_classes = 1
-        #else:
-        #    num_output_dim = self.params.num_output_classes
-
 
         self.down_model = MambaTrackRegressionHead(
             input_dim=self.params.embed_dim,

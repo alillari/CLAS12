@@ -1,0 +1,31 @@
+analysis:
+  # Paths are resolved relative to this file.
+  model_yaml: ../../../scripts/configs/mamba_clas12_track_regression_adapteronly.yaml
+  model_config: clas12_track_regression_adapteronly_debug
+  checkpoint: ../downstream_log/clas12_track_regression_adapteronly/checkpoints/clas12_track_regression_adapteronly_debug_nerf_mom_d100000_0_checkpoint.pth
+  output_dir: ../evaluation_output/track_regression_baseline
+
+  run_num: "0"
+  batch_size: 128
+  num_workers: 0
+  max_samples: 10000
+  use_pretrained_backbone: false
+  pretrained_checkpoint: null
+  include_sample_metadata: true
+  # null selects <data_root_test>/samples_test.jsonl
+  sample_metadata_jsonl: null
+
+  # MC entrance momentum is stored in MeV; auxiliary reconstruction momenta
+  # are stored in GeV in the current CLAS12 dataset.
+  target_momentum_scale_to_gev: 0.001
+  auxiliary_momentum_scale_to_gev: 1.0
+
+  momentum_bins_gev: [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
+  theta_bins_deg: [0, 20, 40, 60, 80, 100, 120, 140, 160, 180]
+  relative_error_tolerances: [0.01, 0.05, 0.10]
+  pid_labels:
+    0: pion
+    1: kaon
+    2: proton
+    3: electron
+    4: other

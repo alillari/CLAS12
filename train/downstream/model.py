@@ -496,7 +496,7 @@ class MambaHead(nn.Module):
         }
 
 # very simple regression adapter head with few mamba layer for refinement and MLP head
-class MambaRegressionHead(nn.Module):
+class MambaTrackRegressionHead(nn.Module):
     """
     Track-level regression head.
 
@@ -643,6 +643,10 @@ class MambaRegressionHead(nn.Module):
             "embedding_pre_projection": embedding_pre_projection,
             "embedding_post_projection": embedding_post_projection,
         } 
+
+
+# Backward-compatible name for existing imports and code.
+MambaRegressionHead = MambaTrackRegressionHead
 
 # very simple adapter head with few SA for refinement and MLP head
 class AttentionHead(nn.Module):

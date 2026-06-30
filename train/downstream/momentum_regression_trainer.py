@@ -33,6 +33,7 @@ from fm4npp.models.mamba2 import Mamba2
 from model import *
 from loss import *
 from downstream_util import *
+from regression_utils import load_regression_target_stats, regression_column_indices
 
 class DownstreamTrainer():
     
@@ -83,6 +84,13 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
         
         self.params = params
+        default_stats_path = os.path.join(
+            params.stat_dir,
+            "regression_target_stats.json",
+        )
+        stats_path = getattr(params, "regression_target_stats", default_stats_path)
+        self.regression_target_stats = load_regression_target_stats(stats_path, params.task)
+        self.params["regression_target_stats"] = stats_path
         print("running on rank {} with world size {}".format(self.world_rank, self.world_size))
 
 
@@ -393,7 +401,7 @@ class DownstreamTrainer():
         #                  ).to(self.device)
         
         #else:
-        self.down_model = MambaRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean")).to(self.device)
+        self.down_model = MambaRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean"), embed_method=self.params.embed_method, pe_method=self.params.pe_method, target_mean=self.regression_target_stats["mean"], target_std=self.regression_target_stats["std"]).to(self.device)
 
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -567,6 +575,10 @@ class DownstreamTrainer():
             num_feature_layers=self.params.num_layers_backbone,
             num_embedder_layers=self.params.num_embedder_layers,
             pooling=getattr(self.params, "pooling", "mean"),
+            embed_method=self.params.embed_method,
+            pe_method=self.params.pe_method,
+            target_mean=self.regression_target_stats["mean"],
+            target_std=self.regression_target_stats["std"],
         ).to(self.device)
 
         #print number of parameters in the model
@@ -689,14 +701,8 @@ class DownstreamTrainer():
             5: vtx_z
             6: energy
         """
-        if self.params.task in ["mom", "momentum"]:
-            per_hit_target = reg[..., 0:3]
-        elif self.params.task in ["3vtx", "3vertex"]:
-            per_hit_target = reg[..., 3:6]
-        elif self.params.task in ["Zvtx", "Zvertex", "zvtx", "zvertex"]:
-            per_hit_target = reg[..., 5:6]
-        else:
-            raise ValueError(f"Unknown regression task: {self.params.task}")
+        indices = regression_column_indices(self.params.task)
+        per_hit_target = reg[..., list(indices)]
 
         # Regression truth is stored once per hit, although the prediction is
         # event-level. Collapse valid, finite copies to one target per event.
@@ -706,6 +712,10 @@ class DownstreamTrainer():
             valid, per_hit_target, torch.zeros_like(per_hit_target)
         ).sum(dim=1)
         target = target / counts.clamp_min(1)
+        down_model = self.down_model
+        if isinstance(down_model, torch.nn.parallel.DistributedDataParallel):
+            down_model = down_model.module
+        target = down_model.target_normalizer.normalize(target)
 
         return {
             "target": target,
@@ -736,17 +746,6 @@ class DownstreamTrainer():
             noise_labels = trackinfo_noiselabel_dict["noise_labels"]
             pid_label_dict = get_pidlabel(pid)
             pid_class = pid_label_dict["pid_class"]  # B X N tensor with particle class information
-            #weak_decay_label_dict = get_weakdecaylabel(mid)
-            #weak_decay_class = weak_decay_label_dict["weak_decay_class"]  # B X N tensor with weak decay labels
-
-            #if self.params.task == "pid":
-            #    targets = {
-            #        'labels': pid_class,  # B X N tensor with particle class information
-            #    }
-            #elif self.params.task == "nid":
-            #    targets = {
-            #        'labels': noise_labels,  # B X N tensor with noise id
-            #    }
 
             targets = self.build_regression_targets(reg, mask)
 
@@ -769,6 +768,12 @@ class DownstreamTrainer():
             outputs = {
                 "pred": pred,
             }
+
+            #print("mask all valid:", mask.all().item())
+            #print("target min/max:", targets["target"].min().item(), targets["target"].max().item())
+            #print("pred min/max:", pred.min().item(), pred.max().item())
+            #print("first target:", targets["target"][0])
+            #print("first pred:", pred[0])
 
             losses = masked_regression_loss(outputs=outputs, targets=targets)
 
@@ -975,4 +980,3 @@ class DownstreamTrainer():
             self.startEpoch = 0
             if self.world_rank == 0:
                 print(f"✅ Loaded pretrained weights only (optimizer state not loaded)")
-

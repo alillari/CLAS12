@@ -114,20 +114,20 @@ def main():
     params.data_root_test = "/mldata/sli/sphenix_fm/pp_test_9k/"
     checkpoint_name = f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}_checkpoint.pth"
     checkpoint_base_dir = "/home/shuhang/FM4NPP/downstream_log/"
-	if args.checkpoint:
-    	checkpoint_path = args.checkpoint
-	else:
-    	checkpoint_name = (
-    	    f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}_checkpoint.pth"
-    	)
-    	checkpoint_base_dir = "/home/shuhang/FM4NPP/downstream_log/"
-    	checkpoint_path = os.path.join(
-    	    checkpoint_base_dir,
-    	    args.config,
-    	    args.run_num,
-    	    "checkpoints",
-    	    checkpoint_name,
-    	)
+    if args.checkpoint:
+        checkpoint_path = args.checkpoint
+    else:
+        checkpoint_name = (
+            f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}_checkpoint.pth"
+        )
+        checkpoint_base_dir = "/home/shuhang/FM4NPP/downstream_log/"
+        checkpoint_path = os.path.join(
+            checkpoint_base_dir,
+            args.config,
+            args.run_num,
+            "checkpoints",
+            checkpoint_name,
+        )
 
 
     # Ensure output directory exists

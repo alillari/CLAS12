@@ -6,6 +6,31 @@ from fm4npp.models.rmsnorm import RMSNorm
 from fm4npp.models.mamba2 import Mamba2
 
 
+class RegressionTargetNormalizer(nn.Module):
+    def __init__(self, output_dim, mean=None, std=None, eps=1e-8):
+        super().__init__()
+        mean = torch.zeros(output_dim) if mean is None else torch.as_tensor(mean, dtype=torch.float32)
+        std = torch.ones(output_dim) if std is None else torch.as_tensor(std, dtype=torch.float32)
+        expected_shape = (output_dim,)
+        if tuple(mean.shape) != expected_shape or tuple(std.shape) != expected_shape:
+            raise ValueError(
+                f"Regression normalization statistics must have shape {expected_shape}; "
+                f"got mean={tuple(mean.shape)}, std={tuple(std.shape)}"
+            )
+        constant = std <= eps
+        self.register_buffer("mean", mean.clone())
+        self.register_buffer("std", torch.where(constant, torch.ones_like(std), std))
+        self.register_buffer("constant", constant)
+
+    def normalize(self, target):
+        normalized = (target - self.mean) / self.std
+        return torch.where(self.constant, torch.zeros_like(normalized), normalized)
+
+    def denormalize(self, target):
+        denormalized = target * self.std + self.mean
+        return torch.where(self.constant, self.mean, denormalized)
+
+
 
 class SelfAttentionBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout=0.0, prenorm=True):
@@ -486,11 +511,25 @@ class MambaRegressionHead(nn.Module):
 
     def __init__(self, input_dim, embed_dim=256, num_layers=3, d_state=64, d_conv=4, expand=2, 
                  num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
-                 num_feature_layers=15, num_output_dim=3, return_embedding=False, dropout=0.0, pooling="mean"):
+                 num_feature_layers=15, num_output_dim=3, return_embedding=False, dropout=0.0,
+                 pooling="mean", embed_method="add", pe_method="nerf",
+                 target_mean=None, target_std=None):
         super().__init__()
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
+        self.target_normalizer = RegressionTargetNormalizer(
+            num_output_dim, mean=target_mean, std=target_std
+        )
+
+        if embed_method == "concat":
+            Embedder = EmbedderConcat
+        elif embed_method == "pos_only":
+            Embedder = EmbedderPosOnly
+        elif embed_method == "add":
+            Embedder = EmbedderAdd
+        else:
+            raise ValueError(f"Unknown embed_method: {embed_method}")
 
         self.pooling = pooling
 
@@ -536,7 +575,7 @@ class MambaRegressionHead(nn.Module):
         # Noise prediction head go from point embedding
         self.out_mlp = MLPHead(embed_dim, num_output_dim, dropout=dropout)
 
-        self.embedder = Embedder(embed_dim=input_dim)
+        self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim)
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
     def pool(self, x, padding_mask=None):

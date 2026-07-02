@@ -3,11 +3,8 @@
 # Run this config with BOTH:
 #   --usepretrain --pretrained_ckpt /absolute/path/to/backbone.ckpt
 #
-# IMPORTANT: the values in "Pretrained backbone architecture" must exactly
-# match the model that produced the checkpoint.  This initial variant assumes
-# the colleague's checkpoint uses the same 128-dim, 6-layer, CLAS12 pos-only
-# backbone as the AdapterOnly baseline.  Change those fields if its training
-# config differs.
+# The backbone architecture below is matched to Mike-3-particle/ckpt_best.tar
+# from its state-dict keys and tensor shapes.
 
 default: &default
   # === CLAS12 data and target statistics ===
@@ -80,13 +77,13 @@ default: &default
   total_steps: 30000
 
   # === Pretrained backbone architecture: MUST match the checkpoint ===
-  base_dim: 128
-  embed_dim: 128
-  num_layers_backbone: 6
+  base_dim: 256
+  embed_dim: 256
+  num_layers_backbone: 12
   d_state: 16
   d_conv: 4
   expand: 2
-  klen: 3
+  klen: 1
   dropout: 0.1
   mambaversion: mamba1
   group_size: 8
@@ -111,4 +108,3 @@ default: &default
 
 clas12_track_regression_pretrained:
   <<: *default
-

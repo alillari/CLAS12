@@ -1,0 +1,165 @@
+{
+  "checkpoint": "/home/alessio/ML-work/CLAS12/train/downstream/downstream_log/clas12_track_regression_adapteronly/checkpoints/clas12_track_regression_adapteronly_debug_nerf_mom_d100000_0_checkpoint.pth",
+  "model_config": "clas12_track_regression_adapteronly_debug",
+  "target_definition": "MC momentum at innermost matched CVT hit",
+  "reference_hierarchy": {
+    "fair_baseline": "CVT::Tracks first fit without PID-dependent energy-loss correction",
+    "pid_corrected_reference": "CVTRec::Tracks second fit with PID-dependent energy-loss correction",
+    "rec_particle_expectation": "REC::Particle should copy CVTRec::Tracks, subject to the consistency audit below",
+    "generator_reference": "MC::Particle is generator momentum before transport energy loss"
+  },
+  "cvtrec_rec_particle_consistency": {
+    "n_finite_pairs": 9984,
+    "exact_match_fraction": 0.005008012820512821,
+    "close_match_fraction": 0.005008012820512821,
+    "median_vector_difference_gev": 4.071934983599821,
+    "momentum_magnitude_correlation": 0.2961042899186139,
+    "consistent": false,
+    "action": "REC::Particle excluded from performance comparisons unless this audit is consistent"
+  },
+  "units": "GeV and degrees",
+  "methods": {
+    "adapter": {
+      "n": 10000,
+      "components": {
+        "px": {
+          "bias_gev": 0.00751872081309557,
+          "mae_gev": 0.05134954676032066,
+          "rmse_gev": 0.11079919338226318,
+          "r2": 0.9914824366569519
+        },
+        "py": {
+          "bias_gev": 0.024479862302541733,
+          "mae_gev": 0.055664416402578354,
+          "rmse_gev": 0.11149296164512634,
+          "r2": 0.9907892942428589
+        },
+        "pz": {
+          "bias_gev": -0.006516017019748688,
+          "mae_gev": 0.04748784005641937,
+          "rmse_gev": 0.09713771194219589,
+          "r2": 0.9830388426780701
+        }
+      },
+      "momentum": {
+        "bias_gev": 0.002776789478957653,
+        "mae_gev": 0.08012575656175613,
+        "rmse_gev": 0.17079004645347595,
+        "relative_bias": 11.603104591369629,
+        "relative_median": -0.004153696820139885,
+        "relative_resolution_68": 0.053381663858890524,
+        "relative_tail_fraction_10pct": 0.0867,
+        "relative_tail_fraction_25pct": 0.0104,
+        "fraction_within_relative_tolerance": {
+          "0.01": 0.1492,
+          "0.05": 0.6476,
+          "0.1": 0.9133
+        }
+      },
+      "pt": {
+        "mae_gev": 0.07179835438728333,
+        "rmse_gev": 0.15198199450969696
+      },
+      "direction": {
+        "opening_angle_mean_deg": 2.166949510574341,
+        "opening_angle_median_deg": 1.5469956398010254,
+        "opening_angle_68_deg": 2.0422515869140625
+      }
+    },
+    "cvt": {
+      "n": 10000,
+      "components": {
+        "px": {
+          "bias_gev": 0.0018202225700373674,
+          "mae_gev": 0.08847806580932556,
+          "rmse_gev": 0.14183629868769612,
+          "r2": 0.9860422205491305
+        },
+        "py": {
+          "bias_gev": -0.0008870887008903082,
+          "mae_gev": 0.08799022807266374,
+          "rmse_gev": 0.14225863366882988,
+          "r2": 0.9850046677256786
+        },
+        "pz": {
+          "bias_gev": 0.0027066478254812636,
+          "mae_gev": 0.037207525039814414,
+          "rmse_gev": 0.10377659487838813,
+          "r2": 0.9806411804751695
+        }
+      },
+      "momentum": {
+        "bias_gev": 0.010010989223110263,
+        "mae_gev": 0.08275956593225677,
+        "rmse_gev": 0.19573009916133538,
+        "relative_bias": 12.007509597939267,
+        "relative_median": -0.003591770658238903,
+        "relative_resolution_68": 0.04274169263751417,
+        "relative_tail_fraction_10pct": 0.0643,
+        "relative_tail_fraction_25pct": 0.01,
+        "fraction_within_relative_tolerance": {
+          "0.01": 0.2006,
+          "0.05": 0.7414,
+          "0.1": 0.9357
+        }
+      },
+      "pt": {
+        "mae_gev": 0.0741762649575824,
+        "rmse_gev": 0.17506440627169628
+      },
+      "direction": {
+        "opening_angle_mean_deg": 5.139370230447454,
+        "opening_angle_median_deg": 3.491625591622224,
+        "opening_angle_68_deg": 4.970544383907179
+      }
+    },
+    "cvtrec": {
+      "n": 10000,
+      "components": {
+        "px": {
+          "bias_gev": 0.0018459237328959715,
+          "mae_gev": 0.08828769431872314,
+          "rmse_gev": 0.14151715446191482,
+          "r2": 0.986104962360609
+        },
+        "py": {
+          "bias_gev": -0.0008258405355719333,
+          "mae_gev": 0.08767774413046527,
+          "rmse_gev": 0.14129692674818795,
+          "r2": 0.9852067274408953
+        },
+        "pz": {
+          "bias_gev": 0.0027589475942499803,
+          "mae_gev": 0.03707378539979784,
+          "rmse_gev": 0.10349815252102883,
+          "r2": 0.9807449241755513
+        }
+      },
+      "momentum": {
+        "bias_gev": 0.010231550216494833,
+        "mae_gev": 0.08218454527493942,
+        "rmse_gev": 0.19464049933973152,
+        "relative_bias": 12.004666419904604,
+        "relative_median": -0.001966086297821361,
+        "relative_resolution_68": 0.04227776481375879,
+        "relative_tail_fraction_10pct": 0.0642,
+        "relative_tail_fraction_25pct": 0.0098,
+        "fraction_within_relative_tolerance": {
+          "0.01": 0.2036,
+          "0.05": 0.7439,
+          "0.1": 0.9358
+        }
+      },
+      "pt": {
+        "mae_gev": 0.07366234383737617,
+        "rmse_gev": 0.17402953671357124
+      },
+      "direction": {
+        "opening_angle_mean_deg": 5.13180597464897,
+        "opening_angle_median_deg": 3.4931327478501704,
+        "opening_angle_68_deg": 4.971806472644511
+      }
+    }
+  },
+  "adapter_to_cvt_resolution_ratio": 1.2489365901255325
+}

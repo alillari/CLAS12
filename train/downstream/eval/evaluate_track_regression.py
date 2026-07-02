@@ -37,7 +37,15 @@ AUX_LAYOUT = (
     "cvtrec_px", "cvtrec_py", "cvtrec_pz", "cvtrec_p",
     "rec_particle_px", "rec_particle_py", "rec_particle_pz", "rec_particle_p",
 )
-METHODS = ("adapter", "cvt", "cvtrec", "rec_particle")
+METHODS = ("adapter", "cvt", "cvtrec")
+PHYSICS_PLOT_METHODS = ("adapter", "cvt")
+KINEMATIC_LABELS = {
+    "p_gev": r"p [GeV]",
+    "pt_gev": r"pT [GeV]",
+    "theta_deg": r"theta [deg]",
+    "phi_deg": r"phi [deg]",
+    "eta": r"eta",
+}
 
 
 def parse_args():
@@ -111,6 +119,40 @@ def vector_kinematics(vector):
     theta = np.degrees(np.arctan2(pt, pz))
     phi = np.degrees(np.arctan2(py, px))
     return p, pt, theta, phi
+
+
+def kinematic_variables(vector):
+    p, pt, theta, phi = vector_kinematics(vector)
+    px, py, pz = np.moveaxis(np.asarray(vector), -1, 0)
+    eta = np.arcsinh(
+        np.divide(pz, pt, out=np.full_like(pz, np.nan), where=pt > 1e-12)
+    )
+    return {
+        "p_gev": p,
+        "pt_gev": pt,
+        "theta_deg": theta,
+        "phi_deg": phi,
+        "eta": eta,
+    }
+
+
+def wrapped_angle_residual_deg(estimate, truth):
+    return (estimate - truth + 180.0) % 360.0 - 180.0
+
+
+def kinematic_residuals(truth, prediction):
+    truth_variables = kinematic_variables(truth)
+    predicted_variables = kinematic_variables(prediction)
+    absolute = {}
+    for name in KINEMATIC_LABELS:
+        if name == "phi_deg":
+            residual = wrapped_angle_residual_deg(
+                predicted_variables[name], truth_variables[name]
+            )
+        else:
+            residual = predicted_variables[name] - truth_variables[name]
+        absolute[name] = residual
+    return truth_variables, absolute
 
 
 def opening_angle_deg(prediction, truth):
@@ -265,8 +307,188 @@ def attach_sample_metadata(records, path):
         )
 
 
+def audit_cvtrec_rec_particle(records):
+    """Check the expected CVTRec::Tracks -> REC::Particle momentum copy."""
+    cvtrec = np.asarray([
+        [record[f"cvtrec_{component}_gev"] for component in ("px", "py", "pz")]
+        for record in records
+    ])
+    rec_particle = np.asarray([
+        [record[f"rec_particle_{component}_gev"] for component in ("px", "py", "pz")]
+        for record in records
+    ])
+    finite = np.all(np.isfinite(cvtrec), axis=1) & np.all(
+        np.isfinite(rec_particle), axis=1
+    )
+    cvtrec = cvtrec[finite]
+    rec_particle = rec_particle[finite]
+    if not len(cvtrec):
+        return {"n_finite_pairs": 0, "consistent": False}
+    difference = rec_particle - cvtrec
+    exact = np.all(difference == 0, axis=1)
+    close = np.all(np.isclose(rec_particle, cvtrec, rtol=1e-5, atol=1e-7), axis=1)
+    cvtrec_p = np.linalg.norm(cvtrec, axis=1)
+    rec_p = np.linalg.norm(rec_particle, axis=1)
+    correlation = np.corrcoef(cvtrec_p, rec_p)[0, 1] if len(cvtrec) > 1 else np.nan
+    return {
+        "n_finite_pairs": int(len(cvtrec)),
+        "exact_match_fraction": safe_float(np.mean(exact)),
+        "close_match_fraction": safe_float(np.mean(close)),
+        "median_vector_difference_gev": safe_float(
+            np.median(np.linalg.norm(difference, axis=1))
+        ),
+        "momentum_magnitude_correlation": safe_float(correlation),
+        "consistent": bool(np.all(close)),
+        "action": (
+            "REC::Particle excluded from performance comparisons unless this audit is consistent"
+        ),
+    }
+
+
+def robust_symmetric_limit(values, quantile):
+    values = np.concatenate([np.ravel(value) for value in values])
+    values = np.abs(values[np.isfinite(values)])
+    if not len(values):
+        return 1.0
+    limit = float(np.quantile(values, quantile))
+    return limit if limit > 0 else 1.0
+
+
+def robust_range(values, quantile):
+    values = np.asarray(values)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return (-1.0, 1.0)
+    tail = 0.5 * (1.0 - quantile)
+    low, high = np.quantile(values, [tail, 1.0 - tail])
+    if high <= low:
+        return (float(low) - 0.5, float(high) + 0.5)
+    return float(low), float(high)
+
+
+def make_physics_residual_plots(output_dir, truth, predictions, config):
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+
+    plot_dir = output_dir / "plots" / "physics_2d"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    bins = int(config["physics_histogram_bins"])
+    quantile = float(config["physics_plot_quantile"])
+    method_results = {
+        method: kinematic_residuals(truth, predictions[method])
+        for method in PHYSICS_PLOT_METHODS
+    }
+    truth_variables = method_results["adapter"][0]
+
+    x_ranges = {
+        name: ((-180.0, 180.0) if name == "phi_deg" else
+               (0.0, 180.0) if name == "theta_deg" else
+               robust_range(values, quantile))
+        for name, values in truth_variables.items()
+    }
+
+    y_limits = {
+        name: robust_symmetric_limit(
+            [method_results[method][1][name]
+             for method in PHYSICS_PLOT_METHODS],
+            quantile,
+        )
+        for name in KINEMATIC_LABELS
+    }
+    for residual_name in KINEMATIC_LABELS:
+        histograms = {}
+        maximum_count = 1
+        for method in PHYSICS_PLOT_METHODS:
+            residual = method_results[method][1][residual_name]
+            for truth_name, truth_values in truth_variables.items():
+                valid = np.isfinite(truth_values) & np.isfinite(residual)
+                x_edges = np.linspace(*x_ranges[truth_name], bins + 1)
+                y_edges = np.linspace(
+                    -y_limits[residual_name], y_limits[residual_name], bins + 1
+                )
+                counts, _, _ = np.histogram2d(
+                    truth_values[valid], residual[valid], bins=[x_edges, y_edges]
+                )
+                histograms[(method, truth_name)] = (counts, x_edges, y_edges)
+                maximum_count = max(maximum_count, int(counts.max()))
+
+        fig, axes = plt.subplots(2, 5, figsize=(24, 9), constrained_layout=True)
+        image = None
+        for row, method in enumerate(PHYSICS_PLOT_METHODS):
+            for column, truth_name in enumerate(KINEMATIC_LABELS):
+                axis = axes[row, column]
+                counts, x_edges, y_edges = histograms[(method, truth_name)]
+                image = axis.pcolormesh(
+                    x_edges, y_edges, counts.T,
+                    norm=LogNorm(vmin=1, vmax=max(2, maximum_count)), cmap="viridis",
+                    shading="auto",
+                )
+                axis.axhline(0.0, color="white", linewidth=0.8, alpha=0.8)
+                axis.set_xlabel(f"True {KINEMATIC_LABELS[truth_name]}")
+                if column == 0:
+                    title_method = "Adapter" if method == "adapter" else "CVT::Tracks"
+                    axis.set_ylabel(
+                        f"{title_method}\nReco - true {KINEMATIC_LABELS[residual_name]}"
+                    )
+        fig.suptitle(
+            f"Adapter and CVT::Tracks: {KINEMATIC_LABELS[residual_name]} residual",
+            fontsize=16,
+        )
+        fig.colorbar(image, ax=axes.ravel().tolist(), label="Tracks per bin")
+        fig.savefig(plot_dir / f"comparison_residual_{residual_name}.png", dpi=170)
+        plt.close(fig)
+
+    make_direct_error_comparison_plots(
+        plot_dir, method_results, bins=bins, quantile=quantile
+    )
+
+
+def make_direct_error_comparison_plots(plot_dir, method_results, bins, quantile):
+    """Compare per-track absolute errors; below the diagonal favors Adapter."""
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+
+    adapter_residuals = method_results["adapter"][1]
+    cvt_residuals = method_results["cvt"][1]
+    for name in KINEMATIC_LABELS:
+        adapter_error = np.abs(adapter_residuals[name])
+        cvt_error = np.abs(cvt_residuals[name])
+        valid = np.isfinite(adapter_error) & np.isfinite(cvt_error)
+        adapter_error = adapter_error[valid]
+        cvt_error = cvt_error[valid]
+        limit = float(np.quantile(np.concatenate([adapter_error, cvt_error]), quantile))
+        if limit <= 0:
+            limit = 1.0
+        adapter_better = float(np.mean(adapter_error < cvt_error))
+
+        fig, ax = plt.subplots(figsize=(7, 6), constrained_layout=True)
+        image = ax.hist2d(
+            cvt_error, adapter_error, bins=bins, range=[[0, limit], [0, limit]],
+            norm=LogNorm(vmin=1), cmap="viridis",
+        )[3]
+        ax.plot([0, limit], [0, limit], color="red", linewidth=1.3,
+                label="Equal absolute error")
+        ax.set(
+            xlabel=f"CVT::Tracks absolute error in {KINEMATIC_LABELS[name]}",
+            ylabel=f"Adapter absolute error in {KINEMATIC_LABELS[name]}",
+            title=f"Direct per-track comparison: {KINEMATIC_LABELS[name]}",
+            xlim=(0, limit), ylim=(0, limit),
+        )
+        ax.text(
+            0.03, 0.95,
+            f"Adapter has smaller error: {100 * adapter_better:.1f}%",
+            transform=ax.transAxes, va="top", color="white",
+            bbox={"facecolor": "black", "alpha": 0.6, "edgecolor": "none"},
+        )
+        ax.legend(loc="lower right")
+        fig.colorbar(image, ax=ax, label="Tracks per bin")
+        fig.savefig(plot_dir / f"direct_error_adapter_vs_cvt_{name}.png", dpi=170)
+        plt.close(fig)
+
+
 def make_plots(
-    output_dir, truth, predictions, true_p, true_theta, momentum_bins, theta_bins
+    output_dir, truth, predictions, true_p, true_theta, momentum_bins,
+    theta_bins, config,
 ):
     import matplotlib
     matplotlib.use("Agg")
@@ -274,6 +496,20 @@ def make_plots(
 
     plot_dir = output_dir / "plots"
     plot_dir.mkdir(exist_ok=True)
+
+    # Remove plots from earlier analysis definitions so rerunning in the same
+    # output directory cannot leave obsolete normalized/68%-width figures.
+    for obsolete in (
+        plot_dir / "resolution_vs_p.png",
+        plot_dir / "resolution_vs_theta.png",
+    ):
+        obsolete.unlink(missing_ok=True)
+    physics_dir = plot_dir / "physics_2d"
+    if physics_dir.exists():
+        for obsolete in physics_dir.glob("*_normalized_*.png"):
+            obsolete.unlink()
+        for obsolete in physics_dir.glob("*_absolute_*.png"):
+            obsolete.unlink()
 
     fig, ax = plt.subplots(figsize=(7, 5))
     for method, prediction in predictions.items():
@@ -287,22 +523,7 @@ def make_plots(
     fig.savefig(plot_dir / "momentum_residuals.png", dpi=160)
     plt.close(fig)
 
-    for values, name, xlabel, edges in (
-        (true_p, "resolution_vs_p", "True momentum [GeV]", momentum_bins),
-        (true_theta, "resolution_vs_theta", "True theta [deg]", theta_bins),
-    ):
-        fig, ax = plt.subplots(figsize=(7, 5))
-        centers = 0.5 * (edges[:-1] + edges[1:])
-        for method, prediction in predictions.items():
-            pred_p = np.linalg.norm(prediction, axis=1)
-            rel = np.divide(pred_p - true_p, true_p, out=np.full_like(true_p, np.nan), where=true_p > 0)
-            widths = [central_width(rel[(values >= lo) & (values < hi)]) for lo, hi in zip(edges[:-1], edges[1:])]
-            ax.plot(centers, widths, marker="o", label=method)
-        ax.set(xlabel=xlabel, ylabel="Central 68% relative resolution", title=name.replace("_", " ").title())
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(plot_dir / f"{name}.png", dpi=160)
-        plt.close(fig)
+    make_physics_residual_plots(output_dir, truth, predictions, config)
 
 
 def main():
@@ -385,6 +606,8 @@ def main():
                 pred_vector = prediction[local_index] * target_scale
                 true_p, true_pt, true_theta, true_phi = vector_kinematics(true_vector)
                 pred_p, pred_pt, pred_theta, pred_phi = vector_kinematics(pred_vector)
+                true_eta = kinematic_variables(true_vector)["eta"]
+                pred_eta = kinematic_variables(pred_vector)["eta"]
                 record = {
                     "real_index": real_index,
                     "n_hits": int(mask[local_index].sum().item()),
@@ -392,8 +615,10 @@ def main():
                     "pid_label": str(config["pid_labels"].get(pid_class, "unknown")),
                     "true_px_gev": true_vector[0], "true_py_gev": true_vector[1], "true_pz_gev": true_vector[2],
                     "true_p_gev": true_p, "true_pt_gev": true_pt, "true_theta_deg": true_theta, "true_phi_deg": true_phi,
+                    "true_eta": true_eta,
                     "adapter_px_gev": pred_vector[0], "adapter_py_gev": pred_vector[1], "adapter_pz_gev": pred_vector[2],
                     "adapter_p_gev": pred_p, "adapter_pt_gev": pred_pt, "adapter_theta_deg": pred_theta, "adapter_phi_deg": pred_phi,
+                    "adapter_eta": pred_eta,
                 }
                 record.update({name + "_gev": value for name, value in zip(AUX_LAYOUT, aux_row)})
                 records.append(record)
@@ -424,6 +649,13 @@ def main():
         "checkpoint": str(config["checkpoint"]),
         "model_config": config["model_config"],
         "target_definition": "MC momentum at innermost matched CVT hit",
+        "reference_hierarchy": {
+            "fair_baseline": "CVT::Tracks first fit without PID-dependent energy-loss correction",
+            "pid_corrected_reference": "CVTRec::Tracks second fit with PID-dependent energy-loss correction",
+            "rec_particle_expectation": "REC::Particle should copy CVTRec::Tracks, subject to the consistency audit below",
+            "generator_reference": "MC::Particle is generator momentum before transport energy loss",
+        },
+        "cvtrec_rec_particle_consistency": audit_cvtrec_rec_particle(records),
         "units": "GeV and degrees",
         "methods": {method: calculate_metrics(truth, prediction, tolerances) for method, prediction in predictions.items()},
     }
@@ -451,7 +683,7 @@ def main():
     write_csv(output_dir / "binned_metrics.csv", binned_rows)
     make_plots(
         output_dir, truth, predictions, true_p, true_theta,
-        momentum_bins, theta_bins,
+        momentum_bins, theta_bins, config,
     )
 
     trainer.cleanup()

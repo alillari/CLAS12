@@ -87,6 +87,7 @@ default: &default
   dropout: 0.1
   mambaversion: mamba1
   task: mom
+  pooling: attention
 
   # These are mostly harmless for track regression; some trainer/model code may still expect them.
   num_heads_backbone: 4

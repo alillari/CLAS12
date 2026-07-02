@@ -41,9 +41,19 @@ data/
 # Logs and outputs
 logs/
 checkpoints/
+training_checkpoints/
+globallogs/
+downstream_log/
+evaluation_output/
 *.log
 *.out
 *.err
+
+# Experiment tracking
+wandb/
+mlruns/
+lightning_logs/
+tensorboard/
 
 # Environment
 .env

@@ -68,7 +68,7 @@ default: &default
   # === Regression-head optimization ===
   # The backbone is evaluated under torch.no_grad(); these settings optimize
   # the downstream regression head only.
-  max_epochs: 30
+  max_epochs: 100
   max_lr: 0.0003
   min_lr: 0.00001
   first_cycle_steps: 3000

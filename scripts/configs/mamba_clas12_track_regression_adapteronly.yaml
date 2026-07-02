@@ -23,7 +23,7 @@ default: &default
   # === Data configuration ===
   data_version: clas12_cvt
   input_layout: xyz              # our CLAS12 files are raw [x,y,z], no energy column
-  serialization: radius          # safest first debug choice; switch to clas12_band_hilbert later
+  serialization: clas12_band_hilbert          # safest first debug choice; switch to clas12_band_hilbert later
   batch_size: 128                  # train_track_regression.py overrides this from --train_batch_size
   local_batch_size: 128
   valid_batch_size: 128            # train_momentum_regression.py also forces this to 1

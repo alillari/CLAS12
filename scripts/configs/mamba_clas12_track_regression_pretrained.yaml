@@ -93,6 +93,7 @@ default: &default
   model_version: clas12_track_regression_pretrained
   task: mom
   pooling: attention
+  regression_loss: mae
   num_heads_backbone: 4
   num_heads_decoder: 2
   num_heads_encoder: 2

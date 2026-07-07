@@ -96,6 +96,13 @@ class DownstreamTrainer():
         self.params["num_output_classes"] = len(
             regression_column_indices(params.task)
         )
+        self.regression_loss = getattr(params, "regression_loss", "mse").lower()
+        if self.regression_loss not in {"mse", "mae", "huber"}:
+            raise ValueError(
+                f"Unsupported regression_loss {self.regression_loss!r}; choose "
+                "one of ['mse', 'mae', 'huber']"
+            )
+        self.params["regression_loss"] = self.regression_loss
         print("running on rank {} with world size {}".format(self.world_rank, self.world_size))
 
 
@@ -490,7 +497,11 @@ class DownstreamTrainer():
                     "pred": pred,
                 }
 
-                losses = masked_regression_loss(outputs=outputs, targets=targets)
+                losses = masked_regression_loss(
+                    outputs=outputs,
+                    targets=targets,
+                    option=self.regression_loss,
+                )
                 target_list.append(targets['target'].cpu())
                 target_valid_list.append(targets['target_valid'].cpu())
                 output_list.append(outputs['pred'].cpu())
@@ -770,7 +781,11 @@ class DownstreamTrainer():
             #print("first target:", targets["target"][0])
             #print("first pred:", pred[0])
 
-            losses = masked_regression_loss(outputs=outputs, targets=targets)
+            losses = masked_regression_loss(
+                outputs=outputs,
+                targets=targets,
+                option=self.regression_loss,
+            )
 
             loss = losses['loss']
             # Compute loss and get matching indices
@@ -841,7 +856,11 @@ class DownstreamTrainer():
                     "pred": pred,
                 }
 
-                losses = masked_regression_loss(outputs=outputs, targets=targets)
+                losses = masked_regression_loss(
+                    outputs=outputs,
+                    targets=targets,
+                    option=self.regression_loss,
+                )
 
                
                 loss = losses['loss']

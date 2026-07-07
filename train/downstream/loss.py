@@ -575,6 +575,7 @@ def compute_point_loss(outputs, targets, mask, matcher, no_object_class=0):
 def masked_regression_loss(outputs, targets, option="mse"):
     pred = outputs["pred"]
     truth = targets["target"]
+    option = option.lower()
 
     if pred.shape != truth.shape:
         raise ValueError(
@@ -588,14 +589,29 @@ def masked_regression_loss(outputs, targets, option="mse"):
         # Return a differentiable zero if a batch contains no valid targets.
         return {"loss": pred.sum() * 0.0}
 
-    if option == "huber":
+    if option == "mse":
+        loss = torch.nn.functional.mse_loss(
+            pred[valid],
+            truth[valid],
+            reduction="mean",
+        )
+    elif option == "mae":
+        loss = torch.nn.functional.l1_loss(
+            pred[valid],
+            truth[valid],
+            reduction="mean",
+        )
+    elif option == "huber":
         loss = torch.nn.functional.smooth_l1_loss(
             pred[valid],
             truth[valid],
             reduction="mean",
         )
     else:
-        loss = ((pred[valid] - truth[valid]) ** 2).mean()
+        raise ValueError(
+            f"Unsupported regression loss {option!r}; choose one of "
+            "['mse', 'mae', 'huber']"
+        )
 
     return {"loss": loss}
 

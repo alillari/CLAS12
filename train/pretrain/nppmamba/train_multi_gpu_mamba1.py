@@ -128,7 +128,9 @@ class Trainer():
             klen=self.klen,
             dropout=self.params.dropout,
             embed_method=self.params.embed_method,
-            pe_method=self.params.pe_method
+            pe_method=self.params.pe_method,
+            band_classification=getattr(self.params, 'band_classification', False),
+            n_bands=getattr(self.params, 'n_bands', 6)
         )
 
         # Standard initialization
@@ -185,7 +187,42 @@ class Trainer():
 
         # Loss function
         self.loss_func = nn.MSELoss(reduction='none')
+        # [BAND CLASSIFICATION TOGGLE]
+        self.band_classification = getattr(self.params, 'band_classification', False)
+        self.n_bands = getattr(self.params, 'n_bands', 6)
+        self.band_loss_weight = getattr(self.params, 'band_loss_weight', 1.0)
+        if self.band_classification:
+            self.ce_func = nn.CrossEntropyLoss(reduction='none', ignore_index=-100)
         self.loss_func_eval = nn.MSELoss(reduction='none')
+
+    def band_mixed_loss(self, point_pred, klabel):
+        """[BAND CLASSIFICATION] Mixed loss.
+        point_pred: (b, N, klen*(2+n_bands)) = per neighbor [eta, phi, band_logits x n_bands]
+        klabel:     (b, N, klen*3)           = per neighbor [eta, phi, band_idx] (-100 padding)
+        Returns scalar: masked MSE on (eta,phi) + weighted CE on band.
+        """
+        b, N, _ = point_pred.shape
+        k = self.klen
+        pp = point_pred.reshape(b, N, k, 2 + self.n_bands)
+        kl = klabel.reshape(b, N, k, 3)
+
+        cont_pred = pp[..., :2]                  # (b,N,k,2) eta,phi
+        band_logits = pp[..., 2:]                # (b,N,k,n_bands)
+        cont_tgt = kl[..., :2]                   # (b,N,k,2)
+        band_tgt = kl[..., 2]                    # (b,N,k) band index or -100
+
+        # continuous part: masked MSE
+        cmask = cont_tgt != -100
+        mse = self.loss_func(cont_pred, cont_tgt)
+        mse = (mse * cmask).sum() / cmask.sum().clamp(min=1)
+
+        # classification part: CE with ignore_index=-100 handles padding natively
+        ce = self.ce_func(band_logits.reshape(-1, self.n_bands),
+                          band_tgt.reshape(-1).long())
+        valid = (band_tgt.reshape(-1) != -100)
+        ce = ce.sum() / valid.sum().clamp(min=1)
+
+        return mse + self.band_loss_weight * ce
 
         # Load checkpoint if exists
         self.restore_checkpoint()
@@ -310,10 +347,15 @@ class Trainer():
             kmask = klabel != -100
             tmask = targets[..., 0] != -100
 
-            loss = self.loss_func(kpred, klabel)
+            # [BAND CLASSIFICATION TOGGLE] loss-only branch; shared tail
+            # (backward/clip/step/log/validate) runs identically for both modes.
+            if self.band_classification:
+                loss = self.band_mixed_loss(point_pred, klabel)
+            else:
+                loss = self.loss_func(kpred, klabel)
 
             # Loss weighting
-            if self.params.loss_reweight:
+            if not self.band_classification and self.params.loss_reweight:
                 loss = (loss * kmask).sum(-1).sum(-1) / kmask.sum(-1).sum(-1)
                 loss_weight_ = apply_bin_weights_torch(
                     torch.Tensor(self.loss_bin).to(self.device),
@@ -322,8 +364,9 @@ class Trainer():
                 )
                 loss = loss * loss_weight_
                 loss = loss.mean()
-            else:
+            elif not self.band_classification:
                 loss = (loss * kmask).sum() / kmask.sum()
+            # (band mode: loss already reduced to a scalar in band_mixed_loss)
 
             if self.params.ablate_loss_scale:
                 loss = loss * self.params.ablate_loss_scale_rate
@@ -397,8 +440,12 @@ class Trainer():
                 kmask = klabel != -100
                 tmask = targets[..., 0] != -100
 
-                loss_kpred = self.loss_func_eval(kpred[kmask], klabel[kmask]).mean()
-                loss = loss_kpred
+                # [BAND CLASSIFICATION TOGGLE] same mixed loss as training.
+                if self.band_classification:
+                    loss = self.band_mixed_loss(point_pred, klabel)
+                else:
+                    loss_kpred = self.loss_func_eval(kpred[kmask], klabel[kmask]).mean()
+                    loss = loss_kpred
 
                 if self.params.ablate_loss_scale:
                     loss = loss * self.params.ablate_loss_scale_rate

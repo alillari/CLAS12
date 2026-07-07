@@ -680,3 +680,333 @@ sweep_single_k5:
   dropout: 0.1
   n_eval_steps: 1000
   save_version: sweep_single_k5
+
+# --- straight-single-track k=1 (4th corner of the 2x2: straight x 1-particle) ---
+sweep_straight_single_k1:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight_single
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_single_k1
+
+# --- straight-single-track k=2 ---
+sweep_straight_single_k2:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight_single
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 2
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_single_k2
+
+
+# --- straight-single-track k=3 ---
+sweep_straight_single_k3:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight_single
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 3
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_single_k3
+
+
+# --- straight-single-track k=4 ---
+sweep_straight_single_k4:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight_single
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 4
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_single_k4
+
+
+# --- straight-single-track k=5 ---
+sweep_straight_single_k5:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_straight_single
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 5
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_straight_single_k5
+
+
+# --- 3-particle real data, LARGE model (mamba_5m size), k=1 ---
+# Same CLAS12 settings as sweep_real_k1 but embed_dim 256 / 12 layers (~4.6M params)
+# to test whether more capacity fits the space points better.
+sweep_real_large_k1:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 256
+  num_layers_backbone: 12
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_real_large_k1
+
+# --- BAND CLASSIFICATION experiment: real 3-particle data, k=1, small model ---
+# r predicted as one of 6 discrete detector bands (cross-entropy) instead of a
+# continuous regression; (eta, phi) stay continuous. Toggle: band_classification.
+# NOTE: loss values are NOT comparable to the regression runs (different objective).
+band_real_k1:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  band_classification: true
+  n_bands: 6
+  band_loss_weight: 1.0
+  embed_dim: 128
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: band_real_k1
+
+# --- BAND CLASSIFICATION, LARGE model (matches sweep_real_large_k1's size) ---
+# Same size as sweep_real_large_k1 (embed_dim 256, 12 layers) so this isolates
+# the band-classification objective change from any model-size confound.
+band_real_large_k1:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  band_classification: true
+  n_bands: 6
+  band_loss_weight: 1.0
+  embed_dim: 256
+  num_layers_backbone: 12
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: band_real_large_k1
+
+# --- m6-scale model (width 1536, ~188M params), 3-coordinate REGRESSION, ---
+# --- real 3-particle data, k=1. The definitive model-size test.          ---
+# NOTE: ~40x params vs the m3 run. Expect a genuinely longer training time.
+# Watch train-vs-val gap: with ~9k events, overfitting is the likely outcome.
+# If loss goes NaN early, drop max_lr to 0.0001.
+sweep_real_m6_k1:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  embed_dim: 1536
+  num_layers_backbone: 12
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: sweep_real_m6_k1
+
+# --- m6-scale model (width 1536, ~188M params), BAND CLASSIFICATION,     ---
+# --- real 3-particle data, k=1. Matched size to sweep_real_m6_k1 for a   ---
+# --- direct comparison isolating band-classification vs regression.     ---
+# NOTE: uses the FIXED trainer (loss_func_eval placement bug resolved).
+# If loss goes NaN early, drop max_lr to 0.0001.
+band_real_m6_k1:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  band_classification: true
+  n_bands: 6
+  band_loss_weight: 1.0
+  embed_dim: 1536
+  num_layers_backbone: 12
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 500
+  total_steps: 25000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 1000
+  save_version: band_real_m6_k1
+
+  

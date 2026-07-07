@@ -11,7 +11,7 @@ import torch
 from fm4npp.utils import *
 # NOTE (CLAS12): Voxelizer/HRS removed entirely — replaced by Hilbert band ordering.
 # from .voxelizer import *   # (no longer used)
-from fm4npp.hilbert import clas12_band_hilbert_order
+from fm4npp.hilbert import clas12_band_hilbert_order, assign_clas12_layer
 
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
@@ -134,9 +134,11 @@ class TPCBatchDataset(Dataset):
                  voxelize = True,
                  space_filling_order = None,
                  space_filling_curve = 'z',
+                 band_classification = False,
                  bin_dir = ''):
         
         split = split
+        self.band_classification = band_classification
         self.memmap_feature = RaggedMmap(os.path.join(data_root, 'features_{}'.format(split)))
         self.memmap_seg_target = RaggedMmap(os.path.join(data_root, 'seg_target_{}'.format(split)))
         self.memmap_reg_target = RaggedMmap(os.path.join(data_root, 'reg_target_{}'.format(split)))
@@ -336,7 +338,29 @@ class TPCBatchDataset(Dataset):
         serialized_points = norm_features[:, zsorter.squeeze()].squeeze(0)
         knearest_points = knearest_points[:, zsorter.squeeze()].squeeze(0)
         serialized_target = norm_target[:, zsorter.squeeze()].squeeze(0)
-        
+
+        # [BAND CLASSIFICATION TOGGLE] When enabled, replace the r component of
+        # each kNNN neighbor target with its integer band index (0-5), so the
+        # trainer can use cross-entropy on the band while keeping (eta, phi)
+        # continuous. Padding (-100) is preserved as -100 (CE ignore_index).
+        # knearest_points layout: (N, k*3) = [eta, phi, r] per neighbor.
+        if self.band_classification:
+            kn = knearest_points.reshape(-1, self.num_pred_points, 3)  # (N, k, 3)
+            r_col = kn[..., 2]
+            pad_mask = (r_col == -100)
+            # assign_clas12_layer asserts on out-of-band values, so only call it
+            # on real (non-padding) radii.
+            if (~pad_mask).any():
+                bands = assign_clas12_layer(r_col[~pad_mask]).to(kn.dtype)
+                r_col = r_col.clone()
+                r_col[~pad_mask] = bands
+                kn = torch.cat([kn[..., :2], r_col.unsqueeze(-1)], dim=-1)
+            knearest_points = kn.reshape(-1, self.num_pred_points * 3)
+            # Band indices and -100 padding must NOT be scaled; return target unscaled.
+            # (eta/phi components also unscaled here — trainer treats this target
+            # as-is; data_scaler is 1 in all current configs anyway.)
+            return serialized_points * self.data_scaler, serialized_target, knearest_points
+
         return serialized_points * self.data_scaler, serialized_target, knearest_points * self.data_scaler
 
 
@@ -393,6 +417,7 @@ def get_data_loader(params, distributed):
                                     bin_dir = params.stat_dir,
                                     space_filling_order = params.space_filling_order,
                                     space_filling_curve = params.space_filling_curve,
+                                    band_classification = getattr(params, 'band_classification', False),
                                     train = True)
     
     test_dataset = TPCBatchDataset(data_root = params.data_root, 
@@ -408,6 +433,7 @@ def get_data_loader(params, distributed):
                                    order = params.order,
                                    space_filling_order = params.space_filling_order,
                                    space_filling_curve = params.space_filling_curve,
+                                   band_classification = getattr(params, 'band_classification', False),
                                    train = False)
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
@@ -450,7 +476,8 @@ def get_val_loader(params, distributed):
                                    nleave = params.nleave, 
                                    chunk_training = params.chunk_training,
                                    train = False,
-                                   order = params.order,)
+                                   order = params.order,
+                                   band_classification = getattr(params, 'band_classification', False),)
 
    
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None

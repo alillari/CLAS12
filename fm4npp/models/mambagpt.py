@@ -10,7 +10,7 @@ from fm4npp.models.rmsnorm import RMSNorm
 
 
 class MambaGPT(nn.Module):
-    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf'):
+    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', band_classification=False, n_bands=6):
         super().__init__()
         assert embed_method in ['concat', 'add', 'pos_only']
         self.embed_dim = embed_dim
@@ -30,7 +30,12 @@ class MambaGPT(nn.Module):
                            nn.Dropout(dropout)) 
              for _ in range(num_layers)]
         )
-        self.output_layer = nn.Linear(embed_dim, klen * 3)
+        # [BAND CLASSIFICATION TOGGLE] continuous: klen*3 = (eta,phi,r) per neighbor.
+        # band mode: klen*(2 + n_bands) = (eta,phi) continuous + n_bands logits per neighbor.
+        self.band_classification = band_classification
+        self.n_bands = n_bands
+        out_per_k = (2 + n_bands) if band_classification else 3
+        self.output_layer = nn.Linear(embed_dim, klen * out_per_k)
         self.norm = RMSNorm(embed_dim)
 
     def change_maskval(self, x, init_val = -100, target_val = 0):
@@ -59,7 +64,7 @@ class MambaGPT(nn.Module):
 
 
 class Mamba1GPT(nn.Module):
-    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf'):
+    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', band_classification=False, n_bands=6):
         super().__init__()
         assert embed_method in ['concat', 'add', 'pos_only']
         self.embed_dim = embed_dim
@@ -76,7 +81,12 @@ class Mamba1GPT(nn.Module):
                            nn.Dropout(dropout)) 
              for _ in range(num_layers)]
         )
-        self.output_layer = nn.Linear(embed_dim, klen * 3)
+        # [BAND CLASSIFICATION TOGGLE] continuous: klen*3 = (eta,phi,r) per neighbor.
+        # band mode: klen*(2 + n_bands) = (eta,phi) continuous + n_bands logits per neighbor.
+        self.band_classification = band_classification
+        self.n_bands = n_bands
+        out_per_k = (2 + n_bands) if band_classification else 3
+        self.output_layer = nn.Linear(embed_dim, klen * out_per_k)
         self.norm = RMSNorm(embed_dim)
  
     def change_maskval(self, x, init_val = -100, target_val = 0):

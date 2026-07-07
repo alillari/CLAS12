@@ -69,3 +69,4 @@ temp/
 
 # SLURM
 slurm-*.out
+sweep_analysis/

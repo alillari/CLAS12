@@ -46,6 +46,17 @@ KINEMATIC_LABELS = {
     "phi_deg": r"phi [deg]",
     "eta": r"eta",
 }
+COMPONENT_LABELS = {
+    "px_gev": r"px [GeV]",
+    "py_gev": r"py [GeV]",
+    "pz_gev": r"pz [GeV]",
+}
+ML_METRIC_LABELS = {
+    "mae": "MAE",
+    "rmse": "RMSE",
+    "median_absolute_error": "Median absolute error",
+    "p95_absolute_error": "95th percentile absolute error",
+}
 
 
 def parse_args():
@@ -78,6 +89,9 @@ def load_analysis_config(args):
     )
     config["output_dir"] = resolve_path(
         args.output_dir or config["output_dir"], config_path.parent
+    )
+    config["training_log"] = resolve_path(
+        config.get("training_log"), config_path.parent
     )
     if args.max_samples is not None:
         config["max_samples"] = args.max_samples
@@ -345,6 +359,162 @@ def audit_cvtrec_rec_particle(records):
     }
 
 
+def infer_training_log_path(config):
+    if config.get("training_log") is not None:
+        return config["training_log"]
+    checkpoint = config.get("checkpoint")
+    if checkpoint is None:
+        return None
+    checkpoint = Path(checkpoint)
+    if checkpoint.name.endswith("_checkpoint.pth"):
+        return checkpoint.with_name(checkpoint.name.replace("_checkpoint.pth", ".log"))
+    return checkpoint.with_suffix(".log")
+
+
+def read_training_history(path):
+    if path is None or not Path(path).exists():
+        return [], {
+            "path": str(path) if path is not None else None,
+            "found": False,
+            "n_epochs": 0,
+        }
+
+    rows = []
+    with Path(path).open() as stream:
+        reader = csv.DictReader(stream, delimiter="\t")
+        for row in reader:
+            try:
+                rows.append({
+                    "epoch": int(row["Epoch"]),
+                    "train_loss": float(row["Train_Loss"]),
+                    "val_loss": float(row["Val_Loss"]),
+                    "time_sec": float(row["Time"]),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    summary = {
+        "path": str(path),
+        "found": True,
+        "n_epochs": len(rows),
+    }
+    if rows:
+        val_losses = np.asarray([row["val_loss"] for row in rows], dtype=float)
+        train_losses = np.asarray([row["train_loss"] for row in rows], dtype=float)
+        best_index = int(np.argmin(val_losses))
+        summary.update({
+            "best_epoch": rows[best_index]["epoch"],
+            "best_val_loss": safe_float(val_losses[best_index]),
+            "final_train_loss": safe_float(train_losses[-1]),
+            "final_val_loss": safe_float(val_losses[-1]),
+            "final_val_train_gap": safe_float(val_losses[-1] - train_losses[-1]),
+        })
+    return rows, summary
+
+
+def write_training_history(path, rows):
+    write_csv(path, rows)
+
+
+def scalar_error_metrics(errors):
+    errors = np.asarray(errors, dtype=float)
+    errors = errors[np.isfinite(errors)]
+    if not len(errors):
+        return {
+            "n": 0,
+            "bias": None,
+            "mae": None,
+            "rmse": None,
+            "median_absolute_error": None,
+            "p95_absolute_error": None,
+        }
+    absolute = np.abs(errors)
+    return {
+        "n": int(len(errors)),
+        "bias": safe_float(np.mean(errors)),
+        "mae": safe_float(np.mean(absolute)),
+        "rmse": safe_float(np.sqrt(np.mean(errors ** 2))),
+        "median_absolute_error": safe_float(np.median(absolute)),
+        "p95_absolute_error": safe_float(np.quantile(absolute, 0.95)),
+    }
+
+
+def ml_variable_arrays(truth, prediction):
+    truth_kinematics = kinematic_variables(truth)
+    prediction_kinematics = kinematic_variables(prediction)
+    truth_components = {
+        "px_gev": truth[:, 0],
+        "py_gev": truth[:, 1],
+        "pz_gev": truth[:, 2],
+    }
+    prediction_components = {
+        "px_gev": prediction[:, 0],
+        "py_gev": prediction[:, 1],
+        "pz_gev": prediction[:, 2],
+    }
+    return truth_components, prediction_components, truth_kinematics, prediction_kinematics
+
+
+def calculate_ml_metrics(truth, predictions):
+    rows = []
+    nested = {}
+    for method, prediction in predictions.items():
+        truth_components, prediction_components, truth_kinematics, prediction_kinematics = (
+            ml_variable_arrays(truth, prediction)
+        )
+        nested[method] = {}
+
+        for variable, label in COMPONENT_LABELS.items():
+            errors = prediction_components[variable] - truth_components[variable]
+            metrics = scalar_error_metrics(errors)
+            rows.append({
+                "method": method,
+                "space": "component",
+                "variable": variable,
+                "label": label,
+                "unit": "GeV",
+                **metrics,
+            })
+            nested[method][variable] = metrics
+
+        for variable, label in KINEMATIC_LABELS.items():
+            if variable == "phi_deg":
+                errors = wrapped_angle_residual_deg(
+                    prediction_kinematics[variable], truth_kinematics[variable]
+                )
+            else:
+                errors = prediction_kinematics[variable] - truth_kinematics[variable]
+            unit = "deg" if variable.endswith("_deg") else "GeV" if variable.endswith("_gev") else ""
+            metrics = scalar_error_metrics(errors)
+            rows.append({
+                "method": method,
+                "space": "kinematic",
+                "variable": variable,
+                "label": label,
+                "unit": unit,
+                **metrics,
+            })
+            nested[method][variable] = metrics
+
+        vector_error = np.linalg.norm(prediction - truth, axis=1)
+        metrics = scalar_error_metrics(vector_error)
+        # Vector norm error is already non-negative, so bias is not physically
+        # meaningful. Keep the column populated in the CSV, but make this clear
+        # in the nested JSON.
+        metrics_for_json = dict(metrics)
+        metrics_for_json["bias"] = None
+        rows.append({
+            "method": method,
+            "space": "vector",
+            "variable": "vector_error_gev",
+            "label": r"||p estimate - p truth|| [GeV]",
+            "unit": "GeV",
+            **metrics_for_json,
+        })
+        nested[method]["vector_error_gev"] = metrics_for_json
+    return rows, nested
+
+
 def robust_symmetric_limit(values, quantile):
     values = np.concatenate([np.ravel(value) for value in values])
     values = np.abs(values[np.isfinite(values)])
@@ -484,6 +654,149 @@ def make_direct_error_comparison_plots(plot_dir, method_results, bins, quantile)
         fig.colorbar(image, ax=ax, label="Tracks per bin")
         fig.savefig(plot_dir / f"direct_error_adapter_vs_cvt_{name}.png", dpi=170)
         plt.close(fig)
+
+
+def make_training_curve_plot(output_dir, training_history):
+    if not training_history:
+        return
+
+    import matplotlib.pyplot as plt
+
+    plot_dir = output_dir / "plots" / "ml"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    epochs = np.asarray([row["epoch"] for row in training_history], dtype=int)
+    train_loss = np.asarray([row["train_loss"] for row in training_history], dtype=float)
+    val_loss = np.asarray([row["val_loss"] for row in training_history], dtype=float)
+
+    fig, ax = plt.subplots(figsize=(7.5, 5), constrained_layout=True)
+    ax.plot(epochs, train_loss, marker="o", markersize=3, label="Train loss")
+    ax.plot(epochs, val_loss, marker="o", markersize=3, label="Validation loss")
+    best = int(np.nanargmin(val_loss))
+    ax.axvline(epochs[best], color="black", linestyle="--", linewidth=1.0, alpha=0.7)
+    ax.text(
+        epochs[best], val_loss[best],
+        f" best val\n epoch {epochs[best]}",
+        va="bottom", ha="left",
+    )
+    ax.set(
+        xlabel="Epoch",
+        ylabel="Loss",
+        title="Training and validation loss",
+    )
+    if np.all(train_loss > 0) and np.all(val_loss > 0):
+        ax.set_yscale("log")
+    ax.legend()
+    fig.savefig(plot_dir / "training_curves.png", dpi=160)
+    plt.close(fig)
+
+
+def make_ml_error_bar_plot(plot_dir, metric_rows, space, filename, title):
+    import matplotlib.pyplot as plt
+
+    rows = [row for row in metric_rows if row["space"] == space]
+    if not rows:
+        return
+    methods = [method for method in METHODS if any(row["method"] == method for row in rows)]
+    variables = []
+    labels = {}
+    for row in rows:
+        if row["variable"] not in variables:
+            variables.append(row["variable"])
+            labels[row["variable"]] = row["label"]
+
+    fig, axes = plt.subplots(
+        2, 2, figsize=(14, 8), constrained_layout=True, sharex=True
+    )
+    axes = axes.ravel()
+    x = np.arange(len(variables))
+    width = 0.8 / max(1, len(methods))
+    for axis, metric in zip(axes, ML_METRIC_LABELS):
+        for offset, method in enumerate(methods):
+            values = []
+            for variable in variables:
+                match = next(
+                    (
+                        row for row in rows
+                        if row["method"] == method and row["variable"] == variable
+                    ),
+                    None,
+                )
+                values.append(np.nan if match is None or match[metric] is None else match[metric])
+            axis.bar(
+                x + (offset - 0.5 * (len(methods) - 1)) * width,
+                values,
+                width=width,
+                label=method,
+            )
+        axis.set_title(ML_METRIC_LABELS[metric])
+        axis.grid(axis="y", alpha=0.25)
+    for axis in axes:
+        axis.set_xticks(x)
+        axis.set_xticklabels([labels[variable] for variable in variables], rotation=25, ha="right")
+    axes[0].legend()
+    fig.suptitle(title)
+    fig.savefig(plot_dir / filename, dpi=160)
+    plt.close(fig)
+
+
+def make_absolute_error_cdf_plot(plot_dir, truth, predictions):
+    import matplotlib.pyplot as plt
+
+    variables = {
+        **COMPONENT_LABELS,
+        **KINEMATIC_LABELS,
+        "vector_error_gev": r"||p estimate - p truth|| [GeV]",
+    }
+    fig, axes = plt.subplots(3, 3, figsize=(16, 12), constrained_layout=True)
+    axes = axes.ravel()
+    for axis, (variable, label) in zip(axes, variables.items()):
+        for method in METHODS:
+            prediction = predictions[method]
+            truth_components, prediction_components, truth_kinematics, prediction_kinematics = (
+                ml_variable_arrays(truth, prediction)
+            )
+            if variable in COMPONENT_LABELS:
+                errors = prediction_components[variable] - truth_components[variable]
+            elif variable in KINEMATIC_LABELS:
+                if variable == "phi_deg":
+                    errors = wrapped_angle_residual_deg(
+                        prediction_kinematics[variable], truth_kinematics[variable]
+                    )
+                else:
+                    errors = prediction_kinematics[variable] - truth_kinematics[variable]
+            else:
+                errors = np.linalg.norm(prediction - truth, axis=1)
+            absolute = np.sort(np.abs(errors[np.isfinite(errors)]))
+            if len(absolute):
+                cdf = np.arange(1, len(absolute) + 1) / len(absolute)
+                axis.plot(absolute, cdf, label=method)
+        axis.set_title(label)
+        axis.set_xlabel("Absolute error")
+        axis.set_ylabel("Cumulative fraction")
+        axis.grid(alpha=0.25)
+    for axis in axes[len(variables):]:
+        axis.axis("off")
+    axes[0].legend()
+    fig.suptitle("Absolute error cumulative distributions")
+    fig.savefig(plot_dir / "absolute_error_cdf.png", dpi=160)
+    plt.close(fig)
+
+
+def make_ml_plots(output_dir, truth, predictions, metric_rows, training_history):
+    plot_dir = output_dir / "plots" / "ml"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    make_training_curve_plot(output_dir, training_history)
+    make_ml_error_bar_plot(
+        plot_dir, metric_rows, "component",
+        "ml_error_bars_components.png",
+        "Final evaluation errors: Cartesian momentum components",
+    )
+    make_ml_error_bar_plot(
+        plot_dir, metric_rows, "kinematic",
+        "ml_error_bars_kinematics.png",
+        "Final evaluation errors: derived kinematics",
+    )
+    make_absolute_error_cdf_plot(plot_dir, truth, predictions)
 
 
 def make_plots(
@@ -643,6 +956,9 @@ def main():
         method: np.asarray([[r[f"{method}_px_gev"], r[f"{method}_py_gev"], r[f"{method}_pz_gev"]] for r in records])
         for method in METHODS
     }
+    ml_metric_rows, ml_metric_summary = calculate_ml_metrics(truth, predictions)
+    training_log_path = infer_training_log_path(config)
+    training_history, training_summary = read_training_history(training_log_path)
     true_p, _, true_theta, _ = vector_kinematics(truth)
     tolerances = [float(value) for value in config["relative_error_tolerances"]]
     summary = {
@@ -658,6 +974,8 @@ def main():
         "cvtrec_rec_particle_consistency": audit_cvtrec_rec_particle(records),
         "units": "GeV and degrees",
         "methods": {method: calculate_metrics(truth, prediction, tolerances) for method, prediction in predictions.items()},
+        "ml_metrics": ml_metric_summary,
+        "training_history": training_summary,
     }
     adapter_resolution = summary["methods"]["adapter"]["momentum"]["relative_resolution_68"]
     summary["adapter_to_cvt_resolution_ratio"] = (
@@ -665,6 +983,10 @@ def main():
     )
     with (output_dir / "summary.json").open("w") as stream:
         json.dump(summary, stream, indent=2, allow_nan=False)
+    with (output_dir / "ml_metrics_summary.json").open("w") as stream:
+        json.dump(ml_metric_summary, stream, indent=2, allow_nan=False)
+    write_csv(output_dir / "ml_metrics.csv", ml_metric_rows)
+    write_training_history(output_dir / "training_history.csv", training_history)
 
     binned_rows = []
     momentum_bins = np.asarray(config["momentum_bins_gev"], dtype=float)
@@ -685,6 +1007,7 @@ def main():
         output_dir, truth, predictions, true_p, true_theta,
         momentum_bins, theta_bins, config,
     )
+    make_ml_plots(output_dir, truth, predictions, ml_metric_rows, training_history)
 
     trainer.cleanup()
     print(f"Wrote evaluation results to {output_dir}")

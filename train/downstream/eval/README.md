@@ -17,9 +17,28 @@ The analysis writes:
   truth, CVT/CVTRec/reconstructed-particle baselines, PID, charge, event/track
   identifiers, source file, and hit count;
 - `summary.json`: global component, momentum, transverse-momentum, direction,
-  resolution, and tail metrics;
+  resolution, tail, ML-regression, training-history, and data-consistency
+  metrics;
+- `ml_metrics.csv`: final evaluation-set MAE, RMSE, median absolute error,
+  95th-percentile absolute error, and bias for Adapter, `CVT::Tracks`, and
+  `CVTRec::Tracks`;
+- `ml_metrics_summary.json`: the same ML metrics in nested JSON form;
+- `training_history.csv`: parsed epoch, train-loss, validation-loss, and
+  epoch-time values when the checkpoint training log is available;
 - `binned_metrics.csv`: momentum, polar-angle, and PID differential metrics;
 - `plots/`: residual and resolution plots.
+
+`plots/ml/` contains ML-oriented diagnostics:
+
+- `training_curves.png`: train and validation loss versus epoch, inferred from
+  the checkpoint sibling log unless `training_log` is set explicitly in the
+  YAML;
+- `ml_error_bars_components.png`: component-space `px`, `py`, `pz` error
+  metrics;
+- `ml_error_bars_kinematics.png`: derived `p`, `pT`, `theta`, wrapped `phi`,
+  and `eta` error metrics;
+- `absolute_error_cdf.png`: cumulative absolute-error distributions, which
+  make the median and tail behavior directly comparable across methods.
 
 `plots/physics_2d/` contains side-by-side Adapter and `CVT::Tracks` 2D residual
 figures for spherical momentum `p`, cylindrical transverse momentum `pT`,

@@ -3,6 +3,9 @@ analysis:
   model_yaml: ../../../scripts/configs/mamba_clas12_track_regression_adapteronly.yaml
   model_config: clas12_track_regression_adapteronly_debug
   checkpoint: ../downstream_log/clas12_track_regression_adapteronly/checkpoints/clas12_track_regression_adapteronly_debug_nerf_mom_d100000_0_checkpoint.pth
+  # null infers the sibling training log from the checkpoint name:
+  # *_checkpoint.pth -> *.log
+  training_log: null
   output_dir: ../evaluation_output/track_regression_baseline
 
   run_num: "0"

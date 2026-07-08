@@ -78,7 +78,7 @@ default: &default
   embed_dim: 128
   group_size: 8
   init_std: 0.025
-  model_version: clas12_track_regression_adapteronly_debug
+  model_version: clas12_track_regression_adapteronly
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4

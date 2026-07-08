@@ -1,211 +1,36 @@
-# Foundation Models for Nuclear and Particle Physics (FM4NPP)
+# CLAS12 Foundation Model Research
 
-<p align="left">
-  <img src="fig/overview.png" width="70%" alt="FM4NPP overview">
-</p>
+This repository contains early-stage research code for applying foundation-model
+methods to CLAS12-related tasks. The implementation is under active development
+and should not be treated as a complete, stable, or publication-ready release.
 
-**🎉 Accepted to ICLR 2026!**  
-See the paper on OpenReview: https://openreview.net/forum?id=qaI3cLFsiX
+The current codebase builds on the FM4NPP project, including model components,
+training structure, and examples from that work. We are adapting and extending
+those ideas for CLAS12 use cases as the project evolves.
 
-**Brookhaven National Laboratory**
+## Status
 
-David Keetae Park\*, Shuhang Li\*, Yi Huang\*, Xihaier Luo, Haiwang Yu, Yeonju Go, Christopher Pinkenburg, Yuewei Lin, Shinjae Yoo, Joseph D. Osborn, Jin Huang, Yihui "Ray" Ren†
+This repository is a working research fork. Interfaces, scripts, configuration
+files, model choices, and data assumptions may change without notice.
 
-\* equal contribution; † corresponding author
+At this stage, users should expect to review paths, configuration files, and
+training scripts before running experiments. Some inherited FM4NPP examples or
+settings may still need to be updated for CLAS12-specific workflows.
 
-[[`OpenReview`](https://openreview.net/forum?id=qaI3cLFsiX)] [[`Dataset`](https://doi.org/10.5281/zenodo.16970029)] [[`Dataset Paper`](https://www.sciencedirect.com/science/article/pii/S2352340925011060)] [[`BibTeX`](#citation)]
+## Upstream Work and Attribution
 
---- 
+This work builds on FM4NPP: Foundation Models for Nuclear and Particle Physics.
+We are developing this project with guidance from BNL AI experts, including
+Dr. David Park and Dr. Shinjae Yoo.
 
-**Publication Repository**: Minimal implementation for reproducibility
+Relevant upstream resources:
 
-This repository contains the essential code for:
-1. **Pretraining**: State space models (Mamba, Mamba2) on particle physics data
-2. **Downstream Task**: Track reconstruction using pretrained representations
+- FM4NPP OpenReview: https://openreview.net/forum?id=qaI3cLFsiX
+- TPCpp-10M dataset: https://doi.org/10.5281/zenodo.16970029
+- TPCpp-10M dataset paper: https://www.sciencedirect.com/science/article/pii/S2352340925011060
 
-**Paper (OpenReview)**: [Foundation Models for Particle Physics](https://openreview.net/forum?id=qaI3cLFsiX)
-
-## Repository Structure
-
-```
-FM4NPP_Public/
-├── fm4npp/
-│   ├── models/          # Model architectures (Mamba, Mamba2)
-│   ├── datasets/        # Data loading and preprocessing
-│   └── utils.py         # Utilities and configuration
-├── train/
-│   ├── pretrain/
-│   │   └── nppmamba/    # Pretraining scripts
-│   └── downstream/      # Track reconstruction training
-├── scripts/
-│   ├── configs/         # Configuration files
-│   └── run/             # SLURM submission scripts
-└── README.md
-```
-
-## Installation
-
-### Requirements
-- Python 3.10+
-- PyTorch 2.4+
-- CUDA 12.1+
-- mamba-ssm (for Mamba models)
-- causal-conv1d
-- triton
-
-### Setup
-```bash
-# Create conda environment
-conda create -n fm4npp python=3.10
-conda activate fm4npp
-
-# Install PyTorch
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-# Install Mamba dependencies
-pip install mamba-ssm causal-conv1d
-pip install triton
-
-# Install other requirements
-pip install pyyaml numpy scipy tqdm mmap-ninja
-```
-
-## Usage
-
-### 1. Pretraining
-
-Train Mamba or Mamba2 models on particle physics data:
-
-```bash
-# Configure paths in scripts/configs/mamba_pretrain.yaml
-# Edit: data_root, checkpoint_dir, stat_dir
-
-# Submit pretraining job (SLURM)
-sbatch scripts/run/submit_mamba_pretrain.sh
-
-# Or run directly
-python -m train.pretrain.nppmamba.train_multi_gpu \
-    --yaml_config=scripts/configs/mamba_pretrain.yaml \
-    --config=mamba_5m \
-    --run_num=run0
-```
-
-### 2. Track Reconstruction (Downstream)
-
-Fine-tune pretrained model for track finding:
-
-```bash
-# Configure paths in scripts/configs/mamba_tracking.yaml
-# Edit: data_root, pretrained_ckpt, checkpoint_dir
-
-# Submit downstream job (SLURM)
-sbatch scripts/run/submit_downstream_mamba.sh
-
-# Or run directly
-python train/downstream/track_finding_trainer.py \
-    --yaml_config=scripts/configs/mamba_tracking.yaml \
-    --config=mamba_5m_downstream \
-    --run_num=run0
-```
-
-## Configuration
-
-### Key Parameters
-
-**Mamba 5M Model**:
-- `embed_dim`: 256
-- `num_layers`: 12
-- `d_state`: 16 (state space dimension)
-- `d_conv`: 4 (convolutional kernel size)
-- `expand`: 2 (expansion factor)
-
-**Mamba2 5M Model**:
-- `embed_dim`: 256
-- `num_layers`: 12
-- `d_state`: 128 (state space dimension)
-- `headdim`: 64
-- `ngroups`: 1
-
-**Training**:
-- `batch_size`: 256 (distributed across GPUs)
-- `max_lr`: 2e-4
-- `warmup_steps`: 1000
-- `total_steps`: 50000
-
-## Dataset
-
-### TPCpp-10M Dataset
-
-We provide the preprocessed dataset used in our paper on Zenodo:
-
-**Dataset**: [TPCpp-10M: Simulated proton-proton collisions in Time Projection Chamber for AI Foundation Models](https://doi.org/10.5281/zenodo.16970029)
-
-**Dataset Paper (TPCpp-10M)**: https://www.sciencedirect.com/science/article/pii/S2352340925011060
-
-**Dataset Statistics**:
-- **Unlabeled data**: 10M events (100 files) for pretraining
-- **Labeled training**: 70k events for downstream tasks
-- **Labeled validation**: 13k events
-- **Labeled test**: 7k events
-- **Total size**: ~118.5 GB (compressed)
-
-**Data Format**: NumPy compressed format (.npz)
-
-### Download Dataset
-
-```bash
-# Download from Zenodo
-wget https://zenodo.org/records/16970029/files/TPCpp-10M.tar.gz
-
-# Extract
-tar -xzf TPCpp-10M.tar.gz
-
-# Dataset structure after extraction:
-TPCpp-10M/
-├── unlabeled/        # 10M events for pretraining (100 files)
-├── labeled_train/    # 70k labeled events (7 file sets)
-│   ├── spacepoints/
-│   ├── track_ids/
-│   ├── particle_ids/
-│   └── noise_tags/
-├── labeled_val/      # 13k validation events
-└── labeled_test/     # 7k test events
-```
-
-### Data Format Details
-
-Each spacepoint includes:
-- **Position**: (x, y, z) coordinates in TPC
-- **Energy**: Energy deposition at the point
-- **Labels** (for downstream tasks):
-  - Track IDs: Segmentation labels for track reconstruction
-  - Particle IDs: 5 classes (electron, photon, pion, kaon, proton)
-  - Noise tags: Binary labels (signal/noise)
-
-**Feature dimensions**: 30D per point
-- Position: (x, y, z)
-- Momentum: (px, py, pz)
-- Energy, time, detector metadata
-
-### Usage with Code
-
-After downloading, update config paths:
-
-```yaml
-# In scripts/configs/mamba_pretrain.yaml
-data_root: /path/to/TPCpp-10M/unlabeled
-stat_dir: /path/to/TPCpp-10M/statistics
-
-# In scripts/configs/mamba_tracking.yaml
-data_root: /path/to/TPCpp-10M/labeled_train
-data_root_test: /path/to/TPCpp-10M/labeled_test
-```
-
-See `demo.ipynb` in the dataset for data exploration and visualization examples.
-
-## Citation
-
-If you use this code or dataset, please cite both papers:
+If you use inherited FM4NPP methods, code structure, or datasets, cite the
+corresponding FM4NPP and TPCpp-10M works as appropriate.
 
 ```bibtex
 @article{park2025fm4npp,
@@ -223,9 +48,32 @@ If you use this code or dataset, please cite both papers:
 }
 ```
 
-OpenReview:
-- Model paper: https://openreview.net/forum?id=qaI3cLFsiX
+## Repository Layout
 
-## Contact
+```text
+.
+|-- fm4npp/             # FM4NPP-derived model, dataset, and utility code
+|-- train/              # Training and downstream task scripts
+|-- scripts/            # Configuration and run scripts
+|-- fig/                # Figures and visual assets
+|-- SETUP.md            # Setup notes inherited from the upstream structure
+|-- requirements.txt    # Python dependencies
+`-- example_usage.py    # Experimental usage example
+```
 
-For questions or issues, please open a GitHub issue.
+## Setup
+
+The inherited setup notes are in `SETUP.md`, but they may not fully reflect the
+current CLAS12 research workflow. Review configuration paths and scripts before
+launching training jobs.
+
+Typical dependencies include Python, PyTorch, CUDA-capable hardware for training,
+and Mamba-related packages. See `requirements.txt` and the training scripts for
+the current working assumptions.
+
+## Notes for Contributors
+
+Because this project is moving quickly, keep top-level documentation focused on
+the current repository state and avoid presenting experimental code as a stable
+release. When adapting inherited FM4NPP components, preserve attribution and make
+CLAS12-specific changes explicit in code, configuration, or documentation.

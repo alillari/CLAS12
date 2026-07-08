@@ -1,6 +1,3 @@
-# FM4NPP Requirements
-# Anonymized for publication
-
 # Core dependencies
 torch>=2.4.0
 numpy>=1.24.0

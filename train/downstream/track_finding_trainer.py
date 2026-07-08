@@ -35,6 +35,7 @@ from fm4npp.models.linformer_gpt import LinformerGPT
 
 from trackinghead import *
 from loss import *
+from downstream_util import get_early_stopping_config
 
 
 class DownstreamTrainer():
@@ -794,11 +795,14 @@ class DownstreamTrainer():
         self.best_ARI = 0
         self.down_results = {'epoch': 0, 'train': [], 'val': [], 'ARI': [], 'ARI_2': [],  'loss_matched_ce': [], 'loss_unmatched_ce': [], 'loss_dice': [], 'loss_focal': []}
         
-        #early stopping
-        self.patience = 15
-        self.min_delta = 1e-4
+        # early stopping
+        self.patience, self.min_delta, self.warmup_steps = get_early_stopping_config(
+            self.params,
+            default_patience=15,
+            default_min_delta=1e-4,
+            default_warmup_steps=60,
+        )
         self.stagnation_counter = 0
-        self.warmup_steps = 60
 
         self._load_loss_reweight_stats()
         

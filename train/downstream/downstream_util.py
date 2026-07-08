@@ -1,5 +1,20 @@
 import torch
 
+def get_early_stopping_config(params, default_patience, default_min_delta=1e-4, default_warmup_steps=20):
+    """Read early-stopping knobs from params while preserving trainer defaults."""
+    patience = int(getattr(params, "early_stopping_patience", default_patience))
+    min_delta = float(getattr(params, "early_stopping_min_delta", default_min_delta))
+    warmup_steps = int(getattr(params, "early_stopping_warmup_steps", default_warmup_steps))
+
+    if patience < 1:
+        raise ValueError("early_stopping_patience must be >= 1")
+    if min_delta < 0:
+        raise ValueError("early_stopping_min_delta must be >= 0")
+    if warmup_steps < 0:
+        raise ValueError("early_stopping_warmup_steps must be >= 0")
+
+    return patience, min_delta, warmup_steps
+
 def get_trackinfo_noiselabel(reg, noise_pt_threshold=0.06):
     """
     Extract track information from the reg tensor.

@@ -645,11 +645,14 @@ class DownstreamTrainer():
         self.best_loss = np.inf
         self.best_ARI = 0
         self.down_results = {'epoch': 0, 'train': [], 'val': [], 'precision':[], 'recall':[], 'accuracy': []}
-        #early stopping
-        self.patience = 5
-        self.min_delta = 1e-4
+        # early stopping
+        self.patience, self.min_delta, self.warmup_steps = get_early_stopping_config(
+            self.params,
+            default_patience=5,
+            default_min_delta=1e-4,
+            default_warmup_steps=20,
+        )
         self.stagnation_counter = 0
-        self.warmup_steps = 20
         
 
 
@@ -982,6 +985,5 @@ class DownstreamTrainer():
             self.startEpoch = 0
             if self.world_rank == 0:
                 print(f"✅ Loaded pretrained weights only (optimizer state not loaded)")
-
 
 

@@ -13,8 +13,8 @@ default: &default
   data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_2_raggedmmap/
   stat_dir: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats
   regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats/regression_target_stats.json
-  downstream_dir: ./downstream_log/clas12_track_regression_pretrained
-  checkpoint_dir: ./downstream_log/clas12_track_regression_pretrained/checkpoints
+  downstream_dir: /home/alessio/ML-work/result_deep_storage/july-8th/downstream_log/clas12_track_regression_pretrained
+  checkpoint_dir: /home/alessio/ML-work/result_deep_storage/july-8th/downstream_log/clas12_track_regression_pretrained/checkpoints
 
   # The training script requires the checkpoint on the command line.  A
   # pretrained_ckpt entry here would currently be overwritten, so it is
@@ -24,7 +24,7 @@ default: &default
   data_version: clas12_cvt
   input_layout: xyz
   serialization: clas12_band_hilbert
-  batch_size: 512
+  batch_size: 128
   local_batch_size: 128
   valid_batch_size: 128
   local_valid_batch_size: 128
@@ -32,7 +32,7 @@ default: &default
   limit_size: 50000
   n_data_idx: 1000000
   n_eval_steps: 200
-  num_data_workers: 12
+  num_data_workers: 36
   log_to_screen: true
 
   # === Sequence / filtering ===
@@ -73,9 +73,9 @@ default: &default
   min_lr: 0.00001
   first_cycle_steps: 3000
   warmup_steps: 300
-  early_stopping_patience: 5
+  early_stopping_patience: 20
   early_stopping_min_delta: 0.0001
-  early_stopping_warmup_steps: 20
+  early_stopping_warmup_steps: 50
   grad_clip_value: 0.1
   total_steps: 30000
 

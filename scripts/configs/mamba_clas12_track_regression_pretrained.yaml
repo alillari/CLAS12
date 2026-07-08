@@ -13,8 +13,10 @@ default: &default
   data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_2_raggedmmap/
   stat_dir: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats
   regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats/regression_target_stats.json
-  downstream_dir: /home/alessio/ML-work/result_deep_storage/july-8th/downstream_log/clas12_track_regression_pretrained
-  checkpoint_dir: /home/alessio/ML-work/result_deep_storage/july-8th/downstream_log/clas12_track_regression_pretrained/checkpoints
+  # Set CLAS12_ARTIFACT_ROOT to move all run artifacts without editing this file.
+  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage/july-8th}
+  downstream_dir: "{artifact_root}/downstream_log/clas12_track_regression_pretrained"
+  checkpoint_dir: "{downstream_dir}/checkpoints"
 
   # The training script requires the checkpoint on the command line.  A
   # pretrained_ckpt entry here would currently be overwritten, so it is

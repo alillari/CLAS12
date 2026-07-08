@@ -1,12 +1,16 @@
 analysis:
   # Paths are resolved relative to this file.
-  model_yaml: ../../../scripts/configs/mamba_clas12_track_regression_adapteronly.yaml
-  model_config: clas12_track_regression_adapteronly_debug
-  checkpoint: ../downstream_log/clas12_track_regression_adapteronly/checkpoints/clas12_track_regression_adapteronly_debug_nerf_mom_d100000_0_checkpoint.pth
+  # Set CLAS12_ARTIFACT_ROOT to evaluate checkpoints stored under a different root.
+  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage/july-8th}
+  run_name: clas12_track_regression_pretrained
+  analysis_tag: track_regression_pretrained
+  model_yaml: ../../../scripts/configs/mamba_clas12_track_regression_pretrained.yaml
+  model_config: clas12_track_regression_pretrained
+  checkpoint: "{artifact_root}/downstream_log/{run_name}/checkpoints/clas12_track_regression_pretrained_nerf_mom_d100000_0_checkpoint.pth"
   # null infers the sibling training log from the checkpoint name:
   # *_checkpoint.pth -> *.log
   training_log: null
-  output_dir: ../evaluation_output/track_regression_baseline
+  output_dir: "{artifact_root}/downstream_log/{run_name}/evaluation_output/{analysis_tag}"
 
   run_num: "0"
   batch_size: 128

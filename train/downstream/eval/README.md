@@ -4,12 +4,28 @@ Run the baseline analysis from any working directory:
 
 ```bash
 python train/downstream/eval/evaluate_track_regression.py \
-  --analysis-config train/downstream/eval/track_regression_analysis.yaml
+  --analysis-config train/downstream/eval/track_regression_analysis_adapteronly.yaml
 ```
 
 The YAML controls the model configuration, checkpoint, unit conversions,
 sample count, binning, and output location. Command-line overrides are
 available for the checkpoint, output directory, and sample count.
+
+Training and evaluation configs use `CLAS12_ARTIFACT_ROOT` as the external
+storage root. Set it once to move checkpoints, logs, inference outputs, and
+plots together:
+
+```bash
+export CLAS12_ARTIFACT_ROOT=/path/to/storage/july-8th
+```
+
+The track-regression YAMLs derive paths from that root:
+
+- training: `{artifact_root}/downstream_log/<run-name>/checkpoints`
+- evaluation: `{artifact_root}/downstream_log/<run-name>/evaluation_output/<analysis-tag>`
+
+If `CLAS12_ARTIFACT_ROOT` is unset, the configs keep using the current default
+`/home/alessio/ML-work/result_deep_storage/july-8th`.
 
 The analysis writes:
 

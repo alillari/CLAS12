@@ -1,4 +1,5 @@
 import os
+import re
 
 import math
 import torch
@@ -21,6 +22,40 @@ from .hilbert import encode as hilbert_encode_
 from .hilbert import decode as hilbert_decode_
 
 from ruamel.yaml import YAML
+
+ENV_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
+
+
+class ConfigFormatMap(dict):
+  def __missing__(self, key):
+    return "{" + key + "}"
+
+
+def expand_config_string(value):
+  def replace(match):
+    name, default = match.group(1), match.group(2)
+    return os.environ.get(name, default if default is not None else match.group(0))
+
+  value = ENV_DEFAULT_RE.sub(replace, value)
+  return os.path.expanduser(os.path.expandvars(value))
+
+
+def expand_param_references(params):
+  expanded = dict(params)
+  for _ in range(3):
+    format_map = ConfigFormatMap(expanded)
+    next_params = {}
+    changed = False
+    for key, val in expanded.items():
+      if isinstance(val, str):
+        formatted = val.format_map(format_map)
+        changed = changed or formatted != val
+        val = formatted
+      next_params[key] = val
+    expanded = next_params
+    if not changed:
+      break
+  return expanded
 
 class EasyDict(dict):
     def __init__(self, d=None, **kwargs):
@@ -71,10 +106,15 @@ class YParams():
       print("------------------ Configuration ------------------")
 
     with open(yaml_filename) as _file:
-
+      raw_params = {}
       for key, val in YAML().load(_file)[config_name].items():
-        if print_params: print(key, val)
         if val =='None': val = None
+        if isinstance(val, str):
+          val = expand_config_string(val)
+        raw_params[key] = val
+
+      for key, val in expand_param_references(raw_params).items():
+        if print_params: print(key, val)
 
         self.params[key] = val
         self.__setattr__(key, val)

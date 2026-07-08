@@ -9,6 +9,7 @@ import gzip
 import json
 import math
 import os
+import re
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -57,13 +58,19 @@ ML_METRIC_LABELS = {
     "median_absolute_error": "Median absolute error",
     "p95_absolute_error": "95th percentile absolute error",
 }
+ENV_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
+
+
+class ConfigFormatMap(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--analysis-config",
-        default=str(HERE / "track_regression_analysis.yaml"),
+        default=str(HERE / "track_regression_analysis_adapteronly.yaml"),
         help="Analysis YAML file",
     )
     parser.add_argument("--checkpoint", help="Override the checkpoint in the YAML")
@@ -72,17 +79,48 @@ def parse_args():
     return parser.parse_args()
 
 
+def expand_env_defaults(value):
+    def replace(match):
+        name, default = match.group(1), match.group(2)
+        return os.environ.get(name, default if default is not None else match.group(0))
+
+    return ENV_DEFAULT_RE.sub(replace, value)
+
+
+def expand_config_strings(config):
+    expanded = {}
+    for key, value in config.items():
+        if isinstance(value, str):
+            value = os.path.expanduser(os.path.expandvars(expand_env_defaults(value)))
+        expanded[key] = value
+
+    for _ in range(3):
+        format_map = ConfigFormatMap(expanded)
+        next_config = {}
+        changed = False
+        for key, value in expanded.items():
+            if isinstance(value, str):
+                formatted = value.format_map(format_map)
+                changed = changed or formatted != value
+                value = formatted
+            next_config[key] = value
+        expanded = next_config
+        if not changed:
+            break
+    return expanded
+
+
 def resolve_path(value, base_dir):
     if value is None:
         return None
-    path = Path(os.path.expandvars(os.path.expanduser(str(value))))
+    path = Path(os.path.expandvars(os.path.expanduser(expand_env_defaults(str(value)))))
     return path if path.is_absolute() else (base_dir / path).resolve()
 
 
 def load_analysis_config(args):
     config_path = Path(args.analysis_config).resolve()
     with config_path.open() as stream:
-        config = YAML(typ="safe").load(stream)["analysis"]
+        config = expand_config_strings(YAML(typ="safe").load(stream)["analysis"])
     config["model_yaml"] = resolve_path(config["model_yaml"], config_path.parent)
     config["checkpoint"] = resolve_path(
         args.checkpoint or config["checkpoint"], config_path.parent

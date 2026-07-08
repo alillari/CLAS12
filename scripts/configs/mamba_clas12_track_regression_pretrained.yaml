@@ -8,9 +8,9 @@
 
 default: &default
   # === CLAS12 data and target statistics ===
-  data_root: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_1_raggedmmap/
-  data_root_train: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_1_raggedmmap/
-  data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_1_raggedmmap/
+  data_root: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_2_raggedmmap/
+  data_root_train: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_2_raggedmmap/
+  data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_2_raggedmmap/
   stat_dir: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats
   regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats/regression_target_stats.json
   downstream_dir: ./downstream_log/clas12_track_regression_pretrained

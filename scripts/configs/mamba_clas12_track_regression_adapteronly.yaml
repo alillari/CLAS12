@@ -1,4 +1,4 @@
-# CLAS12 CVT downstream track-regression / AdapterOnly debug configuration
+# CLAS12 CVT downstream track-regression / AdapterOnly configuration
 # Intended for train_track_regression.py with --usepretrain omitted.
 
 # ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ default: &default
   # === Data configuration ===
   data_version: clas12_cvt
   input_layout: xyz              # our CLAS12 files are raw [x,y,z], no energy column
-  serialization: clas12_band_hilbert          # safest first debug choice; switch to clas12_band_hilbert later
+  serialization: clas12_band_hilbert          # either radius or clas12_band_hilbert
   batch_size: 128                  # train_track_regression.py overrides this from --train_batch_size
   local_batch_size: 128
   valid_batch_size: 128            # train_momentum_regression.py also forces this to 1
@@ -32,7 +32,7 @@ default: &default
   limit_size: 50000
   n_data_idx: 1000000
   n_eval_steps: 200
-  num_data_workers: 4            # easiest stack traces while debugging
+  num_data_workers: 4            # easiest stack trace for debugging
   log_to_screen: true
 
   # === Sequence / filtering ===
@@ -107,7 +107,7 @@ default: &default
 # ---------------------------------------------------------------------------
 # First config to run
 # ---------------------------------------------------------------------------
-clas12_track_regression_adapteronly_debug:
+clas12_track_regression_adapteronly:
   <<: *default
 
 # ---------------------------------------------------------------------------

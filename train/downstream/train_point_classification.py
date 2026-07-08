@@ -23,9 +23,10 @@ def main():
     parser.add_argument("--root_dir", default='./downstream_log/', type=str, help="Root dir to store results")
     parser.add_argument("--global_log_dir", default='globallogs', type=str, help="Global dir to store logging only")
     parser.add_argument("--eventnumber", default=50000, type=int, help="downstream training event number")
-    parser.add_argument("--usepretrain", action="store_true", type=str, help="use pretrain model")
+    parser.add_argument("--usepretrain", action="store_true", help="use pretrain model")
     parser.add_argument("--train_batch_size", default=32, type=int, help="train batch size")
     parser.add_argument("--pretrained_ckpt", default=None, type=str, help="Optional path to pretrained checkpoint if --usepretrain is set.")
+    parser.add_argument("--task", default="pid", choices=["pid", "nid"], help="Point classification task.")
     args = parser.parse_args()
 
     # Mapping from model name to log file and checkpoint paths
@@ -80,7 +81,8 @@ def main():
 
     # Initialize parameters
     params = YParams(os.path.abspath(args.yaml_config), args.config)
-    params.task = "point_classification"
+    params.task = args.task
+    params.num_output_classes = 5 if args.task == "pid" else 2
 
     params.continue_from_best = True
     params.batch_size = int(args.train_batch_size)

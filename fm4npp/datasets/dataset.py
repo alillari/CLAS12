@@ -806,7 +806,9 @@ def get_data_loader(params, distributed):
                                     serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                     low_thr=getattr(params, 'low_thr', 1),
                                     high_thr=getattr(params, 'high_thr', 100),
-                                    max_tracks=getattr(params, 'max_tracks', 150))
+                                    max_tracks=getattr(params, 'max_tracks', 150),
+                                    require_reg_target=getattr(params, 'require_reg_target', False),
+                                    require_pid_target=getattr(params, 'require_pid_target', False))
     
     test_dataset = TPCBatchDataset(data_root = params.data_root_test, 
                                    version = params.data_version, 
@@ -830,7 +832,9 @@ def get_data_loader(params, distributed):
                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                    low_thr=getattr(params, 'low_thr', 1),
                                    high_thr=getattr(params, 'high_thr', 100),
-                                   max_tracks=getattr(params, 'max_tracks', 150))
+                                   max_tracks=getattr(params, 'max_tracks', 150),
+                                   require_reg_target=getattr(params, 'require_reg_target', False),
+                                   require_pid_target=getattr(params, 'require_pid_target', False))
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
@@ -878,7 +882,9 @@ def get_val_loader(params, distributed):
                                    space_filling_order=getattr(params, 'space_filling_order', None),
                                    space_filling_curve=getattr(params, 'space_filling_curve', 'z'),
                                    return_dict=getattr(params, 'return_dict', False),
-                                   return_knn_target=getattr(params, 'return_knn_target', False))
+                                   return_knn_target=getattr(params, 'return_knn_target', False),
+                                   require_reg_target=getattr(params, 'require_reg_target', False),
+                                   require_pid_target=getattr(params, 'require_pid_target', False))
 
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
     my_collate_fn = MyCollator()

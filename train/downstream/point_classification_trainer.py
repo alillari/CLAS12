@@ -83,6 +83,16 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
         
         self.params = params
+        if self.params.task not in {"pid", "nid"}:
+            raise ValueError(
+                "Point classification task must be 'pid' or 'nid'; "
+                f"got {self.params.task!r}"
+            )
+        self.params["return_dict"] = True
+        if not hasattr(self.params, "num_output_classes"):
+            self.params["num_output_classes"] = 5 if self.params.task == "pid" else 2
+        self.params["require_pid_target"] = self.params.task == "pid"
+        self.params["require_reg_target"] = self.params.task == "nid"
         print("running on rank {} with world size {}".format(self.world_rank, self.world_size))
 
 
@@ -643,8 +653,12 @@ class DownstreamTrainer():
         
 
 
-        self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
-        self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
+        if getattr(self.params, "loss_reweight", False):
+            self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
+            self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
+        else:
+            self.loss_bin = None
+            self.loss_weight = None
         
         for epoch in range(self.startEpoch, self.params.max_epochs):
             self.down_results['epoch'] = epoch
@@ -827,7 +841,12 @@ class DownstreamTrainer():
                     targets=targets,
                     mask=mask,
                 )
-                precision, recall, accuracy = compute_multiclass_metrics(outputs, targets)
+                metric_outputs = {"pred_logits": pred_logits[mask].unsqueeze(0)}
+                metric_targets = {"labels": targets["labels"][mask].unsqueeze(0)}
+                precision, recall, accuracy = compute_multiclass_metrics(
+                    metric_outputs,
+                    metric_targets,
+                )
                
                 loss = losses['loss']
                 self.down_results['val'].append(loss.item())
@@ -963,7 +982,6 @@ class DownstreamTrainer():
             self.startEpoch = 0
             if self.world_rank == 0:
                 print(f"✅ Loaded pretrained weights only (optimizer state not loaded)")
-
 
 
 

@@ -39,7 +39,8 @@ def main():
     )
     parser.set_defaults(usepretrain=True)
     parser.add_argument("--train_batch_size", default=32, type=int, help="train batch size")
-    parser.add_argument("--mambaversion", default="mamba2", type=str, help="mambd2/mamba1 for the pretrain model")
+    parser.add_argument("--mambaversion", default=None, type=str, help="Override mamba2/mamba1 from the YAML config")
+    parser.add_argument("--pretrained_ckpt", default=None, type=str, help="Optional path to pretrained checkpoint if --usepretrain is set.")
     args = parser.parse_args()
 
     # Mapping from model name to log file and checkpoint paths
@@ -103,7 +104,15 @@ def main():
     params.limit_data = True
     params.limit_size = int(args.eventnumber)
     params.valid_batch_size = 1
-    params.pretrained_ckpt = model2ckpt[args.config]
+    if args.usepretrain:
+        params.pretrained_ckpt = args.pretrained_ckpt or model2ckpt.get(args.config)
+        if params.pretrained_ckpt is None:
+            raise ValueError(
+                f"--usepretrain was set, but no checkpoint was provided and "
+                f"args.config={args.config!r} is not in model2ckpt."
+            )
+    else:
+        params.pretrained_ckpt = None
     base_name = f"{args.config}_nerf_tracking_head_d{params.limit_size}_{args.run_num}"
     if args.usepretrain:
         params.log_file_name = base_name + ".log"
@@ -114,7 +123,8 @@ def main():
     params.loss_dice_weight = 1
     params.loss_focal_weight = 30
     params.num_embedder_layers = 0
-    params.mambaversion = args.mambaversion
+    if args.mambaversion is not None:
+        params.mambaversion = args.mambaversion
 
 
     # Launch and train

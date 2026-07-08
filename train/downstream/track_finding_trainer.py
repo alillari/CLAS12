@@ -341,9 +341,13 @@ class DownstreamTrainer():
         self.resumed = False
 
         ##### Pretraining checkpoint
-        print("Loading checkpoint %s"%self.params.pretrained_ckpt)
-        self.restore_checkpoint(self.params.pretrained_ckpt)
-        self.resumed = True
+        if self.params.pretrained_ckpt is not None:
+            print("Loading checkpoint %s" % self.params.pretrained_ckpt)
+            self.restore_checkpoint(self.params.pretrained_ckpt, load_optimizer_state=False)
+            self.resumed = True
+        else:
+            print("No pretrained checkpoint provided; using randomly initialized backbone.")
+            self.resumed = False
 
         # LoRA: apply low-rank adapters to frozen backbone
         if getattr(self.params, 'use_lora', False):
@@ -392,6 +396,73 @@ class DownstreamTrainer():
             dist.barrier()
             dist.destroy_process_group()
         print("Cleanup complete. All resources released.")
+
+    def _load_loss_reweight_stats(self):
+        if not getattr(self.params, "loss_reweight", False):
+            self.loss_bin = None
+            self.loss_weight = None
+            return
+        self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
+        self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
+
+    def _unpack_batch(self, batch):
+        if isinstance(batch, dict):
+            return (
+                batch["points"],
+                batch["target"],
+                batch.get("knearest_points"),
+                batch.get("reg_target"),
+            )
+        if len(batch) == 3:
+            grouped, label, knearest = batch
+            return grouped, label, knearest, None
+        if len(batch) == 4:
+            return batch
+        raise ValueError(f"Unexpected track-finding batch with {len(batch)} elements")
+
+    def _build_track_targets(self, labels, mask):
+        targets = []
+        inverse_valid_list = []
+        for batch_idx in range(labels.size(0)):
+            valid = mask[batch_idx]
+            sample_labels = labels[batch_idx]
+            valid_labels = sample_labels[valid]
+            if valid_labels.numel() == 0:
+                raise ValueError("Track-finding batch contains no valid points")
+
+            unique_labels, inverse_valid = torch.unique(
+                valid_labels,
+                sorted=True,
+                return_inverse=True,
+            )
+            n_gt_classes = unique_labels.numel()
+            valid_one_hot = F.one_hot(
+                inverse_valid,
+                num_classes=n_gt_classes,
+            ).float()
+            sample_masks = torch.zeros(
+                n_gt_classes,
+                sample_labels.size(0),
+                device=labels.device,
+                dtype=valid_one_hot.dtype,
+            )
+            sample_masks[:, valid] = valid_one_hot.permute(1, 0)
+            targets.append({
+                "masks": sample_masks,
+                "labels": torch.ones(n_gt_classes, dtype=torch.long, device=labels.device),
+            })
+            inverse_valid_list.append(inverse_valid)
+        return targets, inverse_valid_list
+
+    def _batch_adjusted_rand(self, inverse_valid_list, assignments, mask):
+        scores = []
+        for batch_idx, inverse_valid in enumerate(inverse_valid_list):
+            pred_valid = assignments[batch_idx][mask[batch_idx]]
+            scores.append(adjusted_rand_score(
+                inverse_valid.detach().cpu().numpy(),
+                pred_valid.detach().cpu().numpy(),
+            ))
+        return float(np.mean(scores)) if scores else 0.0
 
     def inference(self, checkpoint_path, pretrain=True, logfile=None, save_csv=False, csv_output_path=None):
         """Initialize model and load weights for inference"""
@@ -459,9 +530,11 @@ class DownstreamTrainer():
         
         # Lists for CSV data collection
         csv_data = []
+        amp_enabled = torch.cuda.is_available() and self.use_amp
         
         with torch.no_grad():  # Disable gradient calculation
-            for i, (grouped, label, knearest, reg) in enumerate(tqdm(self.val_data_loader)):
+            for i, batch in enumerate(tqdm(self.val_data_loader)):
+                grouped, label, knearest, reg = self._unpack_batch(batch)
             #for i, (grouped, label, knearest) in enumerate(tqdm(self.train_data_loader)):
                 #reg = 0
                 #validate for 500 samples
@@ -473,30 +546,7 @@ class DownstreamTrainer():
                 mask = grouped[..., 0] != -100  # B X N
                 # One-hot encode the labels using the inverse mapping
                 #one_hot_labels = F.one_hot(inverse_indices, num_classes=n_gt_classes).float().to(self.device) # B X N X C_gt
-                targets = []
-                for batch_idx in range(b):
-                    # Get labels for this sample
-                    sample_labels = labels[batch_idx]
-                    
-                    # Find unique labels for this specific sample
-                    unique_labels, inverse_indices = torch.unique(
-                        sample_labels, 
-                        sorted=True, 
-                        return_inverse=True
-                    )
-                    n_gt_classes = unique_labels.numel()
-                    
-                    #if n_gt_classes > self.params.max_gt_classes:
-                    #    continue
-                        
-                    # Create one-hot encoding for this sample
-                    sample_one_hot = F.one_hot(inverse_indices, num_classes=n_gt_classes).float()
-                    
-                    # Convert to dictionary format
-                    targets.append({
-                        "masks": sample_one_hot.permute(1, 0).to(self.device),  # (n_gt_classes, N)
-                        "labels": torch.ones(n_gt_classes, dtype=torch.long).to(self.device)  # (n_gt_classes,)
-                    })
+                targets, inverse_valid_list = self._build_track_targets(labels, mask)
 
                 with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
                     if pretrain:
@@ -542,12 +592,6 @@ class DownstreamTrainer():
                         for point_idx in valid_indices:
                             point_idx = point_idx.item()
                             
-                            # Extract regression target components
-                            reg_point = reg[batch_idx, point_idx]  # 8 values
-                            px, py, pz = reg_point[0].item(), reg_point[1].item(), reg_point[2].item()
-                            vtx_x, vtx_y, vtx_z = reg_point[3].item(), reg_point[4].item(), reg_point[5].item()
-                            q, e = reg_point[6].item(), reg_point[7].item()
-                            
                             # Get segmentation target (track ID)
                             seg_target_point = label[batch_idx, point_idx].item()
                             
@@ -555,29 +599,33 @@ class DownstreamTrainer():
                             pred_assignment = pred_assignments[batch_idx, point_idx].item()
                             confidence = max_probs[batch_idx, point_idx].item()
                             
-                            # Get point coordinates
-                            point_coords = grouped[batch_idx, point_idx]  # 4 values (E, x, y, z)
-                            E, x, y, z = point_coords[0].item(), point_coords[1].item(), point_coords[2].item(), point_coords[3].item()
-                            
-                            csv_data.append({
+                            point_coords = grouped[batch_idx, point_idx]
+                            row = {
                                 'batch_idx': i,  # Global batch index from data loader
                                 'point_idx': point_idx,
-                                'E': E,
-                                'x': x, 
-                                'y': y,
-                                'z': z,
-                                'px': px,
-                                'py': py,
-                                'pz': pz,
-                                'vtx_x': vtx_x,
-                                'vtx_y': vtx_y,
-                                'vtx_z': vtx_z,
-                                'charge': q,
-                                'energy': e,
                                 'seg_target': seg_target_point,
                                 'pred_assignment': pred_assignment,
                                 'confidence': confidence
-                            })
+                            }
+                            if point_coords.numel() == 3:
+                                row.update({
+                                    'eta': point_coords[0].item(),
+                                    'phi': point_coords[1].item(),
+                                    'r': point_coords[2].item(),
+                                })
+                            elif point_coords.numel() >= 4:
+                                row.update({
+                                    'E': point_coords[0].item(),
+                                    'x': point_coords[1].item(),
+                                    'y': point_coords[2].item(),
+                                    'z': point_coords[3].item(),
+                                })
+                            if reg is not None:
+                                reg_point = reg[batch_idx, point_idx]
+                                reg_names = ["px", "py", "pz", "vtx_x", "vtx_y", "vtx_z", "energy"]
+                                for ridx, name in enumerate(reg_names[:reg_point.numel()]):
+                                    row[name] = reg_point[ridx].item()
+                            csv_data.append(row)
                 
                 losses = compute_point_loss(
                     outputs=outputs,
@@ -587,7 +635,11 @@ class DownstreamTrainer():
                     no_object_class=0
                 )
 
-                avg_ARI += adjusted_rand_score(inverse_indices.squeeze().cpu().numpy(), inference_result["assignments"].squeeze().cpu().numpy())
+                avg_ARI += self._batch_adjusted_rand(
+                    inverse_valid_list,
+                    inference_result["assignments"],
+                    mask,
+                )
                 # Compute loss and get matching indices
                 loss = losses["loss_matched_ce"] * self.loss_matched_ce_weight + losses["loss_unmatched_ce"] * self.loss_unmatched_ce_weight + losses["loss_dice"] * self.loss_dice_weight + losses["loss_focal"] * self.loss_focal_weight
                 avg_loss += loss
@@ -748,8 +800,7 @@ class DownstreamTrainer():
         self.stagnation_counter = 0
         self.warmup_steps = 60
 
-        self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
-        self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
+        self._load_loss_reweight_stats()
         
         for epoch in range(self.startEpoch, self.params.max_epochs):
             self.down_results['epoch'] = epoch
@@ -835,7 +886,8 @@ class DownstreamTrainer():
         # Buffers for logs
         tr_start = time.time()
         start_idx = 0
-        for i, (grouped, label, knearest) in enumerate(tqdm(self.train_data_loader)):
+        for i, batch in enumerate(tqdm(self.train_data_loader)):
+            grouped, label, knearest, _ = self._unpack_batch(batch)
             if i> 10000:
                 break
             #only work for b ==1 now
@@ -845,30 +897,7 @@ class DownstreamTrainer():
             grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
             mask = grouped[..., 0] != -100 # B X N
 
-            targets = []
-            for batch_idx in range(b):
-                # Get labels for this sample
-                sample_labels = labels[batch_idx]
-                
-                # Find unique labels for this specific sample
-                unique_labels, inverse_indices = torch.unique(
-                    sample_labels, 
-                    sorted=True, 
-                    return_inverse=True
-                )
-                n_gt_classes = unique_labels.numel()
-                
-                #if n_gt_classes > self.params.max_gt_classes:
-                #    continue
-                    
-                # Create one-hot encoding for this sample
-                sample_one_hot = F.one_hot(inverse_indices, num_classes=n_gt_classes).float()
-                
-                # Convert to dictionary format
-                targets.append({
-                    "masks": sample_one_hot.permute(1, 0).to(self.device),  # (n_gt_classes, N)
-                    "labels": torch.ones(n_gt_classes, dtype=torch.long).to(self.device)  # (n_gt_classes,)
-                })
+            targets, _ = self._build_track_targets(labels, mask)
             
 
             if self.use_lora:
@@ -959,7 +988,8 @@ class DownstreamTrainer():
         amp_enabled = torch.cuda.is_available() and self.use_amp
 
         with torch.no_grad():  # Disable gradient calculation
-            for i, (grouped, label, knearest) in enumerate(tqdm(self.val_data_loader)):
+            for i, batch in enumerate(tqdm(self.val_data_loader)):
+                grouped, label, knearest, _ = self._unpack_batch(batch)
                 #validate for 500 samples
                 if i > 1000:
                     break
@@ -968,32 +998,7 @@ class DownstreamTrainer():
                 grouped = grouped.reshape(b, -1, c).to(self.device)  # B X N X C
                 mask = grouped[..., 0] != -100  # B X N
                 # One-hot encode the labels using the inverse mapping
-                targets = []
-                inverse_indices_list = []
-                for batch_idx in range(b):
-                    # Get labels for this sample
-                    sample_labels = labels[batch_idx]
-                    
-                    # Find unique labels for this specific sample
-                    unique_labels, inverse_indices = torch.unique(
-                        sample_labels, 
-                        sorted=True, 
-                        return_inverse=True
-                    )
-                    inverse_indices_list.append(inverse_indices)
-                    n_gt_classes = unique_labels.numel()
-                    
-                    #if n_gt_classes > self.params.max_gt_classes:
-                    #    continue
-                        
-                    # Create one-hot encoding for this sample
-                    sample_one_hot = F.one_hot(inverse_indices, num_classes=n_gt_classes).float()
-                    
-                    # Convert to dictionary format
-                    targets.append({
-                        "masks": sample_one_hot.permute(1, 0).to(self.device),  # (n_gt_classes, N)
-                        "labels": torch.ones(n_gt_classes, dtype=torch.long).to(self.device)  # (n_gt_classes,)
-                    })
+                targets, inverse_valid_list = self._build_track_targets(labels, mask)
 
                 with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
                     if pretrain:
@@ -1030,13 +1035,16 @@ class DownstreamTrainer():
                 segmentation_result_opt2 = infrence_result_opt2["assignments"]
                 #calculate adjust rand score between segmentation result and label
                 
-                for j in range(b):
-                    adjusted_rand_index = adjusted_rand_score(inverse_indices_list[j].cpu().numpy(), segmentation_result[j].cpu().numpy())
-                    adjusted_rand_index_opt2 = adjusted_rand_score(inverse_indices_list[j].cpu().numpy(), segmentation_result_opt2[j].cpu().numpy())
-                    
-
-                adjusted_rand_index /= b
-                adjusted_rand_index_opt2 /= b
+                adjusted_rand_index = self._batch_adjusted_rand(
+                    inverse_valid_list,
+                    segmentation_result,
+                    mask,
+                )
+                adjusted_rand_index_opt2 = self._batch_adjusted_rand(
+                    inverse_valid_list,
+                    segmentation_result_opt2,
+                    mask,
+                )
                 #print(adjusted_rand_index)
                 # Compute loss and get matching indices
                 loss = losses["loss_matched_ce"] * self.loss_matched_ce_weight + losses["loss_unmatched_ce"] * self.loss_unmatched_ce_weight + losses["loss_dice"] * self.loss_dice_weight + losses["loss_focal"] * self.loss_focal_weight
@@ -1159,7 +1167,7 @@ class DownstreamTrainer():
 
     
             
-    def restore_checkpoint(self, checkpoint_path):
+    def restore_checkpoint(self, checkpoint_path, load_optimizer_state=True):
         checkpoint = torch.load(checkpoint_path, map_location='cuda:{}'.format(self.device), weights_only=False)
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}
         #try:
@@ -1172,12 +1180,14 @@ class DownstreamTrainer():
         #        new_state_dict[name] = val 
         #    self.model.load_state_dict(new_state_dict)
 
-        self.iters = checkpoint['iters']
-        self.startEpoch = checkpoint['epoch']+1 if self.iters % len(self.train_data_loader) == 0 else checkpoint['epoch']
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if self.scheduler is not None:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-
-
-
+        if load_optimizer_state:
+            self.iters = checkpoint['iters']
+            self.startEpoch = checkpoint['epoch']+1 if self.iters % len(self.train_data_loader) == 0 else checkpoint['epoch']
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if self.scheduler is not None:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        else:
+            self.iters = 0
+            self.startEpoch = 0
+            if self.world_rank == 0:
+                print("✅ Loaded pretrained weights only (optimizer state not loaded)")

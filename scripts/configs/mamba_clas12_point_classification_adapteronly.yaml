@@ -1,0 +1,92 @@
+# CLAS12 CVT downstream point-classification / AdapterOnly configuration.
+# Intended for train_point_classification.py with --task pid or --task nid.
+
+default: &default
+  # Paths are intentionally placeholders; update them for the target dataset.
+  data_root: /path/to/clas12_cvt_raggedmmap/
+  data_root_train: /path/to/clas12_cvt_raggedmmap/
+  data_root_test: /path/to/clas12_cvt_raggedmmap/
+  stat_dir: /path/to/clas12_stats/
+  downstream_dir: ./downstream_log/clas12_point_classification_adapteronly
+  checkpoint_dir: ./downstream_log/clas12_point_classification_adapteronly/checkpoints
+
+  data_version: clas12_cvt
+  input_layout: xyz
+  serialization: clas12_band_hilbert
+  batch_size: 128
+  local_batch_size: 128
+  valid_batch_size: 1
+  local_valid_batch_size: 1
+  limit_data: true
+  limit_size: 50000
+  n_data_idx: 1000000
+  n_eval_steps: 200
+  num_data_workers: 4
+  log_to_screen: true
+
+  nleave: 10000000000.0
+  order: REP
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  low_thr: 1
+  high_thr: 100
+  max_gt_classes: 150
+  max_tracks: 150
+
+  # CLAS12 point tensors are 3-column [eta, phi, r]; the old TPC voxelizer
+  # assumes a leading energy column, so CLAS12 ordering is selected via
+  # serialization instead.
+  embed_method: pos_only
+  pe_method: nerf
+  voxelize: false
+  space_filling_order: false
+  space_filling_curve: z
+  return_dict: true
+  return_reg: false
+  return_reg_test: false
+  return_knn_target: false
+
+  rep_aaai: false
+  nexttoken: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+
+  max_epochs: 300
+  max_lr: 0.0003
+  min_lr: 0.00001
+  first_cycle_steps: 3000
+  warmup_steps: 300
+  grad_clip_value: 0.1
+  total_steps: 30000
+
+  base_dim: 128
+  embed_dim: 128
+  group_size: 8
+  init_std: 0.025
+  model_version: clas12_point_classification_adapteronly
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  klen: 3
+  dropout: 0.1
+  mambaversion: mamba1
+
+  num_heads_backbone: 4
+  num_heads_decoder: 2
+  num_heads_encoder: 2
+  num_embedder_layers: 0
+  use_attention_head: true
+  continue_from_best: true
+
+clas12_point_pid_adapteronly:
+  <<: *default
+  task: pid
+  num_output_classes: 5
+
+clas12_point_nid_adapteronly:
+  <<: *default
+  task: nid
+  num_output_classes: 2

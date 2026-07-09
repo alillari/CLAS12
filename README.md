@@ -21,7 +21,7 @@ settings may still need to be updated for CLAS12-specific workflows.
 
 This work builds on FM4NPP: Foundation Models for Nuclear and Particle Physics.
 We are developing this project with guidance from BNL AI experts, including
-Dr. David Park and Dr. Shinjae Yoo.
+Dr. David Park, Dr. Shinjae Yoo and Dr. Huan-Hsin Tseng.
 
 Relevant upstream resources:
 

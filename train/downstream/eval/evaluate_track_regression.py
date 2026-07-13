@@ -76,6 +76,17 @@ def parse_args():
     parser.add_argument("--checkpoint", help="Override the checkpoint in the YAML")
     parser.add_argument("--output-dir", help="Override the output directory")
     parser.add_argument("--max-samples", type=int, help="Override the sample limit")
+    parser.add_argument("--model-yaml", help="Override the model YAML in the analysis config")
+    parser.add_argument("--model-config", help="Override the model config name in the analysis config")
+    parser.add_argument("--run-name", help="Override run_name metadata")
+    parser.add_argument("--analysis-tag", help="Override analysis_tag metadata")
+    parser.add_argument("--training-log", help="Override the training log path")
+    parser.add_argument("--pretrained-checkpoint", help="Override pretrained backbone checkpoint metadata/path")
+    parser.add_argument(
+        "--use-pretrained-backbone",
+        choices=("true", "false"),
+        help="Override whether evaluation should run the frozen pretrained backbone",
+    )
     return parser.parse_args()
 
 
@@ -129,7 +140,19 @@ def load_analysis_config(args):
     config.setdefault("charge_source", "metadata_or_positive")
     config.setdefault("fallback_charge", 1)
     config.setdefault("write_unswung_diagnostics", True)
+    for key, attr in (
+        ("model_config", "model_config"),
+        ("run_name", "run_name"),
+        ("analysis_tag", "analysis_tag"),
+    ):
+        value = getattr(args, attr)
+        if value is not None:
+            config[key] = value
+    if args.use_pretrained_backbone is not None:
+        config["use_pretrained_backbone"] = args.use_pretrained_backbone == "true"
     config["model_yaml"] = resolve_path(config["model_yaml"], config_path.parent)
+    if args.model_yaml is not None:
+        config["model_yaml"] = resolve_path(args.model_yaml, config_path.parent)
     config["checkpoint"] = resolve_path(
         args.checkpoint or config["checkpoint"], config_path.parent
     )
@@ -137,8 +160,14 @@ def load_analysis_config(args):
         args.output_dir or config["output_dir"], config_path.parent
     )
     config["training_log"] = resolve_path(
-        config.get("training_log"), config_path.parent
+        args.training_log or config.get("training_log"), config_path.parent
     )
+    if args.pretrained_checkpoint is not None:
+        config["pretrained_checkpoint"] = str(
+            resolve_path(args.pretrained_checkpoint, config_path.parent)
+        )
+        if args.use_pretrained_backbone is None:
+            config["use_pretrained_backbone"] = True
     if args.max_samples is not None:
         config["max_samples"] = args.max_samples
     config["analysis_config"] = config_path

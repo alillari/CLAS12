@@ -6,14 +6,27 @@ import os
 import sys
 import argparse
 import gc
+import json
+from pathlib import Path
 
 import torch
 
-# ensure your fm4npp modules can be found
-sys.path.append('../..')
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 from fm4npp.utils import YParams
 from track_regression_trainer import DownstreamTrainer
+
+
+def json_safe(value):
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, float) and not torch.isfinite(torch.tensor(value)):
+        return None
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Downstream track regression training script")
@@ -26,6 +39,10 @@ def main():
     parser.add_argument("--usepretrain", action="store_true", help="use pretrain model")
     parser.add_argument("--train_batch_size", default=32, type=int, help="train batch size")
     parser.add_argument("--pretrained_ckpt", default=None, type=str, help="Optional path to pretrained checkpoint if --usepretrain is set.")
+    parser.add_argument("--checkpoint_dir", default=None, type=str, help="Optional explicit directory for adapter checkpoints and training log.")
+    parser.add_argument("--log_file_name", default=None, type=str, help="Optional deterministic training log filename.")
+    parser.add_argument("--checkpoint_file_name", default=None, type=str, help="Optional deterministic adapter checkpoint filename.")
+    parser.add_argument("--artifact_summary", default=None, type=str, help="Optional JSON path for training artifact metadata.")
     args = parser.parse_args()
 
     # Mapping from model name to log file and checkpoint paths
@@ -89,6 +106,10 @@ def main():
     params.limit_data = True
     params.limit_size = int(args.eventnumber)
     params.valid_batch_size = params.batch_size
+    params.num_embedder_layers = 0
+
+    if args.checkpoint_dir is not None:
+        params.checkpoint_dir = os.path.abspath(args.checkpoint_dir)
 
     if args.usepretrain:
         params.pretrained_ckpt = args.pretrained_ckpt or model2ckpt.get(args.config)
@@ -98,19 +119,55 @@ def main():
                 f"--usepretrain was set, but no checkpoint was provided and "
                 f"args.config={args.config!r} is not in model2ckpt."
             )
+        params.pretrained_ckpt = os.path.abspath(params.pretrained_ckpt)
+        if not os.path.isfile(params.pretrained_ckpt):
+            raise FileNotFoundError(
+                f"Pretrained checkpoint does not exist: {params.pretrained_ckpt}"
+            )
     else:
         params.pretrained_ckpt = None
 
-    params.log_file_name = (
+    params.log_file_name = args.log_file_name or (
         f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}.log"
     )
-    params.num_embedder_layers = 0
+    if not params.log_file_name.endswith(".log"):
+        params.log_file_name = f"{params.log_file_name}.log"
+    params.checkpoint_file_name = args.checkpoint_file_name or (
+        params.log_file_name.rsplit(".", 1)[0] + "_checkpoint.pth"
+    )
 
     # Launch and train
     trainer = DownstreamTrainer(params, args)
     trainer.launch()
     checkpoint_path = None
     trainer.train(pretrain=args.usepretrain, train_from_checkpoint=False, checkpoint_path=checkpoint_path)
+
+    artifact_summary = {
+        "config": args.config,
+        "run_num": args.run_num,
+        "yaml_config": os.path.abspath(args.yaml_config),
+        "usepretrain": bool(args.usepretrain),
+        "pretrained_ckpt": params.pretrained_ckpt,
+        "experiment_dir": getattr(params, "experiment_dir", None),
+        "checkpoint_dir": os.path.abspath(params.checkpoint_dir),
+        "log_file": getattr(params, "training_log_path", None),
+        "checkpoint": getattr(params, "trained_checkpoint_path", None),
+        "best_loss": json_safe(getattr(trainer, "best_loss", None)),
+        "eventnumber": int(args.eventnumber),
+        "train_batch_size": int(args.train_batch_size),
+        "embed_dim": json_safe(getattr(params, "embed_dim", None)),
+        "base_dim": json_safe(getattr(params, "base_dim", None)),
+        "num_layers_backbone": json_safe(getattr(params, "num_layers_backbone", None)),
+        "mambaversion": json_safe(getattr(params, "mambaversion", None)),
+    }
+    summary_path = args.artifact_summary or os.path.join(
+        params.checkpoint_dir,
+        params.log_file_name.rsplit(".", 1)[0] + "_artifacts.json",
+    )
+    os.makedirs(os.path.dirname(os.path.abspath(summary_path)), exist_ok=True)
+    with open(summary_path, "w") as stream:
+        json.dump(artifact_summary, stream, indent=2, allow_nan=False)
+    print(f"Wrote training artifact summary to {summary_path}")
 
     # Cleanup
     trainer.cleanup()

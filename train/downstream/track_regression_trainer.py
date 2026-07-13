@@ -624,9 +624,19 @@ class DownstreamTrainer():
         # Create checkpoint directory if it doesn't exist
         os.makedirs(self.params.checkpoint_dir, exist_ok=True)
 
-        log_file_path = os.path.join(self.params.checkpoint_dir, self.params.log_file_name)
+        log_file_path = os.path.abspath(
+            os.path.join(self.params.checkpoint_dir, self.params.log_file_name)
+        )
+        self.params["training_log_path"] = log_file_path
 
-        checkpoint_file_name = self.params.log_file_name.split('.')[0] + '_checkpoint.pth'
+        checkpoint_file_name = getattr(
+            self.params,
+            "checkpoint_file_name",
+            self.params.log_file_name.split('.')[0] + '_checkpoint.pth',
+        )
+        self.params["trained_checkpoint_path"] = os.path.abspath(
+            os.path.join(self.params.checkpoint_dir, checkpoint_file_name)
+        )
         
         if self.log_to_screen:
             print("Starting training loop...")
@@ -894,7 +904,9 @@ class DownstreamTrainer():
         if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
             checkpoint['model_state_dict'] = self.down_model.module.state_dict()
 
-        torch.save(checkpoint, os.path.join(self.params.checkpoint_dir, filename))
+        checkpoint_path = os.path.abspath(os.path.join(self.params.checkpoint_dir, filename))
+        torch.save(checkpoint, checkpoint_path)
+        self.params["trained_checkpoint_path"] = checkpoint_path
 
         msg = f"Saved {'best ' if is_best else ''}checkpoint at epoch {epoch} with loss {loss:.4f}"
         #print(msg) if self.log_to_screen else None
@@ -909,19 +921,38 @@ class DownstreamTrainer():
         else:
             device_str = str(self.device)
     
+        checkpoint_path = os.path.abspath(checkpoint_path)
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"Adapter checkpoint does not exist: {checkpoint_path}")
+
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        if "model_state_dict" not in checkpoint:
+            raise KeyError(
+                f"Adapter checkpoint {checkpoint_path} is missing 'model_state_dict'. "
+                "This loader expects a downstream adapter checkpoint, not a pretrained backbone."
+            )
     
         # 3. Handle DDP keys
         state_dict = checkpoint['model_state_dict']
-        print("Trained weighted_avg_weights:", state_dict["weighted_avg_weights"])
+        if "weighted_avg_weights" in state_dict:
+            print("Trained weighted_avg_weights:", state_dict["weighted_avg_weights"])
         new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
     
         # 4. Load model weights
-        if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
-            self.down_model.module.load_state_dict(new_state_dict, strict=False)
-        else:
-            self.down_model.load_state_dict(new_state_dict, strict=False)
+        try:
+            if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
+                self.down_model.module.load_state_dict(new_state_dict, strict=False)
+            else:
+                self.down_model.load_state_dict(new_state_dict, strict=False)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Failed to load adapter checkpoint with the current regression-head "
+                f"configuration. checkpoint={checkpoint_path}, "
+                f"embed_dim={getattr(self.params, 'embed_dim', None)}, "
+                f"num_layers_backbone={getattr(self.params, 'num_layers_backbone', None)}, "
+                f"mambaversion={getattr(self.params, 'mambaversion', None)}"
+            ) from exc
     
         # 5. If not inference mode, load optimizer/scheduler states
         if not inference:
@@ -972,17 +1003,41 @@ class DownstreamTrainer():
             load_optimizer_state: If True, load optimizer/scheduler state (for resuming training).
                                  If False, only load model weights (for pretrained initialization).
         """
-        checkpoint = torch.load(checkpoint_path, map_location='cuda:{}'.format(self.device), weights_only=False)
+        checkpoint_path = os.path.abspath(checkpoint_path)
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"Pretrained backbone checkpoint does not exist: {checkpoint_path}")
+
+        if isinstance(self.device, int):
+            device_str = f'cuda:{self.device}' if torch.cuda.is_available() else 'cpu'
+        else:
+            device_str = str(self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        if "model_state" not in checkpoint:
+            raise KeyError(
+                f"Pretrained checkpoint {checkpoint_path} is missing 'model_state'. "
+                "This loader expects a backbone checkpoint produced by pretraining."
+            )
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}
         try:
             #self.model.load_state_dict(checkpoint['model_state'])
             self.model.load_state_dict(new_state_dict)
-        except:
+        except RuntimeError as exc:
             new_state_dict = OrderedDict()
             for key, val in checkpoint['model_state'].items():
                 name = key[7:]
                 new_state_dict[name] = val
-            self.model.load_state_dict(new_state_dict)
+            try:
+                self.model.load_state_dict(new_state_dict)
+            except RuntimeError as second_exc:
+                raise RuntimeError(
+                    "Failed to load pretrained backbone with the current model "
+                    f"configuration. checkpoint={checkpoint_path}, "
+                    f"embed_dim={getattr(self.params, 'embed_dim', None)}, "
+                    f"base_dim={getattr(self.params, 'base_dim', None)}, "
+                    f"num_layers_backbone={getattr(self.params, 'num_layers_backbone', None)}, "
+                    f"klen={getattr(self.params, 'klen', None)}, "
+                    f"mambaversion={getattr(self.params, 'mambaversion', None)}"
+                ) from second_exc
 
         if load_optimizer_state:
             # Load optimizer and scheduler state for resuming training

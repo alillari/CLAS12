@@ -40,6 +40,8 @@ The analysis writes:
   95th-percentile absolute error, and bias for Adapter, `CVT::Tracks`, and
   `CVTRec::Tracks`;
 - `ml_metrics_summary.json`: the same ML metrics in nested JSON form;
+- `campaign_headline_metrics.jsonl`: flat, campaign-friendly headline rows
+  with run metadata, RMSE/MAE/bias/tail metrics, and component R² values;
 - `training_history.csv`: parsed epoch, train-loss, validation-loss, and
   epoch-time values when the checkpoint training log is available;
 - `binned_metrics.csv`: momentum, polar-angle, and PID differential metrics;

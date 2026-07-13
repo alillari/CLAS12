@@ -382,6 +382,12 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
+def write_jsonl(path, rows):
+    with Path(path).open("w") as stream:
+        for row in rows:
+            stream.write(json.dumps(row, allow_nan=False) + "\n")
+
+
 def write_predictions(path, records):
     with gzip.open(path, "wt", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(records[0]))
@@ -718,6 +724,135 @@ def calculate_ml_metrics(truth, predictions):
         })
         nested[method]["vector_error_gev"] = metrics_for_json
     return rows, nested
+
+
+def campaign_metadata(config, summary):
+    metadata = {
+        "run_name": config.get("run_name"),
+        "analysis_tag": config.get("analysis_tag"),
+        "run_num": config.get("run_num"),
+        "model_config": config.get("model_config"),
+        "checkpoint": str(config.get("checkpoint")),
+        "output_dir": str(config.get("output_dir")),
+        "analysis_config": str(config.get("analysis_config")),
+        "comparison_truth": summary.get("comparison_truth"),
+        "comparison_truth_definition": summary.get("comparison_truth_definition"),
+        "max_samples": config.get("max_samples"),
+        "use_pretrained_backbone": config.get("use_pretrained_backbone"),
+        "pretrained_checkpoint": (
+            str(config.get("pretrained_checkpoint"))
+            if config.get("pretrained_checkpoint") is not None else None
+        ),
+    }
+    training = summary.get("training_history", {})
+    for key in (
+        "path", "found", "n_epochs", "best_epoch", "best_val_loss",
+        "final_train_loss", "final_val_loss", "final_val_train_gap",
+    ):
+        metadata[f"training_{key}"] = training.get(key)
+    return metadata
+
+
+def build_campaign_headline_rows(config, summary, ml_metric_rows):
+    metadata = campaign_metadata(config, summary)
+    rows = []
+
+    component_r2 = {}
+    for method, metrics in summary["methods"].items():
+        for component, values in metrics.get("components", {}).items():
+            component_r2[(method, f"{component}_gev")] = values.get("r2")
+
+    for metric_row in ml_metric_rows:
+        rows.append({
+            **metadata,
+            "record_type": "ml_error",
+            "method": metric_row["method"],
+            "space": metric_row["space"],
+            "variable": metric_row["variable"],
+            "label": metric_row["label"],
+            "unit": metric_row["unit"],
+            "n": metric_row["n"],
+            "bias": metric_row["bias"],
+            "mae": metric_row["mae"],
+            "rmse": metric_row["rmse"],
+            "r2": component_r2.get((metric_row["method"], metric_row["variable"])),
+            "median_absolute_error": metric_row["median_absolute_error"],
+            "p95_absolute_error": metric_row["p95_absolute_error"],
+        })
+
+    for method, metrics in summary["methods"].items():
+        momentum = metrics.get("momentum", {})
+        tolerance_fractions = {
+            f"fraction_within_relative_tolerance_{str(tolerance).replace('.', 'p')}": value
+            for tolerance, value in momentum.get(
+                "fraction_within_relative_tolerance", {}
+            ).items()
+        }
+        rows.append({
+            **metadata,
+            "record_type": "physics_summary",
+            "method": method,
+            "space": "kinematic",
+            "variable": "p_gev",
+            "label": r"p [GeV]",
+            "unit": "GeV",
+            "n": metrics.get("n"),
+            "bias": momentum.get("bias_gev"),
+            "mae": momentum.get("mae_gev"),
+            "rmse": momentum.get("rmse_gev"),
+            "r2": None,
+            "relative_bias": momentum.get("relative_bias"),
+            "relative_median": momentum.get("relative_median"),
+            "relative_resolution_68": momentum.get("relative_resolution_68"),
+            "relative_tail_fraction_10pct": momentum.get("relative_tail_fraction_10pct"),
+            "relative_tail_fraction_25pct": momentum.get("relative_tail_fraction_25pct"),
+            **tolerance_fractions,
+        })
+
+        pt = metrics.get("pt", {})
+        rows.append({
+            **metadata,
+            "record_type": "physics_summary",
+            "method": method,
+            "space": "kinematic",
+            "variable": "pt_gev",
+            "label": r"pT [GeV]",
+            "unit": "GeV",
+            "n": metrics.get("n"),
+            "bias": None,
+            "mae": pt.get("mae_gev"),
+            "rmse": pt.get("rmse_gev"),
+            "r2": None,
+        })
+
+        direction = metrics.get("direction", {})
+        rows.append({
+            **metadata,
+            "record_type": "physics_summary",
+            "method": method,
+            "space": "direction",
+            "variable": "opening_angle_deg",
+            "label": "opening angle [deg]",
+            "unit": "deg",
+            "n": metrics.get("n"),
+            "opening_angle_mean": direction.get("opening_angle_mean_deg"),
+            "opening_angle_median": direction.get("opening_angle_median_deg"),
+            "opening_angle_68": direction.get("opening_angle_68_deg"),
+        })
+
+    rows.append({
+        **metadata,
+        "record_type": "comparison_summary",
+        "method": "adapter_over_cvt",
+        "space": "kinematic",
+        "variable": "p_gev",
+        "label": "adapter/cvt relative p resolution",
+        "unit": "",
+        "adapter_to_cvt_resolution_ratio": summary.get(
+            "adapter_to_cvt_resolution_ratio"
+        ),
+    })
+    return rows
 
 
 def robust_symmetric_limit(values, quantile):
@@ -1250,6 +1385,10 @@ def main():
     with (output_dir / "ml_metrics_summary.json").open("w") as stream:
         json.dump(ml_metric_summary, stream, indent=2, allow_nan=False)
     write_csv(output_dir / "ml_metrics.csv", ml_metric_rows)
+    write_jsonl(
+        output_dir / "campaign_headline_metrics.jsonl",
+        build_campaign_headline_rows(config, summary, ml_metric_rows),
+    )
     write_training_history(output_dir / "training_history.csv", training_history)
 
     binned_rows = []

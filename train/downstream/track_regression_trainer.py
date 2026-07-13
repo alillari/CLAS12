@@ -746,11 +746,12 @@ class DownstreamTrainer():
         tr_time = 0
         self.model.eval()
         self.down_model.train()
+        max_train_batches = getattr(self.params, "max_train_batches", 1001)
         # Buffers for logs
         tr_start = time.time()
         start_idx = 0
         for i, inputdict in enumerate(tqdm(self.train_data_loader)):
-            if i> 1000:
+            if max_train_batches is not None and i >= int(max_train_batches):
                 break
             self.iters += 1
             grouped = inputdict['points'].to(self.device)  # B X N X C
@@ -819,10 +820,11 @@ class DownstreamTrainer():
         self.down_model.eval()  # Set downstream head to eval mode
         val_loss = 0.0
         total_samples = 0
+        max_val_batches = getattr(self.params, "max_val_batches", 2001)
 
         with torch.no_grad():  # Disable gradient calculation
             for i, inputdict in enumerate(tqdm(self.val_data_loader)):
-                if i> 2000:
+                if max_val_batches is not None and i >= int(max_val_batches):
                     break
                 self.iters += 1
                 grouped = inputdict['points'].to(self.device)  # B X N X C

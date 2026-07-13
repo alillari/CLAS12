@@ -228,6 +228,8 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
         "mambaversion": run.get("model_family", DEFAULT_MODEL_FAMILY),
         "model_version": run["model_config"],
     })
+    params.update(manifest.get("training_overrides", {}))
+    params.update(run.get("training_overrides", {}))
     write_yaml(Path(run["model_yaml"]), {run["model_config"]: params})
 
 

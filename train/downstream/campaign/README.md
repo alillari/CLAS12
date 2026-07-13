@@ -86,6 +86,68 @@ scale_w1536_d12_n5483352_label10000
 scale_w1536_d12_n5483352_label70000
 ```
 
+## Training-Time Controls
+
+Training parameters are inherited from
+`scripts/configs/mamba_clas12_track_regression_pretrained.yaml`, but the
+manifest builder can override them for the whole campaign.
+
+Common time-control options:
+
+- `--max-epochs`
+- `--early-stopping-patience`
+- `--early-stopping-warmup-steps`
+- `--max-train-batches`
+- `--max-val-batches`
+- `--training-override KEY=VALUE`
+
+`--max-train-batches` and `--max-val-batches` cap the number of batches used per
+epoch. They are useful for quick exploratory sweeps because they bound the time
+spent in each epoch regardless of the labeled-data amount.
+
+Example quick exploratory manifest:
+
+```bash
+python train/downstream/campaign/build_track_regression_manifest.py \
+  --checkpoint-root /home/alessio/ML-work/pretrained-FMs/campaign_1 \
+  --campaign-name campaign_1_track_regression_quick \
+  --artifact-root /home/alessio/ML-work/result_deep_storage \
+  --eventnumber 100,1000,10000,70000 \
+  --max-epochs 8 \
+  --early-stopping-patience 2 \
+  --early-stopping-warmup-steps 1 \
+  --max-train-batches 50 \
+  --max-val-batches 100 \
+  --max-samples 1000
+```
+
+Example fuller manifest:
+
+```bash
+python train/downstream/campaign/build_track_regression_manifest.py \
+  --checkpoint-root /home/alessio/ML-work/pretrained-FMs/campaign_1 \
+  --campaign-name campaign_1_track_regression_full \
+  --artifact-root /home/alessio/ML-work/result_deep_storage \
+  --eventnumber 100,1000,10000,70000 \
+  --max-epochs 300 \
+  --early-stopping-patience 20 \
+  --early-stopping-warmup-steps 50 \
+  --max-samples 10000
+```
+
+Any additional model YAML key can be overridden:
+
+```bash
+python train/downstream/campaign/build_track_regression_manifest.py \
+  --checkpoint-root /home/alessio/ML-work/pretrained-FMs/campaign_1 \
+  --campaign-name campaign_1_track_regression_custom \
+  --artifact-root /home/alessio/ML-work/result_deep_storage \
+  --eventnumber 100,1000,10000,70000 \
+  --training-override max_lr=0.0001 \
+  --training-override warmup_steps=50 \
+  --training-override total_steps=2000
+```
+
 ## Dry Run
 
 Check the selected runs and commands without writing per-run configs or running

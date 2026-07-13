@@ -61,6 +61,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--train-batch-size", type=int, default=DEFAULT_TRAIN_BATCH_SIZE)
     parser.add_argument("--max-samples", type=int, default=DEFAULT_MAX_SAMPLES)
+    parser.add_argument("--max-epochs", type=int, help="Override downstream max_epochs for rendered model YAMLs.")
+    parser.add_argument("--early-stopping-patience", type=int, help="Override early_stopping_patience.")
+    parser.add_argument("--early-stopping-warmup-steps", type=int, help="Override early_stopping_warmup_steps.")
+    parser.add_argument("--max-train-batches", type=int, help="Maximum train batches per epoch.")
+    parser.add_argument("--max-val-batches", type=int, help="Maximum validation batches per epoch.")
+    parser.add_argument(
+        "--training-override",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Additional rendered model YAML override. Can be repeated.",
+    )
     parser.add_argument(
         "--manifest",
         help="Optional explicit manifest output path. Defaults to campaign_dir/manifest.yaml.",
@@ -95,6 +107,43 @@ def parse_eventnumbers(values: list[str] | None) -> list[int]:
     return unique
 
 
+def parse_scalar(value: str):
+    lowered = value.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    if lowered in {"none", "null"}:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def parse_training_overrides(args: argparse.Namespace) -> dict:
+    overrides = {}
+    direct = {
+        "max_epochs": args.max_epochs,
+        "early_stopping_patience": args.early_stopping_patience,
+        "early_stopping_warmup_steps": args.early_stopping_warmup_steps,
+        "max_train_batches": args.max_train_batches,
+        "max_val_batches": args.max_val_batches,
+    }
+    overrides.update({key: value for key, value in direct.items() if value is not None})
+    for item in args.training_override:
+        if "=" not in item:
+            raise ValueError(f"--training-override must be KEY=VALUE; got {item!r}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--training-override has an empty key: {item!r}")
+        overrides[key] = parse_scalar(value.strip())
+    return overrides
+
+
 def main() -> None:
     args = parse_args()
     checkpoint_root = Path(args.checkpoint_root).resolve()
@@ -102,6 +151,7 @@ def main() -> None:
     base_dir = campaign_dir(artifact_root, args.campaign_name)
     manifest_path = Path(args.manifest).resolve() if args.manifest else base_dir / "manifest.yaml"
     eventnumbers = parse_eventnumbers(args.eventnumber)
+    training_overrides = parse_training_overrides(args)
 
     if not checkpoint_root.is_dir():
         raise FileNotFoundError(f"Checkpoint root does not exist: {checkpoint_root}")
@@ -154,6 +204,7 @@ def main() -> None:
             "train_batch_size": int(args.train_batch_size),
             "max_samples": int(args.max_samples),
         },
+        "training_overrides": training_overrides,
         "runs": runs,
     }
     write_yaml(manifest_path, manifest)

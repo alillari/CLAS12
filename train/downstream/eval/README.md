@@ -29,10 +29,10 @@ If `CLAS12_ARTIFACT_ROOT` is unset, the configs keep using the current default
 
 The analysis writes:
 
-- `predictions.csv.gz`: one row per evaluated track, including adapter output,
-  raw innermost-hit truth, DOCA-space comparison truth, CVT/CVTRec/
-  reconstructed-particle baselines, PID, charge, event/track identifiers,
-  source file, and hit count;
+- `predictions.csv.gz`: one row per evaluated track, including raw adapter
+  output, DOCA-space adapter output, raw innermost-hit truth, DOCA-space
+  comparison truth, CVT/CVTRec/reconstructed-particle baselines, PID, charge,
+  event/track identifiers, source file, and hit count;
 - `summary.json`: global component, momentum, transverse-momentum, direction,
   resolution, tail, ML-regression, training-history, and data-consistency
   metrics;
@@ -74,14 +74,14 @@ reconstruction momentum in GeV. Those conversions are explicit in the YAML.
 CUDA is required by the installed Mamba/causal-convolution forward kernels.
 
 The training target is still `MC::True` at the innermost CVT point. For
-evaluation, that vector is swung back in transverse direction to the
-DOCA/vertex frame before comparison with Adapter, `CVT::Tracks`, and
-`CVTRec::Tracks`. The swingback keeps `pT` and `pz` fixed, changes only
-wrapped phi, and uses the charge policy and field/radius parameters declared
-in the YAML. Current datasets fall back to positive charge when metadata is
-not available. `CVT::Tracks` is the fair first-fit baseline. `CVTRec::Tracks`
-is retained only as a PID-corrected reference. The stored `REC::Particle`
-values are audited but excluded from performance plots because they do not
-currently match the corresponding `CVTRec::Tracks` rows as expected.
-`MC::Particle` is generator-level and is not used as the post-energy-loss
-target.
+evaluation, both `MC::True` and the raw Adapter output are swung back in
+transverse direction to the DOCA/vertex frame before comparison with
+`CVT::Tracks` and `CVTRec::Tracks`. The swingback keeps `pT` and `pz` fixed,
+changes only wrapped phi, and uses the charge policy and field/radius
+parameters declared in the YAML. Current datasets fall back to positive charge
+when metadata is not available. `CVT::Tracks` is the fair first-fit baseline.
+`CVTRec::Tracks` is retained only as a PID-corrected reference. The stored
+`REC::Particle` values are audited but excluded from performance plots because
+they do not currently match the corresponding `CVTRec::Tracks` rows as
+expected. `MC::Particle` is generator-level and is not used as the
+post-energy-loss target.

@@ -27,8 +27,8 @@ analysis:
   target_momentum_scale_to_gev: 0.001
   auxiliary_momentum_scale_to_gev: 1.0
 
-  # Training remains against MC::True at the innermost CVT hit. Comparisons use
-  # that same vector swung back to the DOCA/vertex frame to match CVT tracks.
+  # Training remains against MC::True at the innermost CVT hit. Comparisons swing
+  # both MC::True and adapter output back to the DOCA/vertex frame to match CVT.
   comparison_truth: mctrue_swingback_doca
   swingback_enabled: true
   swingback_r_hit_cm: 6.5

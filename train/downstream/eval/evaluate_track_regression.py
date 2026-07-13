@@ -1163,12 +1163,21 @@ def main():
     for record, value in zip(records, charge):
         record["comparison_charge"] = int(value)
 
+    raw_adapter = np.asarray([
+        [r["adapter_px_gev"], r["adapter_py_gev"], r["adapter_pz_gev"]]
+        for r in records
+    ])
+
     if bool(config.get("swingback_enabled", True)):
         truth_doca = swingback_vector_to_doca(raw_truth, charge, config)
+        adapter_doca = swingback_vector_to_doca(raw_adapter, charge, config)
     else:
         truth_doca = raw_truth.copy()
+        adapter_doca = raw_adapter.copy()
     for record, vector in zip(records, truth_doca):
         attach_vector_kinematics(record, "truth_doca", vector)
+    for record, vector in zip(records, adapter_doca):
+        attach_vector_kinematics(record, "adapter_doca", vector)
 
     write_predictions(output_dir / "predictions.csv.gz", records)
     comparison_truth = str(config.get("comparison_truth", "mctrue_swingback_doca"))
@@ -1188,8 +1197,15 @@ def main():
             f"got {comparison_truth!r}"
         )
     predictions = {
-        method: np.asarray([[r[f"{method}_px_gev"], r[f"{method}_py_gev"], r[f"{method}_pz_gev"]] for r in records])
-        for method in METHODS
+        "adapter": adapter_doca,
+        "cvt": np.asarray([
+            [r[f"cvt_{component}_gev"] for component in ("px", "py", "pz")]
+            for r in records
+        ]),
+        "cvtrec": np.asarray([
+            [r[f"cvtrec_{component}_gev"] for component in ("px", "py", "pz")]
+            for r in records
+        ]),
     }
     ml_metric_rows, ml_metric_summary = calculate_ml_metrics(truth, predictions)
     training_log_path = infer_training_log_path(config)
@@ -1202,6 +1218,12 @@ def main():
         "training_target_definition": "MC::True momentum at innermost matched CVT hit",
         "comparison_truth": comparison_truth,
         "comparison_truth_definition": truth_definition,
+        "adapter_comparison_definition": (
+            "Adapter output swung back to DOCA with the same charge and geometry "
+            "as comparison truth"
+            if bool(config.get("swingback_enabled", True))
+            else "Raw adapter output; swingback disabled"
+        ),
         "raw_truth_definition": "MC::True momentum at innermost matched CVT hit",
         "swingback": make_swingback_diagnostics(
             raw_truth, truth_doca, charge, config

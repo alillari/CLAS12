@@ -121,6 +121,14 @@ def load_analysis_config(args):
     config_path = Path(args.analysis_config).resolve()
     with config_path.open() as stream:
         config = expand_config_strings(YAML(typ="safe").load(stream)["analysis"])
+    config.setdefault("comparison_truth", "mctrue_swingback_doca")
+    config.setdefault("swingback_enabled", True)
+    config.setdefault("swingback_r_hit_cm", 6.5)
+    config.setdefault("swingback_magnetic_field_t", 5.0)
+    config.setdefault("swingback_polarity", 1)
+    config.setdefault("charge_source", "metadata_or_positive")
+    config.setdefault("fallback_charge", 1)
+    config.setdefault("write_unswung_diagnostics", True)
     config["model_yaml"] = resolve_path(config["model_yaml"], config_path.parent)
     config["checkpoint"] = resolve_path(
         args.checkpoint or config["checkpoint"], config_path.parent
@@ -171,6 +179,61 @@ def vector_kinematics(vector):
     theta = np.degrees(np.arctan2(pt, pz))
     phi = np.degrees(np.arctan2(py, px))
     return p, pt, theta, phi
+
+
+def wrap_phi_rad(phi):
+    return (phi + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def swingback_phi_to_doca(
+    px_gev,
+    py_gev,
+    charge,
+    r_hit_cm=6.5,
+    magnetic_field_t=5.0,
+    polarity=1,
+):
+    """Swim transverse MC::True momentum direction from CVT entrance to DOCA."""
+    px_gev = np.asarray(px_gev, dtype=float)
+    py_gev = np.asarray(py_gev, dtype=float)
+    charge = np.asarray(charge, dtype=float)
+    pt = np.hypot(px_gev, py_gev)
+    phi_hit = np.arctan2(py_gev, px_gev)
+
+    valid = (
+        (pt > 0)
+        & (charge != 0)
+        & np.isfinite(pt)
+        & np.isfinite(charge)
+        & np.isfinite(phi_hit)
+    )
+    phi_doca = np.full_like(phi_hit, np.nan, dtype=float)
+
+    radius_cm = np.full_like(pt, np.nan, dtype=float)
+    radius_cm[valid] = pt[valid] / (0.3 * float(magnetic_field_t)) * 100.0
+
+    arg = np.full_like(pt, np.nan, dtype=float)
+    arg[valid] = float(r_hit_cm) / (2.0 * radius_cm[valid])
+    arg = np.clip(arg, -1.0, 1.0)
+
+    dphi = int(polarity) * np.sign(charge) * 2.0 * np.arcsin(arg)
+    phi_doca[valid] = wrap_phi_rad(phi_hit[valid] - dphi[valid])
+    return phi_doca
+
+
+def swingback_vector_to_doca(vector_gev, charge, config):
+    vector_gev = np.asarray(vector_gev, dtype=float)
+    px, py, pz = np.moveaxis(vector_gev, -1, 0)
+    pt = np.hypot(px, py)
+    phi_doca = swingback_phi_to_doca(
+        px,
+        py,
+        charge,
+        r_hit_cm=float(config["swingback_r_hit_cm"]),
+        magnetic_field_t=float(config["swingback_magnetic_field_t"]),
+        polarity=int(config["swingback_polarity"]),
+    )
+    return np.stack((pt * np.cos(phi_doca), pt * np.sin(phi_doca), pz), axis=-1)
 
 
 def kinematic_variables(vector):
@@ -331,6 +394,110 @@ def pdg_charge(pdg):
     if pdg == 0:
         return 0
     return -int(np.sign(pdg)) if abs(pdg) == 11 else int(np.sign(pdg))
+
+
+def resolve_charge(records, config):
+    source = str(config.get("charge_source", "metadata_or_positive"))
+    fallback = int(config.get("fallback_charge", 1))
+    if fallback not in (-1, 0, 1):
+        raise ValueError(f"fallback_charge must be -1, 0, or 1; got {fallback}")
+
+    charges = []
+    missing = 0
+    for record in records:
+        value = record.get("charge")
+        try:
+            value = float(value)
+            finite = np.isfinite(value)
+        except (TypeError, ValueError):
+            finite = False
+        if not finite:
+            missing += 1
+            value = fallback
+        charges.append(int(np.sign(value)))
+    charges = np.asarray(charges, dtype=int)
+
+    if source == "positive":
+        charges = np.ones(len(records), dtype=int)
+        missing = 0
+    elif source == "metadata":
+        if missing:
+            raise ValueError(
+                f"charge_source=metadata but {missing} records do not have metadata charge"
+            )
+    elif source == "metadata_or_positive":
+        pass
+    elif source == "predicted_pid":
+        raise NotImplementedError(
+            "charge_source=predicted_pid is reserved for future PID-prediction evaluation"
+        )
+    else:
+        raise ValueError(
+            "charge_source must be one of: positive, metadata, metadata_or_positive, "
+            f"predicted_pid; got {source!r}"
+        )
+
+    return charges, {
+        "source": source,
+        "fallback_charge": fallback,
+        "records_missing_metadata_charge": int(missing),
+        "n_positive": int(np.sum(charges > 0)),
+        "n_negative": int(np.sum(charges < 0)),
+        "n_neutral": int(np.sum(charges == 0)),
+    }
+
+
+def attach_vector_kinematics(record, prefix, vector):
+    p, pt, theta, phi = vector_kinematics(vector)
+    eta = kinematic_variables(vector)["eta"]
+    record.update({
+        f"{prefix}_px_gev": vector[0],
+        f"{prefix}_py_gev": vector[1],
+        f"{prefix}_pz_gev": vector[2],
+        f"{prefix}_p_gev": p,
+        f"{prefix}_pt_gev": pt,
+        f"{prefix}_theta_deg": theta,
+        f"{prefix}_phi_deg": phi,
+        f"{prefix}_eta": eta,
+    })
+
+
+def make_swingback_diagnostics(raw_truth, doca_truth, charge, config):
+    result = {
+        "enabled": bool(config.get("swingback_enabled", True)),
+        "comparison_truth": config.get("comparison_truth", "mctrue_swingback_doca"),
+        "r_hit_cm": safe_float(config["swingback_r_hit_cm"]),
+        "magnetic_field_t": safe_float(config["swingback_magnetic_field_t"]),
+        "polarity": int(config["swingback_polarity"]),
+        "n": int(len(raw_truth)),
+        "write_unswung_diagnostics": bool(
+            config.get("write_unswung_diagnostics", True)
+        ),
+        "charge_counts": {
+            "positive": int(np.sum(charge > 0)),
+            "negative": int(np.sum(charge < 0)),
+            "neutral": int(np.sum(charge == 0)),
+        },
+    }
+    if not result["write_unswung_diagnostics"]:
+        return result
+
+    raw_p, raw_pt, _, raw_phi = vector_kinematics(raw_truth)
+    doca_p, doca_pt, _, doca_phi = vector_kinematics(doca_truth)
+    dphi = wrapped_angle_residual_deg(doca_phi, raw_phi)
+    vector_delta = np.linalg.norm(doca_truth - raw_truth, axis=1)
+    finite_dphi = dphi[np.isfinite(dphi)]
+    finite_delta = vector_delta[np.isfinite(vector_delta)]
+    result.update({
+        "pt_preserved_max_abs_gev": safe_float(np.nanmax(np.abs(doca_pt - raw_pt))),
+        "p_preserved_max_abs_gev": safe_float(np.nanmax(np.abs(doca_p - raw_p))),
+        "pz_preserved_max_abs_gev": safe_float(
+            np.nanmax(np.abs(doca_truth[:, 2] - raw_truth[:, 2]))
+        ),
+        "doca_phi_minus_inner_phi_deg": scalar_error_metrics(finite_dphi),
+        "vector_delta_gev": scalar_error_metrics(finite_delta),
+    })
+    return result
 
 
 def attach_sample_metadata(records, path):
@@ -988,8 +1155,38 @@ def main():
             )
         attach_sample_metadata(records, metadata_path)
 
+    raw_truth = np.asarray([
+        [r["true_px_gev"], r["true_py_gev"], r["true_pz_gev"]]
+        for r in records
+    ])
+    charge, charge_summary = resolve_charge(records, config)
+    for record, value in zip(records, charge):
+        record["comparison_charge"] = int(value)
+
+    if bool(config.get("swingback_enabled", True)):
+        truth_doca = swingback_vector_to_doca(raw_truth, charge, config)
+    else:
+        truth_doca = raw_truth.copy()
+    for record, vector in zip(records, truth_doca):
+        attach_vector_kinematics(record, "truth_doca", vector)
+
     write_predictions(output_dir / "predictions.csv.gz", records)
-    truth = np.asarray([[r["true_px_gev"], r["true_py_gev"], r["true_pz_gev"]] for r in records])
+    comparison_truth = str(config.get("comparison_truth", "mctrue_swingback_doca"))
+    if comparison_truth == "mctrue_swingback_doca":
+        truth = truth_doca
+        truth_definition = (
+            "MC::True at innermost matched CVT hit, transversely swung back to DOCA"
+        )
+        truth_prefix = "truth_doca"
+    elif comparison_truth == "mctrue_inner_hit":
+        truth = raw_truth
+        truth_definition = "MC::True momentum at innermost matched CVT hit"
+        truth_prefix = "true"
+    else:
+        raise ValueError(
+            "comparison_truth must be mctrue_swingback_doca or mctrue_inner_hit; "
+            f"got {comparison_truth!r}"
+        )
     predictions = {
         method: np.asarray([[r[f"{method}_px_gev"], r[f"{method}_py_gev"], r[f"{method}_pz_gev"]] for r in records])
         for method in METHODS
@@ -1002,7 +1199,14 @@ def main():
     summary = {
         "checkpoint": str(config["checkpoint"]),
         "model_config": config["model_config"],
-        "target_definition": "MC momentum at innermost matched CVT hit",
+        "training_target_definition": "MC::True momentum at innermost matched CVT hit",
+        "comparison_truth": comparison_truth,
+        "comparison_truth_definition": truth_definition,
+        "raw_truth_definition": "MC::True momentum at innermost matched CVT hit",
+        "swingback": make_swingback_diagnostics(
+            raw_truth, truth_doca, charge, config
+        ),
+        "charge_resolution": charge_summary,
         "reference_hierarchy": {
             "fair_baseline": "CVT::Tracks first fit without PID-dependent energy-loss correction",
             "pid_corrected_reference": "CVTRec::Tracks second fit with PID-dependent energy-loss correction",
@@ -1029,17 +1233,19 @@ def main():
     binned_rows = []
     momentum_bins = np.asarray(config["momentum_bins_gev"], dtype=float)
     theta_bins = np.asarray(config["theta_bins_deg"], dtype=float)
-    add_binned_rows(binned_rows, truth, predictions, true_p, "true_p_gev", momentum_bins)
-    add_binned_rows(binned_rows, truth, predictions, true_theta, "true_theta_deg", theta_bins)
+    add_binned_rows(
+        binned_rows, truth, predictions, true_p, f"{truth_prefix}_p_gev", momentum_bins
+    )
+    add_binned_rows(
+        binned_rows, truth, predictions, true_theta, f"{truth_prefix}_theta_deg", theta_bins
+    )
     pid = np.asarray([r["pid_class"] for r in records])
     pid_labels = {int(key): str(value) for key, value in config["pid_labels"].items()}
     add_binned_rows(binned_rows, truth, predictions, pid, "pid", None, labels=pid_labels)
-    if config.get("include_sample_metadata", True):
-        charge = np.asarray([r["charge"] for r in records])
-        add_binned_rows(
-            binned_rows, truth, predictions, charge, "charge", None,
-            labels={-1: "negative", 1: "positive"},
-        )
+    add_binned_rows(
+        binned_rows, truth, predictions, charge, "comparison_charge", None,
+        labels={-1: "negative", 0: "neutral", 1: "positive"},
+    )
     write_csv(output_dir / "binned_metrics.csv", binned_rows)
     make_plots(
         output_dir, truth, predictions, true_p, true_theta,

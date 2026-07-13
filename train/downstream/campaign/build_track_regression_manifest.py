@@ -50,7 +50,15 @@ def parse_args() -> argparse.Namespace:
         default=str(DEFAULT_BASE_ANALYSIS_YAML),
         help="Base track-regression analysis YAML.",
     )
-    parser.add_argument("--eventnumber", type=int, default=DEFAULT_EVENTNUMBER)
+    parser.add_argument(
+        "--eventnumber",
+        action="append",
+        default=None,
+        help=(
+            "Number of labeled events for adapter training. May be repeated or "
+            "comma-separated, e.g. --eventnumber 100,1000,10000,70000."
+        ),
+    )
     parser.add_argument("--train-batch-size", type=int, default=DEFAULT_TRAIN_BATCH_SIZE)
     parser.add_argument("--max-samples", type=int, default=DEFAULT_MAX_SAMPLES)
     parser.add_argument(
@@ -65,12 +73,35 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_eventnumbers(values: list[str] | None) -> list[int]:
+    if not values:
+        return [DEFAULT_EVENTNUMBER]
+    parsed = []
+    for value in values:
+        for item in str(value).split(","):
+            item = item.strip()
+            if item:
+                parsed.append(int(item))
+    if not parsed:
+        raise ValueError("At least one --eventnumber value is required")
+    seen = set()
+    unique = []
+    for value in parsed:
+        if value <= 0:
+            raise ValueError(f"--eventnumber values must be positive; got {value}")
+        if value not in seen:
+            unique.append(value)
+            seen.add(value)
+    return unique
+
+
 def main() -> None:
     args = parse_args()
     checkpoint_root = Path(args.checkpoint_root).resolve()
     artifact_root = Path(args.artifact_root).resolve()
     base_dir = campaign_dir(artifact_root, args.campaign_name)
     manifest_path = Path(args.manifest).resolve() if args.manifest else base_dir / "manifest.yaml"
+    eventnumbers = parse_eventnumbers(args.eventnumber)
 
     if not checkpoint_root.is_dir():
         raise FileNotFoundError(f"Checkpoint root does not exist: {checkpoint_root}")
@@ -84,16 +115,23 @@ def main() -> None:
     for source_dir in source_dirs:
         try:
             checkpoint = discover_checkpoint(source_dir)
-            runs.append(
-                build_run_row(
-                    source_dir=source_dir,
-                    checkpoint=checkpoint,
-                    base_dir=base_dir,
-                    eventnumber=args.eventnumber,
-                    train_batch_size=args.train_batch_size,
-                    max_samples=args.max_samples,
+            for eventnumber in eventnumbers:
+                run_id = (
+                    source_dir.name
+                    if len(eventnumbers) == 1
+                    else f"{source_dir.name}_label{eventnumber}"
                 )
-            )
+                runs.append(
+                    build_run_row(
+                        source_dir=source_dir,
+                        checkpoint=checkpoint,
+                        base_dir=base_dir,
+                        eventnumber=eventnumber,
+                        train_batch_size=args.train_batch_size,
+                        max_samples=args.max_samples,
+                        run_id=run_id,
+                    )
+                )
         except Exception as exc:
             errors.append(f"{source_dir.name}: {exc}")
 
@@ -112,7 +150,7 @@ def main() -> None:
         "base_analysis_yaml": args.base_analysis_yaml,
         "created_at": utc_now(),
         "defaults": {
-            "eventnumber": int(args.eventnumber),
+            "eventnumbers": [int(value) for value in eventnumbers],
             "train_batch_size": int(args.train_batch_size),
             "max_samples": int(args.max_samples),
         },

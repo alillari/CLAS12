@@ -66,6 +66,26 @@ python train/downstream/campaign/build_track_regression_manifest.py \
   --max-samples 100
 ```
 
+Build a matrix with four labeled-data amounts for every backbone:
+
+```bash
+python train/downstream/campaign/build_track_regression_manifest.py \
+  --checkpoint-root /home/alessio/ML-work/pretrained-FMs/campaign_1 \
+  --campaign-name campaign_1_track_regression_label_sweep \
+  --artifact-root /home/alessio/ML-work/result_deep_storage \
+  --eventnumber 100,1000,10000,70000
+```
+
+With multiple `--eventnumber` values, each backbone is expanded into one
+adapter run per labeled-data amount. For example:
+
+```text
+scale_w1536_d12_n5483352_label100
+scale_w1536_d12_n5483352_label1000
+scale_w1536_d12_n5483352_label10000
+scale_w1536_d12_n5483352_label70000
+```
+
 ## Dry Run
 
 Check the selected runs and commands without writing per-run configs or running
@@ -123,6 +143,31 @@ python train/downstream/campaign/run_track_regression_campaign.py \
   --manifest /home/alessio/ML-work/result_deep_storage/campaigns/campaign_1_track_regression/manifest.yaml \
   --skip-eval \
   --cuda-device 0
+```
+
+## Check Progress
+
+Print a campaign progress table:
+
+```bash
+python train/downstream/campaign/run_track_regression_campaign.py \
+  --manifest /home/alessio/ML-work/result_deep_storage/campaigns/campaign_1_track_regression/manifest.yaml \
+  --status
+```
+
+The status table reports the resumable stage for each run and whether the
+expected adapter checkpoint and evaluation summary exist.
+
+Watch the active training log for a run:
+
+```bash
+tail -f /home/alessio/ML-work/result_deep_storage/campaigns/campaign_1_track_regression/logs/<run_id>.train.stdout.log
+```
+
+Watch the active evaluation log for a run:
+
+```bash
+tail -f /home/alessio/ML-work/result_deep_storage/campaigns/campaign_1_track_regression/logs/<run_id>.eval.stdout.log
 ```
 
 ## Outputs

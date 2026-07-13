@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from collections import Counter
 
 from campaign_util import (
     collate_summary,
@@ -42,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-eval", action="store_true", help="Evaluate even if evaluation outputs/status already exist.")
     parser.add_argument("--skip-eval", action="store_true", help="Train selected runs but do not evaluate.")
     parser.add_argument("--collate-only", action="store_true", help="Only rebuild campaign summary files from existing evaluations.")
+    parser.add_argument("--status", action="store_true", help="Print campaign progress from status.yaml and expected outputs.")
     return parser.parse_args()
 
 
@@ -81,6 +83,47 @@ def print_dry_run(manifest: dict, runs: list[dict]) -> None:
         print(f"train_log: {run['train_stdout']}")
         print(format_command(train_command(manifest, run)))
         print(format_command(eval_command(run)))
+
+
+def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
+    status_data = load_status(status_path)
+    rows = []
+    counts = Counter()
+    for run in runs:
+        status = run_current_status(status_data, run)
+        adapter_checkpoint = Path(run["adapter_checkpoint"])
+        summary = Path(run["evaluation_dir"]) / "summary.json"
+        train_log = Path(run["train_stdout"])
+        eval_log = Path(run["eval_stdout"])
+        counts[status] += 1
+        rows.append({
+            "run_id": run["run_id"],
+            "status": status,
+            "labeled_events": run.get("labeled_events", run.get("eventnumber")),
+            "adapter": "yes" if adapter_checkpoint.exists() else "no",
+            "eval": "yes" if summary.exists() else "no",
+            "log": str(eval_log if status == "running_eval" else train_log),
+        })
+
+    print(f"Campaign: {manifest['campaign_name']}")
+    print(f"Campaign directory: {manifest['campaign_dir']}")
+    print(f"Status file: {status_path}")
+    print(f"Runs: {len(rows)}")
+    if counts:
+        print("Counts: " + ", ".join(f"{key}={counts[key]}" for key in sorted(counts)))
+    print()
+    header = ("status", "labeled", "adapter", "eval", "run_id")
+    print(f"{header[0]:<15} {header[1]:>8} {header[2]:>7} {header[3]:>5} {header[4]}")
+    for row in rows:
+        print(
+            f"{row['status']:<15} {str(row['labeled_events']):>8} "
+            f"{row['adapter']:>7} {row['eval']:>5} {row['run_id']}"
+        )
+    active = [row for row in rows if row["status"] in {"running_train", "running_eval"}]
+    if active:
+        print("\nActive logs:")
+        for row in active:
+            print(f"{row['run_id']}: {row['log']}")
 
 
 def train_if_needed(args: argparse.Namespace, manifest: dict, status_path: Path, status_data: dict, run: dict) -> None:
@@ -175,6 +218,10 @@ def main() -> None:
     if args.collate_only:
         collate_summary(manifest)
         print(f"Wrote summary files under {Path(manifest['campaign_dir']) / 'summary'}")
+        return
+
+    if args.status:
+        print_status(manifest, runs, status_path)
         return
 
     if args.dry_run:

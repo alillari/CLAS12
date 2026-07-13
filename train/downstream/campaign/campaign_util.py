@@ -172,9 +172,11 @@ def build_run_row(
     eventnumber: int,
     train_batch_size: int,
     max_samples: int,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    run_id = source_dir.name
-    metadata = parse_run_name(run_id)
+    backbone_run_id = source_dir.name
+    run_id = run_id or backbone_run_id
+    metadata = parse_run_name(backbone_run_id)
     sidecar = load_sidecar_metadata(source_dir)
     sidecar_checkpoint = sidecar.get("checkpoint", checkpoint)
     sidecar_checkpoint = Path(sidecar_checkpoint)
@@ -182,6 +184,7 @@ def build_run_row(
         sidecar_checkpoint = source_dir / sidecar_checkpoint
     row = {
         "run_id": sidecar.get("run_id", run_id),
+        "backbone_run_id": sidecar.get("backbone_run_id", backbone_run_id),
         "source_dir": str(source_dir.resolve()),
         "pretrained_checkpoint": str(sidecar_checkpoint.resolve()),
         "model_family": sidecar.get("model_family", DEFAULT_MODEL_FAMILY),
@@ -190,6 +193,7 @@ def build_run_row(
         "num_layers_backbone": int(sidecar.get("num_layers_backbone", metadata["num_layers_backbone"])),
         "pretrain_events": int(sidecar.get("pretrain_events", metadata["pretrain_events"])),
         "eventnumber": int(sidecar.get("eventnumber", eventnumber)),
+        "labeled_events": int(sidecar.get("labeled_events", eventnumber)),
         "train_batch_size": int(sidecar.get("train_batch_size", train_batch_size)),
         "max_samples": int(sidecar.get("max_samples", max_samples)),
         "status": "pending",

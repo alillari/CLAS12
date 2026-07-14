@@ -203,7 +203,9 @@ def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, 
                 r2_values.append(r2)
         row["adapter_rmse_mean"] = sum(rmse_values) / len(rmse_values) if rmse_values else None
         row["adapter_r2_mean"] = sum(r2_values) / len(r2_values) if r2_values else None
-        if count_params is not None and row["embed_dim"] is not None:
+        if row.get("model_family") == "adapteronly":
+            row["backbone_n_params"] = 0
+        elif count_params is not None and row["embed_dim"] is not None:
             try:
                 row["backbone_n_params"] = count_params({**merged, **row})
             except Exception:

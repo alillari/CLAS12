@@ -22,6 +22,7 @@ DEFAULT_CHECKPOINT_ROOT = Path("/home/alessio/ML-work/pretrained-FMs/campaign_1"
 DEFAULT_ARTIFACT_ROOT = Path("/home/alessio/ML-work/result_deep_storage")
 DEFAULT_CAMPAIGN_NAME = "campaign_1_track_regression"
 DEFAULT_BASE_MODEL_YAML = Path("scripts/configs/mamba_clas12_track_regression_pretrained.yaml")
+DEFAULT_ADAPTER_ONLY_MODEL_YAML = Path("scripts/configs/mamba_clas12_track_regression_adapteronly.yaml")
 DEFAULT_BASE_ANALYSIS_YAML = Path("train/downstream/eval/track_regression_analysis_adapteronly.yaml")
 DEFAULT_EVENTNUMBER = 50000
 DEFAULT_TRAIN_BATCH_SIZE = 32
@@ -187,6 +188,9 @@ def build_run_row(
         "backbone_run_id": sidecar.get("backbone_run_id", backbone_run_id),
         "source_dir": str(source_dir.resolve()),
         "pretrained_checkpoint": str(sidecar_checkpoint.resolve()),
+        "use_pretrained_backbone": True,
+        "base_model_yaml": str(DEFAULT_BASE_MODEL_YAML),
+        "base_model_config": "clas12_track_regression_pretrained",
         "model_family": sidecar.get("model_family", DEFAULT_MODEL_FAMILY),
         "base_dim": int(sidecar.get("base_dim", metadata["base_dim"])),
         "embed_dim": int(sidecar.get("embed_dim", metadata["embed_dim"])),
@@ -206,6 +210,37 @@ def build_run_row(
     return row
 
 
+def build_adapter_only_run_row(
+    base_dir: Path,
+    eventnumber: int,
+    train_batch_size: int,
+    max_samples: int,
+) -> dict[str, Any]:
+    run_id = f"adapteronly_label{eventnumber}"
+    row = {
+        "run_id": run_id,
+        "backbone_run_id": "adapteronly",
+        "source_dir": None,
+        "pretrained_checkpoint": None,
+        "use_pretrained_backbone": False,
+        "base_model_yaml": str(DEFAULT_ADAPTER_ONLY_MODEL_YAML),
+        "base_model_config": "clas12_track_regression_adapteronly",
+        "model_family": "adapteronly",
+        "base_dim": 128,
+        "embed_dim": 128,
+        "num_layers_backbone": 0,
+        "pretrain_events": 0,
+        "eventnumber": int(eventnumber),
+        "labeled_events": int(eventnumber),
+        "train_batch_size": int(train_batch_size),
+        "max_samples": int(max_samples),
+        "status": "pending",
+        "model_config": f"clas12_track_regression_adapteronly_{run_id}",
+    }
+    row.update({key: str(value) for key, value in run_paths(base_dir, row["run_id"]).items()})
+    return row
+
+
 def load_base_model_config(path: Path, config_name: str = "clas12_track_regression_pretrained") -> dict[str, Any]:
     data = read_yaml(path)
     if config_name in data:
@@ -216,18 +251,24 @@ def load_base_model_config(path: Path, config_name: str = "clas12_track_regressi
 
 
 def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
-    base_model_yaml = resolve_repo_path(manifest["base_model_yaml"])
-    params = load_base_model_config(base_model_yaml)
+    base_model_yaml = resolve_repo_path(run.get("base_model_yaml", manifest["base_model_yaml"]))
+    params = load_base_model_config(
+        base_model_yaml,
+        config_name=run.get("base_model_config", "clas12_track_regression_pretrained"),
+    )
     params.update({
         "artifact_root": str(Path(manifest["artifact_root"]).resolve()),
         "downstream_dir": str(Path(run["run_dir"]).resolve()),
         "checkpoint_dir": str(Path(run["checkpoint_dir"]).resolve()),
         "base_dim": int(run["base_dim"]),
         "embed_dim": int(run["embed_dim"]),
-        "num_layers_backbone": int(run["num_layers_backbone"]),
-        "mambaversion": run.get("model_family", DEFAULT_MODEL_FAMILY),
         "model_version": run["model_config"],
     })
+    if run.get("model_family") != "adapteronly":
+        params.update({
+            "num_layers_backbone": int(run["num_layers_backbone"]),
+            "mambaversion": run.get("model_family", DEFAULT_MODEL_FAMILY),
+        })
     params.update(manifest.get("training_overrides", {}))
     params.update(run.get("training_overrides", {}))
     write_yaml(Path(run["model_yaml"]), {run["model_config"]: params})
@@ -248,14 +289,17 @@ def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
         "output_dir": str(Path(run["evaluation_dir"]).resolve()),
         "run_num": run["run_id"],
         "max_samples": int(run["max_samples"]),
-        "use_pretrained_backbone": True,
-        "pretrained_checkpoint": str(Path(run["pretrained_checkpoint"]).resolve()),
+        "use_pretrained_backbone": bool(run.get("use_pretrained_backbone", True)),
+        "pretrained_checkpoint": (
+            str(Path(run["pretrained_checkpoint"]).resolve())
+            if run.get("pretrained_checkpoint") else None
+        ),
     })
     write_yaml(Path(run["analysis_yaml"]), {"analysis": analysis})
 
 
 def train_command(manifest: dict[str, Any], run: dict[str, Any]) -> list[str]:
-    return [
+    command = [
         sys.executable,
         "train/downstream/train_track_regression.py",
         "--yaml_config", str(Path(run["model_yaml"]).resolve()),
@@ -265,13 +309,17 @@ def train_command(manifest: dict[str, Any], run: dict[str, Any]) -> list[str]:
         "--global_log_dir", str(Path(manifest["campaign_dir"]).resolve() / "logs" / "global"),
         "--eventnumber", str(int(run["eventnumber"])),
         "--train_batch_size", str(int(run["train_batch_size"])),
-        "--usepretrain",
-        "--pretrained_ckpt", str(Path(run["pretrained_checkpoint"]).resolve()),
         "--checkpoint_dir", str(Path(run["checkpoint_dir"]).resolve()),
         "--log_file_name", f"{run['run_id']}.log",
         "--checkpoint_file_name", f"{run['run_id']}_adapter_checkpoint.pth",
         "--artifact_summary", str(Path(run["artifact_summary"]).resolve()),
     ]
+    if run.get("use_pretrained_backbone", True):
+        command.extend([
+            "--usepretrain",
+            "--pretrained_ckpt", str(Path(run["pretrained_checkpoint"]).resolve()),
+        ])
+    return command
 
 
 def eval_command(run: dict[str, Any]) -> list[str]:
@@ -365,9 +413,12 @@ def collate_summary(manifest: dict[str, Any]) -> None:
                     shutil.copyfileobj(stream, headline_stream)
             table_row = {
                 "run_id": run["run_id"],
+                "backbone_run_id": run.get("backbone_run_id"),
+                "use_pretrained_backbone": run.get("use_pretrained_backbone", True),
                 "embed_dim": run["embed_dim"],
                 "num_layers_backbone": run["num_layers_backbone"],
                 "pretrain_events": run["pretrain_events"],
+                "labeled_events": run.get("labeled_events", run.get("eventnumber")),
                 "adapter_checkpoint": run["adapter_checkpoint"],
                 "evaluation_dir": run["evaluation_dir"],
                 "summary_found": summary.exists(),

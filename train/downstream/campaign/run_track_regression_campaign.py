@@ -61,6 +61,8 @@ def selected_runs(manifest: dict, only: list[str] | None, limit: int | None) -> 
 
 
 def validate_run_inputs(run: dict) -> None:
+    if not run.get("use_pretrained_backbone", True):
+        return
     checkpoint = Path(run["pretrained_checkpoint"])
     if not checkpoint.is_file():
         raise FileNotFoundError(f"Pretrained checkpoint does not exist: {checkpoint}")

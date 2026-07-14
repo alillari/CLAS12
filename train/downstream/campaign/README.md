@@ -80,10 +80,29 @@ With multiple `--eventnumber` values, each backbone is expanded into one
 adapter run per labeled-data amount. For example:
 
 ```text
+adapteronly_label100
+adapteronly_label1000
+adapteronly_label10000
+adapteronly_label70000
 scale_w1536_d12_n5483352_label100
 scale_w1536_d12_n5483352_label1000
 scale_w1536_d12_n5483352_label10000
 scale_w1536_d12_n5483352_label70000
+```
+
+Adapter-only baselines are included by default, one per labeled-data amount.
+They use `scripts/configs/mamba_clas12_track_regression_adapteronly.yaml` and
+omit `--usepretrain`.
+
+To build a manifest without adapter-only baselines:
+
+```bash
+python train/downstream/campaign/build_track_regression_manifest.py \
+  --checkpoint-root /home/alessio/ML-work/pretrained-FMs/campaign_1 \
+  --campaign-name campaign_1_track_regression_label_sweep \
+  --artifact-root /home/alessio/ML-work/result_deep_storage \
+  --eventnumber 100,1000,10000,70000 \
+  --no-adapter-only
 ```
 
 ## Training-Time Controls

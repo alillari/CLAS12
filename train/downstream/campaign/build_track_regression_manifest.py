@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 
 from campaign_util import (
+    DEFAULT_ADAPTER_ONLY_MODEL_YAML,
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_BASE_ANALYSIS_YAML,
     DEFAULT_BASE_MODEL_YAML,
@@ -15,6 +16,7 @@ from campaign_util import (
     DEFAULT_EVENTNUMBER,
     DEFAULT_MAX_SAMPLES,
     DEFAULT_TRAIN_BATCH_SIZE,
+    build_adapter_only_run_row,
     build_run_row,
     campaign_dir,
     discover_checkpoint,
@@ -44,6 +46,11 @@ def parse_args() -> argparse.Namespace:
         "--base-model-yaml",
         default=str(DEFAULT_BASE_MODEL_YAML),
         help="Base downstream pretrained track-regression YAML.",
+    )
+    parser.add_argument(
+        "--adapter-only-model-yaml",
+        default=str(DEFAULT_ADAPTER_ONLY_MODEL_YAML),
+        help="Base downstream adapter-only track-regression YAML.",
     )
     parser.add_argument(
         "--base-analysis-yaml",
@@ -81,6 +88,11 @@ def parse_args() -> argparse.Namespace:
         "--allow-empty",
         action="store_true",
         help="Write an empty manifest if no run directories are found.",
+    )
+    parser.add_argument(
+        "--no-adapter-only",
+        action="store_true",
+        help="Do not add adapter-only baseline rows.",
     )
     return parser.parse_args()
 
@@ -161,6 +173,17 @@ def main() -> None:
         raise FileNotFoundError(f"No pretrained run directories found in {checkpoint_root}")
 
     runs = []
+    if not args.no_adapter_only:
+        for eventnumber in eventnumbers:
+            row = build_adapter_only_run_row(
+                base_dir=base_dir,
+                eventnumber=eventnumber,
+                train_batch_size=args.train_batch_size,
+                max_samples=args.max_samples,
+            )
+            row["base_model_yaml"] = args.adapter_only_model_yaml
+            runs.append(row)
+
     errors = []
     for source_dir in source_dirs:
         try:
@@ -197,6 +220,7 @@ def main() -> None:
         "artifact_root": str(artifact_root),
         "checkpoint_root": str(checkpoint_root),
         "base_model_yaml": args.base_model_yaml,
+        "adapter_only_model_yaml": args.adapter_only_model_yaml,
         "base_analysis_yaml": args.base_analysis_yaml,
         "created_at": utc_now(),
         "defaults": {

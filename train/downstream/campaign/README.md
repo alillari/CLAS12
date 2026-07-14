@@ -306,6 +306,56 @@ python train/downstream/campaign/run_track_regression_campaign.py \
   --collate-only
 ```
 
+## Plot Campaign Scaling
+
+After evaluation, collate campaign-level metrics:
+
+```bash
+python train/downstream/campaign/run_track_regression_campaign.py \
+  --manifest /home/alessio/ML-work/result_deep_storage/campaigns/campaign_1_track_regression_label_sweep/manifest.yaml \
+  --collate-only
+```
+
+Then make scaling plots:
+
+```bash
+python train/downstream/campaign/plot_track_regression_campaign.py \
+  --campaign-dir /home/alessio/ML-work/result_deep_storage/campaigns/campaign_1_track_regression_label_sweep
+```
+
+The plotting script reads:
+
+```text
+<campaign_dir>/summary/campaign_headline_metrics.jsonl
+<campaign_dir>/manifest.yaml
+```
+
+and writes:
+
+```text
+<campaign_dir>/summary/plots/
+  plot_data.csv
+  best_by_slice.csv
+  resolution_vs_labeled_events_by_width.png
+  resolution_vs_backbone_params_by_labeled_events.png
+  resolution_vs_pretrain_events_by_labeled_events.png
+  adapter_to_cvt_ratio_phase_traces.png
+  tail_fraction_10pct_phase_traces.png
+```
+
+The three main campaign axes are:
+
+- backbone model size: `backbone_n_params`, computed by instantiating the same
+  `Mamba1GPT` backbone used by training and counting trainable parameters;
+- backbone pretraining data size: parsed from the `n<int>` token;
+- adapter labeled-data size: parsed from the `_label<int>` suffix or read from
+  the manifest.
+
+The script avoids 3D plots. Instead it makes trace families and small multiples,
+so each figure varies two axes while holding the third axis in panels or traces.
+If the model class cannot be imported in a lightweight environment, the plots
+fall back to using `embed_dim` instead of `backbone_n_params`.
+
 ## Troubleshooting
 
 If manifest building fails with a parse error, check that the backbone directory

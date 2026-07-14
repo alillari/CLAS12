@@ -18,6 +18,12 @@ from campaign_util import read_yaml
 
 
 LABEL_RE = re.compile(r"(?:^|_)label(?P<label>\d+)(?:_|$)")
+COMPONENTS = ("px_gev", "py_gev", "pz_gev")
+COMPONENT_LABELS = {
+    "px_gev": "px",
+    "py_gev": "py",
+    "pz_gev": "pz",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,27 +153,22 @@ def parameter_counter():
 
 
 def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    adapter = {}
-    comparison = {}
+    adapter_components: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in metric_rows:
         run_id = row.get("run_name") or row.get("run_num")
         if not run_id:
             continue
         if (
-            row.get("record_type") == "physics_summary"
+            row.get("record_type") == "ml_error"
             and row.get("method") == "adapter"
-            and row.get("variable") == "p_gev"
+            and row.get("space") == "component"
+            and row.get("variable") in COMPONENTS
         ):
-            adapter[run_id] = row
-        elif (
-            row.get("record_type") == "comparison_summary"
-            and row.get("method") == "adapter_over_cvt"
-        ):
-            comparison[run_id] = row
+            adapter_components[run_id][row["variable"]] = row
 
     count_params = parameter_counter()
     rows = []
-    for run_id, metric in sorted(adapter.items()):
+    for run_id, component_metrics in sorted(adapter_components.items()):
         try:
             metadata = parse_backbone_metadata(run_id)
         except ValueError:
@@ -187,16 +188,21 @@ def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, 
             "pretrain_events": int(merged["pretrain_events"]) if merged.get("pretrain_events") is not None else None,
             "labeled_events": int(merged["labeled_events"]) if merged.get("labeled_events") is not None else None,
             "model_family": merged.get("model_family", "mamba1"),
-            "adapter_relative_resolution_68": finite_float(metric.get("relative_resolution_68")),
-            "adapter_relative_bias": finite_float(metric.get("relative_bias")),
-            "adapter_tail_fraction_10pct": finite_float(metric.get("relative_tail_fraction_10pct")),
-            "adapter_tail_fraction_25pct": finite_float(metric.get("relative_tail_fraction_25pct")),
-            "adapter_mae_gev": finite_float(metric.get("mae")),
-            "adapter_rmse_gev": finite_float(metric.get("rmse")),
-            "adapter_to_cvt_resolution_ratio": finite_float(
-                comparison.get(run_id, {}).get("adapter_to_cvt_resolution_ratio")
-            ),
         }
+        rmse_values = []
+        r2_values = []
+        for component in COMPONENTS:
+            metric = component_metrics.get(component, {})
+            rmse = finite_float(metric.get("rmse"))
+            r2 = finite_float(metric.get("r2"))
+            row[f"adapter_rmse_{component}"] = rmse
+            row[f"adapter_r2_{component}"] = r2
+            if rmse is not None:
+                rmse_values.append(rmse)
+            if r2 is not None:
+                r2_values.append(r2)
+        row["adapter_rmse_mean"] = sum(rmse_values) / len(rmse_values) if rmse_values else None
+        row["adapter_r2_mean"] = sum(r2_values) / len(r2_values) if r2_values else None
         if count_params is not None and row["embed_dim"] is not None:
             try:
                 row["backbone_n_params"] = count_params({**merged, **row})
@@ -220,11 +226,11 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 def best_by_slice(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     best = {}
     for row in rows:
-        value = row.get("adapter_relative_resolution_68")
+        value = row.get("adapter_rmse_mean")
         if value is None:
             continue
         key = (row.get("backbone_run_id"), row.get("labeled_events"))
-        if key not in best or value < best[key]["adapter_relative_resolution_68"]:
+        if key not in best or value < best[key]["adapter_rmse_mean"]:
             best[key] = row
     return list(best.values())
 
@@ -318,62 +324,80 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
     size_x = "backbone_n_params" if any(row.get("backbone_n_params") for row in rows) else "embed_dim"
     size_xlabel = "Backbone trainable parameters" if size_x == "backbone_n_params" else "Backbone embed dim"
 
-    plot_faceted_lines(
-        rows,
-        output_dir / "resolution_vs_labeled_events_by_width.png",
-        x_key="labeled_events",
-        y_key="adapter_relative_resolution_68",
-        line_key="embed_dim",
-        facet_key="pretrain_events",
-        title="Adapter momentum resolution vs labeled adapter data",
-        ylabel="Adapter relative resolution 68",
-        xlabel="Adapter labeled events",
-    )
-    plot_faceted_lines(
-        rows,
-        output_dir / "resolution_vs_backbone_params_by_labeled_events.png",
-        x_key=size_x,
-        y_key="adapter_relative_resolution_68",
-        line_key="labeled_events",
-        facet_key="pretrain_events",
-        title="Adapter momentum resolution vs backbone size",
-        ylabel="Adapter relative resolution 68",
-        xlabel=size_xlabel,
-    )
-    plot_faceted_lines(
-        rows,
-        output_dir / "resolution_vs_pretrain_events_by_labeled_events.png",
-        x_key="pretrain_events",
-        y_key="adapter_relative_resolution_68",
-        line_key="labeled_events",
-        facet_key="embed_dim",
-        title="Adapter momentum resolution vs backbone pretraining data",
-        ylabel="Adapter relative resolution 68",
-        xlabel="Backbone pretraining events",
-    )
-    plot_faceted_lines(
-        rows,
-        output_dir / "adapter_to_cvt_ratio_phase_traces.png",
-        x_key="labeled_events",
-        y_key="adapter_to_cvt_resolution_ratio",
-        line_key="embed_dim",
-        facet_key="pretrain_events",
-        title="Adapter/CVT resolution ratio vs labeled adapter data",
-        ylabel="Adapter/CVT relative resolution ratio",
-        xlabel="Adapter labeled events",
-        reference_y=1.0,
-    )
-    plot_faceted_lines(
-        rows,
-        output_dir / "tail_fraction_10pct_phase_traces.png",
-        x_key="labeled_events",
-        y_key="adapter_tail_fraction_10pct",
-        line_key="embed_dim",
-        facet_key="pretrain_events",
-        title="Adapter 10% tail fraction vs labeled adapter data",
-        ylabel="Tail fraction |relative error| > 10%",
-        xlabel="Adapter labeled events",
-    )
+    for metric, ylabel, better in (
+        ("rmse", "RMSE [GeV]", "lower"),
+        ("r2", "R2", "higher"),
+    ):
+        mean_key = f"adapter_{metric}_mean"
+        plot_faceted_lines(
+            rows,
+            output_dir / f"{metric}_mean_vs_labeled_events_by_width.png",
+            x_key="labeled_events",
+            y_key=mean_key,
+            line_key="embed_dim",
+            facet_key="pretrain_events",
+            title=f"Adapter mean {ylabel} vs labeled adapter data ({better} is better)",
+            ylabel=f"Mean {ylabel} across px, py, pz",
+            xlabel="Adapter labeled events",
+        )
+        plot_faceted_lines(
+            rows,
+            output_dir / f"{metric}_mean_vs_backbone_params_by_labeled_events.png",
+            x_key=size_x,
+            y_key=mean_key,
+            line_key="labeled_events",
+            facet_key="pretrain_events",
+            title=f"Adapter mean {ylabel} vs backbone size ({better} is better)",
+            ylabel=f"Mean {ylabel} across px, py, pz",
+            xlabel=size_xlabel,
+        )
+        plot_faceted_lines(
+            rows,
+            output_dir / f"{metric}_mean_vs_pretrain_events_by_labeled_events.png",
+            x_key="pretrain_events",
+            y_key=mean_key,
+            line_key="labeled_events",
+            facet_key="embed_dim",
+            title=f"Adapter mean {ylabel} vs backbone pretraining data ({better} is better)",
+            ylabel=f"Mean {ylabel} across px, py, pz",
+            xlabel="Backbone pretraining events",
+        )
+        for component in COMPONENTS:
+            component_key = f"adapter_{metric}_{component}"
+            component_label = COMPONENT_LABELS[component]
+            plot_faceted_lines(
+                rows,
+                output_dir / f"{metric}_{component}_vs_labeled_events_by_width.png",
+                x_key="labeled_events",
+                y_key=component_key,
+                line_key="embed_dim",
+                facet_key="pretrain_events",
+                title=f"Adapter {component_label} {ylabel} vs labeled adapter data ({better} is better)",
+                ylabel=f"{component_label} {ylabel}",
+                xlabel="Adapter labeled events",
+            )
+            plot_faceted_lines(
+                rows,
+                output_dir / f"{metric}_{component}_vs_backbone_params_by_labeled_events.png",
+                x_key=size_x,
+                y_key=component_key,
+                line_key="labeled_events",
+                facet_key="pretrain_events",
+                title=f"Adapter {component_label} {ylabel} vs backbone size ({better} is better)",
+                ylabel=f"{component_label} {ylabel}",
+                xlabel=size_xlabel,
+            )
+            plot_faceted_lines(
+                rows,
+                output_dir / f"{metric}_{component}_vs_pretrain_events_by_labeled_events.png",
+                x_key="pretrain_events",
+                y_key=component_key,
+                line_key="labeled_events",
+                facet_key="embed_dim",
+                title=f"Adapter {component_label} {ylabel} vs backbone pretraining data ({better} is better)",
+                ylabel=f"{component_label} {ylabel}",
+                xlabel="Backbone pretraining events",
+            )
 
 
 def main() -> None:
@@ -385,7 +409,7 @@ def main() -> None:
     manifest_rows = manifest_lookup(manifest_path)
     rows = build_plot_rows(metric_rows, manifest_rows)
     if not rows:
-        raise RuntimeError(f"No completed adapter physics-summary rows found in {headline_jsonl}")
+        raise RuntimeError(f"No completed adapter component ml_error rows found in {headline_jsonl}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     write_csv(output_dir / "plot_data.csv", rows)

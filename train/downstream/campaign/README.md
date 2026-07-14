@@ -336,11 +336,14 @@ and writes:
 <campaign_dir>/summary/plots/
   plot_data.csv
   best_by_slice.csv
-  resolution_vs_labeled_events_by_width.png
-  resolution_vs_backbone_params_by_labeled_events.png
-  resolution_vs_pretrain_events_by_labeled_events.png
-  adapter_to_cvt_ratio_phase_traces.png
-  tail_fraction_10pct_phase_traces.png
+  rmse_mean_vs_labeled_events_by_width.png
+  rmse_mean_vs_backbone_params_by_labeled_events.png
+  rmse_mean_vs_pretrain_events_by_labeled_events.png
+  r2_mean_vs_labeled_events_by_width.png
+  r2_mean_vs_backbone_params_by_labeled_events.png
+  r2_mean_vs_pretrain_events_by_labeled_events.png
+  rmse_<component>_vs_*.png
+  r2_<component>_vs_*.png
 ```
 
 The three main campaign axes are:
@@ -355,6 +358,14 @@ The script avoids 3D plots. Instead it makes trace families and small multiples,
 so each figure varies two axes while holding the third axis in panels or traces.
 If the model class cannot be imported in a lightweight environment, the plots
 fall back to using `embed_dim` instead of `backbone_n_params`.
+
+The campaign plots intentionally use only adapter regression metrics. COATJAVA
+or CVT reconstruction comparison rows are ignored here. The metrics are:
+
+- RMSE for `px`, `py`, and `pz`;
+- R2 for `px`, `py`, and `pz`;
+- mean RMSE averaged across `px`, `py`, and `pz`;
+- mean R2 averaged across `px`, `py`, and `pz`.
 
 ## Troubleshooting
 

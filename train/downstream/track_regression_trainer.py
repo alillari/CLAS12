@@ -527,7 +527,7 @@ class DownstreamTrainer():
         
 
 
-    def train(self, pretrain = True, train_from_checkpoint = False, checkpoint_path = None):
+    def train(self, pretrain=True, train_from_checkpoint=False, checkpoint_path=None, optuna_trial=None):
         ###%%%%%%%
         # Debugging
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
@@ -583,6 +583,7 @@ class DownstreamTrainer():
             pooling=getattr(self.params, "pooling", "mean"),
             embed_method=self.params.embed_method,
             pe_method=self.params.pe_method,
+            dropout=float(getattr(self.params, "dropout", 0.0)),
             target_mean=self.regression_target_stats["mean"],
             target_std=self.regression_target_stats["std"],
         ).to(self.device)
@@ -595,16 +596,26 @@ class DownstreamTrainer():
 
         self.down_optimizer = optim.AdamW(self.down_model.parameters(), 
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
-                                         weight_decay=0.0001) 
+                                         weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001))) 
         
-        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=1.0)
+        self.grad_clip_value = float(getattr(self.params, "grad_clip_value", 1.0))
+        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=self.grad_clip_value)
 
+        max_optimizer_steps = getattr(self.params, "max_optimizer_steps", None)
+        scheduler_steps = int(getattr(
+            self.params,
+            "scheduler_first_cycle_steps",
+            getattr(self.params, "first_cycle_steps", max_optimizer_steps or 200),
+        ))
+        warmup_steps = getattr(self.params, "warmup_steps", 20)
+        if hasattr(self.params, "warmup_fraction"):
+            warmup_steps = max(1, int(float(self.params.warmup_fraction) * scheduler_steps))
 
         self.down_scheduler = CosineAnnealingWarmupRestarts(self.down_optimizer,
-                                          first_cycle_steps=200,
+                                          first_cycle_steps=scheduler_steps,
                                           max_lr=self.params.max_lr,
                                           min_lr=self.params.min_lr,
-                                          warmup_steps=20)
+                                          warmup_steps=int(warmup_steps))
 
 
         # Add safe global class
@@ -641,9 +652,15 @@ class DownstreamTrainer():
         if self.log_to_screen:
             print("Starting training loop...")
             with open(log_file_path, "w") as f:
-                f.write("Epoch\tTrain_Loss\tVal_Loss\tTime\n")
+                if max_optimizer_steps is None:
+                    f.write("Epoch\tTrain_Loss\tVal_Loss\tTime\n")
+                else:
+                    f.write("Step\tEpoch\tTrain_Loss\tVal_Loss\tLR\tTime\n")
 
         self.best_loss = np.inf
+        self.best_step = None
+        self.best_epoch = None
+        self.global_step = 0
         self.best_ARI = 0
         self.down_results = {'epoch': 0, 'train': [], 'val': [], 'precision':[], 'recall':[], 'accuracy': []}
         # early stopping
@@ -662,6 +679,15 @@ class DownstreamTrainer():
         else:
             self.loss_bin = None
             self.loss_weight = None
+
+        if max_optimizer_steps is not None:
+            self._train_by_optimizer_step(
+                pretrain=pretrain,
+                log_file_path=log_file_path,
+                checkpoint_file_name=checkpoint_file_name,
+                optuna_trial=optuna_trial,
+            )
+            return
         
         for epoch in range(self.startEpoch, self.params.max_epochs):
             self.down_results['epoch'] = epoch
@@ -693,6 +719,8 @@ class DownstreamTrainer():
             print('Epoch: ', epoch, 'Loss: ', train_epoch_loss)
             if (epoch_loss < (self.best_loss - self.min_delta)):
                 self.best_loss = epoch_loss
+                self.best_epoch = epoch
+                self.best_step = self.global_step
                 self._save_checkpoint(
                     filename=checkpoint_file_name,
                     epoch=epoch,
@@ -741,6 +769,162 @@ class DownstreamTrainer():
             "target_valid": counts > 0,
         }
 
+    def _current_lr(self):
+        return self.down_optimizer.param_groups[0]["lr"]
+
+    def _train_one_batch(self, inputdict, pretrain=False):
+        grouped = inputdict['points'].to(self.device)  # B X N X C
+        b, c = grouped.size(0), grouped.size(-1)
+        grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
+        mask = grouped[..., 0] != -100 # B X N
+        reg = inputdict['reg_target'].to(self.device)  # B X N X 8
+
+        targets = self.build_regression_targets(reg, mask)
+
+        self.down_optimizer.zero_grad()
+        if pretrain:
+            with torch.no_grad():
+                _, pre_embed, _ = self.model(grouped, return_z=True)
+            feature = torch.stack(pre_embed)
+            pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+        else:
+            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+
+        pred = pred_dict["pred_regression"]  # B x num_output_classes
+
+        outputs = {
+            "pred": pred,
+        }
+
+        losses = masked_regression_loss(
+            outputs=outputs,
+            targets=targets,
+            option=self.regression_loss,
+        )
+
+        loss = losses['loss']
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            self.down_model.parameters(),
+            max_norm=self.grad_clip_value,
+            norm_type=2.0,
+        )
+
+        self.down_optimizer.step()
+        return loss.item()
+
+    def _record_validation_result(
+        self,
+        val_loss,
+        checkpoint_file_name,
+        epoch,
+        step,
+        optuna_trial=None,
+    ):
+        if val_loss < (self.best_loss - self.min_delta):
+            self.best_loss = val_loss
+            self.best_epoch = epoch
+            self.best_step = step
+            self._save_checkpoint(
+                filename=checkpoint_file_name,
+                epoch=epoch,
+                is_best=True,
+                loss=val_loss,
+            )
+            self.stagnation_counter = 0
+        elif step >= self.early_stopping_min_steps:
+            self.stagnation_counter += 1
+
+        if optuna_trial is not None:
+            optuna_trial.report(float(val_loss), int(step))
+            if step >= self.early_stopping_min_steps and optuna_trial.should_prune():
+                try:
+                    import optuna
+                except ImportError as exc:
+                    raise RuntimeError("Optuna pruning requested, but optuna is not installed") from exc
+                raise optuna.TrialPruned()
+
+    def _train_by_optimizer_step(
+        self,
+        pretrain,
+        log_file_path,
+        checkpoint_file_name,
+        optuna_trial=None,
+    ):
+        max_optimizer_steps = int(self.params.max_optimizer_steps)
+        val_interval_steps = int(getattr(self.params, "val_interval_steps", max_optimizer_steps))
+        if val_interval_steps < 1:
+            raise ValueError("val_interval_steps must be >= 1")
+        self.early_stopping_min_steps = int(getattr(
+            self.params,
+            "early_stopping_min_steps",
+            getattr(self.params, "early_stopping_warmup_steps", 0),
+        ))
+        max_epochs = int(getattr(self.params, "max_epochs", 10**9))
+
+        for epoch in range(self.startEpoch, max_epochs):
+            self.down_results['epoch'] = epoch
+            self.down_results['train'] = []
+            self.down_results['val'] = []
+            self.epoch = epoch
+            if dist.is_initialized():
+                self.train_sampler.set_epoch(epoch)
+
+            self.model.eval()
+            self.down_model.train()
+            self.starttime = time.time()
+
+            max_train_batches = getattr(self.params, "max_train_batches", None)
+            for i, inputdict in enumerate(tqdm(self.train_data_loader)):
+                if max_train_batches is not None and i >= int(max_train_batches):
+                    break
+                if self.global_step >= max_optimizer_steps:
+                    break
+
+                self.iters += 1
+                loss_item = self._train_one_batch(inputdict, pretrain=pretrain)
+                self.global_step += 1
+                self.down_results['train'].append(loss_item)
+                self.down_scheduler.step()
+
+                should_validate = (
+                    self.global_step % val_interval_steps == 0
+                    or self.global_step >= max_optimizer_steps
+                )
+                if should_validate:
+                    val_loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
+                    train_loss = np.mean(self.down_results['train'])
+                    elapsed = time.time() - self.starttime
+                    with open(log_file_path, "a") as f:
+                        f.write(
+                            f"{self.global_step}\t{epoch}\t{train_loss:.8f}\t"
+                            f"{val_loss:.8f}\t{self._current_lr():.8e}\t{elapsed:.2f}\n"
+                        )
+                    self._record_validation_result(
+                        val_loss,
+                        checkpoint_file_name,
+                        epoch=epoch,
+                        step=self.global_step,
+                        optuna_trial=optuna_trial,
+                    )
+                    if self.stagnation_counter >= self.patience:
+                        print(
+                            "Early stopping triggered at step "
+                            f"{self.global_step} after {self.patience} validation "
+                            "checks without improvement."
+                        )
+                        return
+                    self.down_results['train'] = []
+                    self.down_results['val'] = []
+                    self.starttime = time.time()
+
+            if self.global_step >= max_optimizer_steps:
+                return
+
+        print(
+            f"Reached max_epochs={max_epochs} before max_optimizer_steps="
+            f"{max_optimizer_steps}."
+        )
 
     def downstream_end_to_end_one_epoch(self, pretrain = False):
         tr_time = 0
@@ -754,66 +938,9 @@ class DownstreamTrainer():
             if max_train_batches is not None and i >= int(max_train_batches):
                 break
             self.iters += 1
-            grouped = inputdict['points'].to(self.device)  # B X N X C
-            b, c = grouped.size(0), grouped.size(-1)
-            grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
-            mask = grouped[..., 0] != -100 # B X N
-            reg = inputdict['reg_target'].to(self.device)  # B X N X 8
-            pid = inputdict['pid_target'].to(self.device)  # B X N tensor containing particle IDs
-            #mid = inputdict['mid_target'].to(self.device)  # B X N tensor containing mother IDs
-
-            trackinfo_noiselabel_dict = get_trackinfo_noiselabel(reg)
-            noise_labels = trackinfo_noiselabel_dict["noise_labels"]
-            pid_label_dict = get_pidlabel(pid)
-            pid_class = pid_label_dict["pid_class"]  # B X N tensor with particle class information
-
-            targets = self.build_regression_targets(reg, mask)
-
-            self.down_optimizer.zero_grad()
-            if pretrain:
-                #print(grouped.size())
-                #print("passing to pretrained model")
-                with torch.no_grad():
-                    _, pre_embed, _ = self.model(grouped, return_z = True)
-                #feature = torch.stack(pre_embed).mean(0)
-                feature = torch.stack(pre_embed)
-                #print('feature: ', feature.size())
-                pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
-                
-            else:
-                pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
-
-            pred = pred_dict["pred_regression"]  # B x num_output_classes
-
-            outputs = {
-                "pred": pred,
-            }
-
-            #print("mask all valid:", mask.all().item())
-            #print("target min/max:", targets["target"].min().item(), targets["target"].max().item())
-            #print("pred min/max:", pred.min().item(), pred.max().item())
-            #print("first target:", targets["target"][0])
-            #print("first pred:", pred[0])
-
-            losses = masked_regression_loss(
-                outputs=outputs,
-                targets=targets,
-                option=self.regression_loss,
-            )
-
-            loss = losses['loss']
-            # Compute loss and get matching indices
-            #loss = sum(losses.values())
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.down_model.parameters(),  # Or specific parameters
-                max_norm=1.0,  
-                norm_type=2.0   
-            )
-            
-            self.down_optimizer.step()
-                
-            self.down_results['train'].append(loss.item())
+            loss_item = self._train_one_batch(inputdict, pretrain=pretrain)
+            self.global_step += 1
+            self.down_results['train'].append(loss_item)
 
     def validate_end_to_end_one_epoch(self, pretrain=False):
         self.model.eval()  # Set backbone model to eval mode
@@ -894,10 +1021,13 @@ class DownstreamTrainer():
     def _save_checkpoint(self, filename, epoch, is_best, loss):
         checkpoint = {
             'epoch': epoch,
+            'global_step': getattr(self, "global_step", None),
             'model_state_dict': self.down_model.state_dict(),
             'optimizer_state_dict': self.down_optimizer.state_dict(),
             'scheduler_state_dict': self.down_scheduler.state_dict(),
             'best_loss': self.best_loss,
+            'best_step': getattr(self, "best_step", None),
+            'best_epoch': getattr(self, "best_epoch", None),
             'current_loss': loss,
             'params': vars(self.params)  # Save all hyperparameters
         }
@@ -964,6 +1094,9 @@ class DownstreamTrainer():
     
             self.startEpoch = checkpoint.get('epoch', 0) + 1
             self.best_loss = checkpoint.get('best_loss', float('inf'))
+            self.best_step = checkpoint.get('best_step', None)
+            self.best_epoch = checkpoint.get('best_epoch', None)
+            self.global_step = checkpoint.get('global_step', 0) or 0
     
         # 6. Log info
         if self.log_to_screen:

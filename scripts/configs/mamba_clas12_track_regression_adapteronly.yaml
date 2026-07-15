@@ -71,6 +71,11 @@ default: &default
   min_lr: 0.00001
   first_cycle_steps: 3000
   warmup_steps: 300
+  # Set max_optimizer_steps to enable step-oriented training for Optuna.
+  max_optimizer_steps: None
+  val_interval_steps: 500
+  early_stopping_min_steps: 1000
+  adapter_weight_decay: 0.0001
   early_stopping_patience: 20
   early_stopping_min_delta: 0.0001
   early_stopping_warmup_steps: 50

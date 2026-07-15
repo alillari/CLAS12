@@ -527,7 +527,14 @@ class DownstreamTrainer():
         
 
 
-    def train(self, pretrain=True, train_from_checkpoint=False, checkpoint_path=None, optuna_trial=None):
+    def train(
+        self,
+        pretrain=True,
+        train_from_checkpoint=False,
+        checkpoint_path=None,
+        optuna_trial=None,
+        metrics_callback=None,
+    ):
         ###%%%%%%%
         # Debugging
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
@@ -686,6 +693,7 @@ class DownstreamTrainer():
                 log_file_path=log_file_path,
                 checkpoint_file_name=checkpoint_file_name,
                 optuna_trial=optuna_trial,
+                metrics_callback=metrics_callback,
             )
             return
         
@@ -735,6 +743,16 @@ class DownstreamTrainer():
                     print(f"Best validation loss: {self.best_loss:.4f}, current loss: {epoch_loss:.4f}")
                     break
             self.down_scheduler.step()
+            if metrics_callback is not None:
+                metrics_callback({
+                    "step": self.global_step,
+                    "epoch": epoch,
+                    "train/loss": float(train_epoch_loss),
+                    "val/loss": float(val_epoch_loss),
+                    "lr": float(self._current_lr()),
+                    "best/val_loss": float(self.best_loss),
+                    "best/step": self.best_step,
+                })
 
 
     def build_regression_targets(self, reg, hit_mask):
@@ -850,6 +868,7 @@ class DownstreamTrainer():
         log_file_path,
         checkpoint_file_name,
         optuna_trial=None,
+        metrics_callback=None,
     ):
         max_optimizer_steps = int(self.params.max_optimizer_steps)
         val_interval_steps = int(getattr(self.params, "val_interval_steps", max_optimizer_steps))
@@ -907,6 +926,16 @@ class DownstreamTrainer():
                         step=self.global_step,
                         optuna_trial=optuna_trial,
                     )
+                    if metrics_callback is not None:
+                        metrics_callback({
+                            "step": self.global_step,
+                            "epoch": epoch,
+                            "train/loss": float(train_loss),
+                            "val/loss": float(val_loss),
+                            "lr": float(self._current_lr()),
+                            "best/val_loss": float(self.best_loss),
+                            "best/step": self.best_step,
+                        })
                     if self.stagnation_counter >= self.patience:
                         print(
                             "Early stopping triggered at step "

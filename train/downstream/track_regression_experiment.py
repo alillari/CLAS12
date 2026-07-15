@@ -163,6 +163,7 @@ def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
 def train_experiment(
     config: TrackRegressionExperimentConfig,
     optuna_trial: Any | None = None,
+    metrics_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Train one resolved downstream track-regression configuration."""
 
@@ -178,6 +179,7 @@ def train_experiment(
             train_from_checkpoint=False,
             checkpoint_path=None,
             optuna_trial=optuna_trial,
+            metrics_callback=metrics_callback,
         )
 
         summary_path = config.artifact_summary or os.path.join(

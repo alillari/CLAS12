@@ -56,6 +56,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-data-workers", type=int)
     parser.add_argument("--sampler", choices=["tpe", "random"], default="tpe")
     parser.add_argument("--enable-pruning", action="store_true")
+    parser.add_argument(
+        "--wandb-mode",
+        choices=["disabled", "offline", "online"],
+        default="disabled",
+        help="Optional W&B mode. Defaults to disabled.",
+    )
+    parser.add_argument("--wandb-project", default="clas12-adapteronly")
+    parser.add_argument("--wandb-entity")
+    parser.add_argument("--wandb-dir", help="Directory for W&B local files/offline runs")
     return parser.parse_args()
 
 
@@ -164,6 +173,50 @@ def set_trial_attrs(trial: Any, attrs: dict[str, Any]) -> None:
         trial.set_user_attr(key, value)
 
 
+def init_wandb_run(args: argparse.Namespace, trial: Any, trial_name: str, trial_dir: Path, params: dict[str, Any]):
+    if args.wandb_mode == "disabled":
+        return None
+    try:
+        import wandb
+    except ImportError as exc:
+        raise RuntimeError(
+            "W&B logging requested but wandb is not installed. Install wandb or "
+            "run with --wandb-mode disabled."
+        ) from exc
+
+    wandb_dir = Path(args.wandb_dir).resolve() if args.wandb_dir else trial_dir / "wandb"
+    wandb_dir.mkdir(parents=True, exist_ok=True)
+    config = dict(params)
+    config.update({
+        "optuna_study_name": args.study_name,
+        "optuna_trial_number": trial.number,
+        "trial_dir": str(trial_dir),
+        "hostname": socket.gethostname(),
+        "git_commit": git_commit(),
+    })
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        group=args.study_name,
+        name=trial_name,
+        id=f"{args.study_name}-{trial_name}",
+        resume="allow",
+        mode=args.wandb_mode,
+        dir=str(wandb_dir),
+        config=config,
+        save_code=False,
+    )
+
+
+def finish_wandb_run(wandb_run: Any, summary: dict[str, Any] | None = None) -> None:
+    if wandb_run is None:
+        return
+    if summary:
+        for key, value in summary.items():
+            wandb_run.summary[key] = value
+    wandb_run.finish()
+
+
 def objective_factory(args: argparse.Namespace):
     base_yaml = Path(args.yaml_config).resolve()
     output_root = Path(args.output_root).resolve()
@@ -210,24 +263,37 @@ def objective_factory(args: argparse.Namespace):
             "data_root_test": params.get("data_root_test"),
         })
 
-        result = train_experiment(
-            TrackRegressionExperimentConfig(
-                yaml_config=str(trial_yaml),
-                config=trial_config_name,
-                run_num=trial_name,
-                root_dir=str(train_dir),
-                global_log_dir=str(study_dir / "global_logs"),
-                eventnumber=args.eventnumber,
-                usepretrain=False,
-                train_batch_size=args.train_batch_size,
-                checkpoint_dir=str(checkpoint_dir),
-                log_file_name=f"{trial_name}.log",
-                checkpoint_file_name=f"{trial_name}_adapter_checkpoint.pth",
-                artifact_summary=str(artifact_summary),
-                resolved_config_path=str(resolved_config),
-            ),
-            optuna_trial=trial if args.enable_pruning else None,
-        )
+        wandb_run = init_wandb_run(args, trial, trial_name, trial_dir, params)
+
+        def log_metrics(metrics: dict[str, Any]) -> None:
+            if wandb_run is None:
+                return
+            step = metrics.get("step")
+            wandb_run.log(metrics, step=int(step) if step is not None else None)
+
+        try:
+            result = train_experiment(
+                TrackRegressionExperimentConfig(
+                    yaml_config=str(trial_yaml),
+                    config=trial_config_name,
+                    run_num=trial_name,
+                    root_dir=str(train_dir),
+                    global_log_dir=str(study_dir / "global_logs"),
+                    eventnumber=args.eventnumber,
+                    usepretrain=False,
+                    train_batch_size=args.train_batch_size,
+                    checkpoint_dir=str(checkpoint_dir),
+                    log_file_name=f"{trial_name}.log",
+                    checkpoint_file_name=f"{trial_name}_adapter_checkpoint.pth",
+                    artifact_summary=str(artifact_summary),
+                    resolved_config_path=str(resolved_config),
+                ),
+                optuna_trial=trial if args.enable_pruning else None,
+                metrics_callback=log_metrics,
+            )
+        except Exception:
+            finish_wandb_run(wandb_run, {"state": "failed"})
+            raise
 
         set_trial_attrs(trial, {
             "best_step": result.get("best_step"),
@@ -237,6 +303,13 @@ def objective_factory(args: argparse.Namespace):
             "artifact_summary": result.get("artifact_summary"),
         })
         write_json(trial_dir / "trial_result.json", result)
+        finish_wandb_run(wandb_run, {
+            "state": "complete",
+            "best_val_loss": result.get("best_val_loss"),
+            "best_step": result.get("best_step"),
+            "best_epoch": result.get("best_epoch"),
+            "checkpoint_path": result.get("checkpoint_path"),
+        })
         return float(result["best_val_loss"])
 
     return objective

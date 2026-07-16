@@ -355,12 +355,16 @@ and writes:
 <campaign_dir>/summary/plots/
   plot_data.csv
   best_by_slice.csv
+  mae_mean_vs_labeled_events_by_width.png
+  mae_mean_vs_backbone_params_by_labeled_events.png
+  mae_mean_vs_pretrain_events_by_labeled_events.png
   rmse_mean_vs_labeled_events_by_width.png
   rmse_mean_vs_backbone_params_by_labeled_events.png
   rmse_mean_vs_pretrain_events_by_labeled_events.png
   r2_mean_vs_labeled_events_by_width.png
   r2_mean_vs_backbone_params_by_labeled_events.png
   r2_mean_vs_pretrain_events_by_labeled_events.png
+  mae_<component>_vs_*.png
   rmse_<component>_vs_*.png
   r2_<component>_vs_*.png
 ```
@@ -381,8 +385,10 @@ fall back to using `embed_dim` instead of `backbone_n_params`.
 The campaign plots intentionally use only adapter regression metrics. COATJAVA
 or CVT reconstruction comparison rows are ignored here. The metrics are:
 
+- MAE for `px`, `py`, and `pz`;
 - RMSE for `px`, `py`, and `pz`;
 - R2 for `px`, `py`, and `pz`;
+- mean MAE averaged across `px`, `py`, and `pz`;
 - mean RMSE averaged across `px`, `py`, and `pz`;
 - mean R2 averaged across `px`, `py`, and `pz`.
 

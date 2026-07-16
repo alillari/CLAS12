@@ -189,18 +189,24 @@ def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, 
             "labeled_events": int(merged["labeled_events"]) if merged.get("labeled_events") is not None else None,
             "model_family": merged.get("model_family", "mamba1"),
         }
+        mae_values = []
         rmse_values = []
         r2_values = []
         for component in COMPONENTS:
             metric = component_metrics.get(component, {})
+            mae = finite_float(metric.get("mae"))
             rmse = finite_float(metric.get("rmse"))
             r2 = finite_float(metric.get("r2"))
+            row[f"adapter_mae_{component}"] = mae
             row[f"adapter_rmse_{component}"] = rmse
             row[f"adapter_r2_{component}"] = r2
+            if mae is not None:
+                mae_values.append(mae)
             if rmse is not None:
                 rmse_values.append(rmse)
             if r2 is not None:
                 r2_values.append(r2)
+        row["adapter_mae_mean"] = sum(mae_values) / len(mae_values) if mae_values else None
         row["adapter_rmse_mean"] = sum(rmse_values) / len(rmse_values) if rmse_values else None
         row["adapter_r2_mean"] = sum(r2_values) / len(r2_values) if r2_values else None
         if row.get("model_family") == "adapteronly":
@@ -327,6 +333,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
     size_xlabel = "Backbone trainable parameters" if size_x == "backbone_n_params" else "Backbone embed dim"
 
     for metric, ylabel, better in (
+        ("mae", "MAE [GeV]", "lower"),
         ("rmse", "RMSE [GeV]", "lower"),
         ("r2", "R2", "higher"),
     ):

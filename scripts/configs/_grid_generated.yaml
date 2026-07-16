@@ -1,7 +1,3 @@
-# Mamba Pretraining Configuration
-# Anonymized for publication
-
-# Default configuration (shared across all variants)
 default: &default
   # === Data Paths (UPDATE THESE) ===
   data_root: /global/cfs/cdirs/m4722/NPFM/data/pp_12M_mmap  # Directory containing features_train, features_test
@@ -66,129 +62,11 @@ default: &default
 # ============================================================================
 # Mamba 5M Configuration (~4.6M parameters)
 # ============================================================================
-mamba_5m:
+
+scale_w64_d6_n54834:
   <<: *default
-  embed_dim: 256
-  num_layers_backbone: 12
-  d_state: 16                            # State space dimension
-  d_conv: 4                              # Convolutional kernel size
-  expand: 2                              # Expansion factor
-  klen: 30
-  batch_size: 256
-  local_batch_size: 16                   # Adjust based on available GPUs
-  valid_batch_size: 64
-  local_valid_batch_size: 4
-  warmup_steps: 1000
-  total_steps: 50000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  save_version: mamba_5m
-
-# ============================================================================
-# Mamba2 5M Configuration (~5.1M parameters)
-# ============================================================================
-mamba2_5m:
-  <<: *default
-  embed_dim: 256
-  num_layers_backbone: 12
-  d_state: 128                           # Larger state space for Mamba2
-  d_conv: 4
-  expand: 2
-  headdim: 64                            # Head dimension for Mamba2
-  ngroups: 1                             # Number of groups
-  klen: 30
-  batch_size: 256
-  local_batch_size: 16
-  valid_batch_size: 64
-  local_valid_batch_size: 4
-  warmup_steps: 1000
-  total_steps: 50000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  save_version: mamba2_5m
-
-# ============================================================================
-# Smaller Mamba Configuration for Testing (~1.5M parameters)
-# ============================================================================
-mamba_small:
-  <<: *default
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  klen: 30
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  save_version: mamba_small
-
-# ============================================================================
-# CLAS12 Pretraining Configuration
-# Adapted from mamba_small for CLAS12 CVT data (no energy, 6 discrete layers,
-# ~5-40 hits/event). See CLAS12_CHANGES.md for the full rationale behind each
-# changed value.
-# ============================================================================
-clas12_pretrain:
-  <<: *default
-
-  # === Data Paths (container-relative, i.e. as seen inside the docker container) ===
-  data_root: /workspace/PP_collision/data/mmap          # features_pretrain / seg_target_pretrain / reg_target_pretrain live here
-  stat_dir:  /workspace/PP_collision/data/stats         # dummy loss_bin_pp.pkl / loss_weight_pp.pkl live here
-  checkpoint_dir: /workspace/PP_collision/checkpoints   # model checkpoints
-
-  # === CLAS12-specific overrides ===
-  klen: 3                       # "reduced space -> next nearest prediction" (was 30)
-  embed_method: pos_only        # no energy channel -> EmbedderPosOnly (was 'add')
-  voxelize: false               # Voxelizer/HRS removed entirely
-  space_filling_order: true     # CLAS12 ordering path (clas12_band_hilbert_order) is primary
-  # space_filling_curve is now irrelevant (our function replaces the z/hilbert string flag)
-
-  # === Missing attrs the training loop references but the original yaml omits ===
-  # (added explicitly to avoid AttributeError at runtime)
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-
-  # === Model size: start with the small preset (proportionate to CLAS12's
-  #     small, simple data); easily bumped to embed_dim=256 / 12 layers later ===
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-
-  # === Batch / optimization: TPC defaults kept for now (flagged as a tuning
-  #     opportunity — CLAS12 events are tiny, larger batches very likely afford) ===
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000 #5
-
-  save_version: clas12_pretrain
-
-# ============================================================================
-# CLAS12 Straight-Track Baseline (synthetic "easy ceiling" test)
-# Identical to clas12_pretrain except data_root points at the synthetic
-# perfectly-straight-track data. k=1 to compare directly against run0 (real k=1).
-# ============================================================================
-clas12_straight:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -198,7 +76,7 @@ clas12_straight:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.01
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -207,21 +85,20 @@ clas12_straight:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: clas12_straight
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w64_d6_n54834
 
-
-
-
-# --- auto-generated sweep config: sweep_real_k1 ---
-sweep_real_k1:
+scale_w128_d6_n54834:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -231,7 +108,7 @@ sweep_real_k1:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.01
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -240,143 +117,20 @@ sweep_real_k1:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_real_k1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w128_d6_n54834
 
-
-# --- auto-generated sweep config: sweep_real_k2 ---
-sweep_real_k2:
+scale_w256_d6_n54834:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
-  stat_dir:  /workspace/PP_collision/data/stats
-  checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 2
-  embed_method: pos_only
-  voxelize: false
-  space_filling_order: true
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_real_k2
-
-
-# --- auto-generated sweep config: sweep_real_k3 ---
-sweep_real_k3:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap
-  stat_dir:  /workspace/PP_collision/data/stats
-  checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 3
-  embed_method: pos_only
-  voxelize: false
-  space_filling_order: true
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_real_k3
-
-
-# --- auto-generated sweep config: sweep_real_k4 ---
-sweep_real_k4:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap
-  stat_dir:  /workspace/PP_collision/data/stats
-  checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 4
-  embed_method: pos_only
-  voxelize: false
-  space_filling_order: true
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_real_k4
-
-
-# --- auto-generated sweep config: sweep_real_k5 ---
-sweep_real_k5:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap
-  stat_dir:  /workspace/PP_collision/data/stats
-  checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 5
-  embed_method: pos_only
-  voxelize: false
-  space_filling_order: true
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_real_k5
-
-
-# --- auto-generated sweep config: sweep_straight_k1 ---
-sweep_straight_k1:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -386,7 +140,7 @@ sweep_straight_k1:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.01
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -395,142 +149,20 @@ sweep_straight_k1:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_k1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w256_d6_n54834
 
-
-# --- auto-generated sweep config: sweep_straight_k2 ---
-sweep_straight_k2:
+scale_w512_d6_n54834:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight
-  stat_dir:  /workspace/PP_collision/data/stats
-  checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 2
-  embed_method: pos_only
-  voxelize: false
-  space_filling_order: true
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_k2
-
-
-# --- auto-generated sweep config: sweep_straight_k3 ---
-sweep_straight_k3:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight
-  stat_dir:  /workspace/PP_collision/data/stats
-  checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 3
-  embed_method: pos_only
-  voxelize: false
-  space_filling_order: true
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_k3
-
-
-# --- auto-generated sweep config: sweep_straight_k4 ---
-sweep_straight_k4:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight
-  stat_dir:  /workspace/PP_collision/data/stats
-  checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 4
-  embed_method: pos_only
-  voxelize: false
-  space_filling_order: true
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_k4
-
-
-# --- auto-generated sweep config: sweep_straight_k5 ---
-sweep_straight_k5:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight
-  stat_dir:  /workspace/PP_collision/data/stats
-  checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 5
-  embed_method: pos_only
-  voxelize: false
-  space_filling_order: true
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-  embed_dim: 128
-  num_layers_backbone: 6
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_k5
-
-# --- auto-generated single-track sweep config: sweep_single_k1 ---
-sweep_single_k1:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap_single_track
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -540,7 +172,7 @@ sweep_single_k1:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.01
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -549,29 +181,30 @@ sweep_single_k1:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_single_k1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w512_d6_n54834
 
-
-# --- auto-generated single-track sweep config: sweep_single_k2 ---
-sweep_single_k2:
+scale_w1024_d6_n54834:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_single_track
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 2
+  klen: 1
   embed_method: pos_only
   voxelize: false
   space_filling_order: true
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.01
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -580,29 +213,30 @@ sweep_single_k2:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_single_k2
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1024_d6_n54834
 
-
-# --- auto-generated single-track sweep config: sweep_single_k3 ---
-sweep_single_k3:
+scale_w1536_d6_n54834:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_single_track
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 3
+  klen: 1
   embed_method: pos_only
   voxelize: false
   space_filling_order: true
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.01
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -611,29 +245,30 @@ sweep_single_k3:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_single_k3
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1536_d6_n54834
 
-
-# --- auto-generated single-track sweep config: sweep_single_k4 ---
-sweep_single_k4:
+scale_w64_d6_n131600:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_single_track
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 4
+  klen: 1
   embed_method: pos_only
   voxelize: false
   space_filling_order: true
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.024
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -642,29 +277,30 @@ sweep_single_k4:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_single_k4
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w64_d6_n131600
 
-
-# --- auto-generated single-track sweep config: sweep_single_k5 ---
-sweep_single_k5:
+scale_w128_d6_n131600:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_single_track
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 5
+  klen: 1
   embed_method: pos_only
   voxelize: false
   space_filling_order: true
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.024
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -673,18 +309,20 @@ sweep_single_k5:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_single_k5
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w128_d6_n131600
 
-# --- straight-single-track k=1 (4th corner of the 2x2: straight x 1-particle) ---
-sweep_straight_single_k1:
+scale_w256_d6_n131600:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight_single
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -694,7 +332,7 @@ sweep_straight_single_k1:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.024
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -703,28 +341,30 @@ sweep_straight_single_k1:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_single_k1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w256_d6_n131600
 
-# --- straight-single-track k=2 ---
-sweep_straight_single_k2:
+scale_w512_d6_n131600:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight_single
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 2
+  klen: 1
   embed_method: pos_only
   voxelize: false
   space_filling_order: true
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.024
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -733,29 +373,30 @@ sweep_straight_single_k2:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_single_k2
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w512_d6_n131600
 
-
-# --- straight-single-track k=3 ---
-sweep_straight_single_k3:
+scale_w1024_d6_n131600:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight_single
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 3
+  klen: 1
   embed_method: pos_only
   voxelize: false
   space_filling_order: true
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.024
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -764,29 +405,30 @@ sweep_straight_single_k3:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_single_k3
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1024_d6_n131600
 
-
-# --- straight-single-track k=4 ---
-sweep_straight_single_k4:
+scale_w1536_d6_n131600:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight_single
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 4
+  klen: 1
   embed_method: pos_only
   voxelize: false
   space_filling_order: true
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.024
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -795,29 +437,30 @@ sweep_straight_single_k4:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_single_k4
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1536_d6_n131600
 
-
-# --- straight-single-track k=5 ---
-sweep_straight_single_k5:
+scale_w64_d6_n636069:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap_straight_single
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 5
+  klen: 1
   embed_method: pos_only
   voxelize: false
   space_filling_order: true
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
+  data_fraction: 0.11599999999999999
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -826,21 +469,20 @@ sweep_straight_single_k5:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_straight_single_k5
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w64_d6_n636069
 
-
-# --- 3-particle real data, LARGE model (mamba_5m size), k=1 ---
-# Same CLAS12 settings as sweep_real_k1 but embed_dim 256 / 12 layers (~4.6M params)
-# to test whether more capacity fits the space points better.
-sweep_real_large_k1:
+scale_w128_d6_n636069:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -850,43 +492,7 @@ sweep_real_large_k1:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 256
-  num_layers_backbone: 12
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  batch_size: 128
-  local_batch_size: 8
-  valid_batch_size: 32
-  local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
-  max_lr: 0.0002
-  min_lr: 0.00002
-  dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_real_large_k1
-
-# --- BAND CLASSIFICATION experiment: real 3-particle data, k=1, small model ---
-# r predicted as one of 6 discrete detector bands (cross-entropy) instead of a
-# continuous regression; (eta, phi) stay continuous. Toggle: band_classification.
-# NOTE: loss values are NOT comparable to the regression runs (different objective).
-band_real_k1:
-  <<: *default
-  data_root: /workspace/PP_collision/data/mmap
-  stat_dir:  /workspace/PP_collision/data/stats
-  checkpoint_dir: /workspace/PP_collision/checkpoints
-  klen: 1
-  embed_method: pos_only
-  voxelize: false
-  space_filling_order: true
-  rep_aaai: false
-  nexttoken: false
-  ablate_loss_scale: false
-  band_classification: true
-  n_bands: 6
-  band_loss_weight: 1.0
-  embed_dim: 128
+  data_fraction: 0.11599999999999999
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
@@ -895,20 +501,20 @@ band_real_k1:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: band_real_k1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w128_d6_n636069
 
-# --- BAND CLASSIFICATION, LARGE model (matches sweep_real_large_k1's size) ---
-# Same size as sweep_real_large_k1 (embed_dim 256, 12 layers) so this isolates
-# the band-classification objective change from any model-size confound.
-band_real_large_k1:
+scale_w256_d6_n636069:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -918,11 +524,8 @@ band_real_large_k1:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  band_classification: true
-  n_bands: 6
-  band_loss_weight: 1.0
-  embed_dim: 256
-  num_layers_backbone: 12
+  data_fraction: 0.11599999999999999
+  num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
@@ -930,22 +533,20 @@ band_real_large_k1:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: band_real_large_k1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w256_d6_n636069
 
-# --- m6-scale model (width 1536, ~188M params), 3-coordinate REGRESSION, ---
-# --- real 3-particle data, k=1. The definitive model-size test.          ---
-# NOTE: ~40x params vs the m3 run. Expect a genuinely longer training time.
-# Watch train-vs-val gap: with ~9k events, overfitting is the likely outcome.
-# If loss goes NaN early, drop max_lr to 0.0001.
-sweep_real_m6_k1:
+scale_w512_d6_n636069:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -955,8 +556,8 @@ sweep_real_m6_k1:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 1536
-  num_layers_backbone: 12
+  data_fraction: 0.11599999999999999
+  num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
@@ -964,22 +565,20 @@ sweep_real_m6_k1:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: sweep_real_m6_k1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w512_d6_n636069
 
-# --- m6-scale model (width 1536, ~188M params), BAND CLASSIFICATION,     ---
-# --- real 3-particle data, k=1. Matched size to sweep_real_m6_k1 for a   ---
-# --- direct comparison isolating band-classification vs regression.     ---
-# NOTE: uses the FIXED trainer (loss_func_eval placement bug resolved).
-# If loss goes NaN early, drop max_lr to 0.0001.
-band_real_m6_k1:
+scale_w1024_d6_n636069:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -989,11 +588,8 @@ band_real_m6_k1:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  band_classification: true
-  n_bands: 6
-  band_loss_weight: 1.0
-  embed_dim: 1536
-  num_layers_backbone: 12
+  data_fraction: 0.11599999999999999
+  num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
@@ -1001,18 +597,20 @@ band_real_m6_k1:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: band_real_m6_k1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1024_d6_n636069
 
-# --- m1: width 64, regression, real 3-particle data, k=1 ---
-scale_m1_reg:
+scale_w1536_d6_n636069:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -1022,8 +620,8 @@ scale_m1_reg:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 64
-  num_layers_backbone: 12
+  data_fraction: 0.11599999999999999
+  num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
@@ -1031,19 +629,20 @@ scale_m1_reg:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: scale_m1_reg
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1536_d6_n636069
 
-
-# --- m2: width 128, regression, real 3-particle data, k=1 ---
-scale_m2_reg:
+scale_w64_d6_n1096670:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -1053,8 +652,8 @@ scale_m2_reg:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 128
-  num_layers_backbone: 12
+  data_fraction: 0.2
+  num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
@@ -1062,19 +661,20 @@ scale_m2_reg:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: scale_m2_reg
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w64_d6_n1096670
 
-
-# --- m3: width 256, regression, real 3-particle data, k=1 ---
-scale_m3_reg:
+scale_w128_d6_n1096670:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -1084,8 +684,8 @@ scale_m3_reg:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 256
-  num_layers_backbone: 12
+  data_fraction: 0.2
+  num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
@@ -1093,19 +693,20 @@ scale_m3_reg:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: scale_m3_reg
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w128_d6_n1096670
 
-
-# --- m4: width 512, regression, real 3-particle data, k=1 ---
-scale_m4_reg:
+scale_w256_d6_n1096670:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -1115,8 +716,8 @@ scale_m4_reg:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 512
-  num_layers_backbone: 12
+  data_fraction: 0.2
+  num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
@@ -1124,19 +725,20 @@ scale_m4_reg:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: scale_m4_reg
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w256_d6_n1096670
 
-
-# --- m5: width 1024, regression, real 3-particle data, k=1 ---
-scale_m5_reg:
+scale_w512_d6_n1096670:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -1146,8 +748,8 @@ scale_m5_reg:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 1024
-  num_layers_backbone: 12
+  data_fraction: 0.2
+  num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
@@ -1155,19 +757,20 @@ scale_m5_reg:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: scale_m5_reg
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w512_d6_n1096670
 
-
-# --- m6: width 1536, regression, real 3-particle data, k=1 ---
-scale_m6_reg:
+scale_w1024_d6_n1096670:
   <<: *default
-  data_root: /workspace/PP_collision/data/mmap
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
   stat_dir:  /workspace/PP_collision/data/stats
   checkpoint_dir: /workspace/PP_collision/checkpoints
   klen: 1
@@ -1177,8 +780,8 @@ scale_m6_reg:
   rep_aaai: false
   nexttoken: false
   ablate_loss_scale: false
-  embed_dim: 1536
-  num_layers_backbone: 12
+  data_fraction: 0.2
+  num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
@@ -1186,10 +789,428 @@ scale_m6_reg:
   local_batch_size: 8
   valid_batch_size: 32
   local_valid_batch_size: 2
-  warmup_steps: 500
-  total_steps: 25000
+  warmup_steps: 2
+  total_steps: 10
   max_lr: 0.0002
   min_lr: 0.00002
   dropout: 0.1
-  n_eval_steps: 1000
-  save_version: scale_m6_reg
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1024_d6_n1096670
+
+scale_w1536_d6_n1096670:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 0.2
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1536_d6_n1096670
+
+scale_w64_d6_n2610076:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 0.47600000000000003
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w64_d6_n2610076
+
+scale_w128_d6_n2610076:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 0.47600000000000003
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w128_d6_n2610076
+
+scale_w256_d6_n2610076:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 0.47600000000000003
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w256_d6_n2610076
+
+scale_w512_d6_n2610076:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 0.47600000000000003
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w512_d6_n2610076
+
+scale_w1024_d6_n2610076:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 0.47600000000000003
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1024_d6_n2610076
+
+scale_w1536_d6_n2610076:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 0.47600000000000003
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1536_d6_n2610076
+
+scale_w64_d6_n5483352:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 1.0
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w64_d6_n5483352
+
+scale_w128_d6_n5483352:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 1.0
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w128_d6_n5483352
+
+scale_w256_d6_n5483352:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 1.0
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w256_d6_n5483352
+
+scale_w512_d6_n5483352:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 1.0
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w512_d6_n5483352
+
+scale_w1024_d6_n5483352:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 1.0
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1024_d6_n5483352
+
+scale_w1536_d6_n5483352:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 1.0
+  num_layers_backbone: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 8
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  warmup_steps: 2
+  total_steps: 10
+  max_lr: 0.0002
+  min_lr: 0.00002
+  dropout: 0.1
+  n_eval_steps: 5
+  max_val_batches: 1000
+  use_wandb: true
+  save_version: scale_w1536_d6_n5483352

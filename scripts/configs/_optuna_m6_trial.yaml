@@ -1,0 +1,95 @@
+default: &default
+  # === Data Paths (UPDATE THESE) ===
+  data_root: /global/cfs/cdirs/m4722/NPFM/data/pp_12M_mmap  # Directory containing features_train, features_test
+  stat_dir:  /global/homes/d/dpark1/NPFN/PP_collision/fm4npp/datasets/stats         # Directory with normalization statistics
+  checkpoint_dir: /pscratch/sd/d/dpark1/NPFN/test   # Where to save model checkpoints
+
+  # === Data Configuration ===
+  data_version: dataset_name
+  n_data_idx: 10000000                   # Number of training samples
+  limit_data: true
+  limit_size: 10000000
+
+  # === legacy (not used) ===
+  group_size: 8
+  nleave: 1e10
+  order: EPR
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  return_reg_test: false
+  return_dict: false
+  max_gt_classes: 150
+  voxelize: true
+  space_filling_order: false
+  space_filling_curve: z # hilbert
+  grad_clip_value: 0.1
+  rep_aaai: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+
+  # === Training Configuration ===
+  batch_size: 256                        # Global batch size (distributed across GPUs)
+  local_batch_size: 16                   # Batch size per GPU (256 / 16 GPUs)
+  valid_batch_size: 64
+  local_valid_batch_size: 4
+
+  # === Optimization ===
+  max_epochs: 10000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  warmup_steps: 1000
+  n_eval_steps: 1000
+  total_steps: 50000
+
+  # === Model Configuration ===
+  base_dim: 256
+  embed_dim: 256
+  klen: 30                               # Sequence context length
+  dropout: 0.1
+  init_std: 0.025
+
+  # === Embedding Configuration ===
+  embed_method: add                 # or 'concat'
+  pe_method: nerf                        # Positional encoding: 'nerf' or 'sinusoidal'
+
+  # === Training Settings ===
+  num_data_workers: 8
+  log_to_screen: true
+  save_version: mamba_pretrain
+
+
+m6_hpsearch_trial_0:
+  <<: *default
+  data_root: /workspace/PP_collision/data/mmap_v4
+  reader_type: ragged_npy
+  stat_dir:  /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  klen: 1
+  embed_method: pos_only
+  voxelize: false
+  space_filling_order: true
+  rep_aaai: false
+  nexttoken: false
+  ablate_loss_scale: false
+  data_fraction: 0.5
+  embed_dim: 1536
+  num_layers_backbone: 12
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  batch_size: 128
+  local_batch_size: 16
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  max_val_batches: 200
+  warmup_steps: 176
+  total_steps: 10000
+  max_lr: 0.00036342487812995855
+  min_lr: 3.6342487812995854e-05
+  weight_decay: 0.0001841179504184345
+  grad_clip_value: 0.10784612002781262
+  dropout: 0.2904229022337383
+  n_eval_steps: 2000
+  save_version: m6_hpsearch_trial_0

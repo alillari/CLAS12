@@ -31,6 +31,15 @@ from fm4npp.utils import *
 
 from cosine_annealing_warmup import CosineAnnealingWarmupRestarts
 
+# [W&B] Optional experiment tracking. Enabled per-config via `use_wandb: true`.
+# Runs in OFFLINE mode (no account needed): logs are written to ./wandb/ locally
+# and can be synced/inspected later with `wandb sync` or viewed with `wandb offline`.
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _WANDB_AVAILABLE = False
+
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -164,7 +173,7 @@ class Trainer():
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.params.min_lr,
-            weight_decay=0.1,
+            weight_decay=getattr(self.params, 'weight_decay', 0.1),
             betas=(0.9, 0.95)
         )
 
@@ -195,6 +204,26 @@ class Trainer():
             self.ce_func = nn.CrossEntropyLoss(reduction='none', ignore_index=-100)
         self.loss_func_eval = nn.MSELoss(reduction='none')
 
+        # [W&B] Optional offline experiment tracking (no account needed).
+        # Enable per-config with `use_wandb: true`. Logs hyperparameters,
+        # train loss/lr, and val loss. Written locally to <root_dir>/wandb/.
+        self.use_wandb = getattr(params, 'use_wandb', False) and _WANDB_AVAILABLE and self.world_rank == 0
+        if self.use_wandb:
+            os.environ['WANDB_MODE'] = 'offline'
+            wandb.init(
+                project='clas12-fm4npp',
+                name=f"{getattr(params, 'save_version', 'run')}_{args.run_num}",
+                config={k: v for k, v in vars(params).items()
+                        if isinstance(v, (int, float, str, bool))},
+                dir=os.path.join(args.root_dir, 'wandb'),
+            )
+            print("[W&B] offline logging enabled")
+        elif getattr(params, 'use_wandb', False) and not _WANDB_AVAILABLE:
+            print("[W&B] use_wandb requested but wandb not installed -- skipping.")
+
+        # Load checkpoint if exists (previously dead code -- never ran)
+        self.restore_checkpoint()
+
     def band_mixed_loss(self, point_pred, klabel):
         """[BAND CLASSIFICATION] Mixed loss.
         point_pred: (b, N, klen*(2+n_bands)) = per neighbor [eta, phi, band_logits x n_bands]
@@ -224,8 +253,6 @@ class Trainer():
 
         return mse + self.band_loss_weight * ce
 
-        # Load checkpoint if exists
-        self.restore_checkpoint()
 
     def log_infile(self, log):
         """Write log to file"""
@@ -252,7 +279,7 @@ class Trainer():
             if self.world_rank == 0:
                 print(f"Loading checkpoint from {self.checkpoint_path}")
 
-            checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
 
             try:
                 self.model.load_state_dict(checkpoint['model_state'])
@@ -395,6 +422,9 @@ class Trainer():
                 if self.iters % 100 == 0:
                     print(f'Iter {self.iters}: loss={self.report_loss(loss, dist.is_initialized()):.4f}')
                 self.log_globalfile('train', self.iters, self.report_loss(loss, dist.is_initialized()), self.scheduler.get_lr()[0])
+                if self.use_wandb:
+                    wandb.log({'train/loss': self.report_loss(loss, dist.is_initialized()),
+                               'train/lr': self.scheduler.get_lr()[0]}, step=self.iters)
 
             # Validation every n_eval_steps
             if self.iters % self.params.n_eval_steps == 0:
@@ -418,6 +448,7 @@ class Trainer():
 
         with torch.no_grad():
             for i, (grouped, _, knearest) in enumerate(self.valid_data_loader):
+                if i >= getattr(self.params, 'max_val_batches', int(1e12)): break
                 b, c = grouped.size(0), grouped.size(-1)
                 # CLAS12: 3 columns [eta, phi, r], no energy (was reshape(...,4)[:,:,1:]).
                 targets = grouped.reshape(b, -1, 3).to(self.device)
@@ -452,7 +483,14 @@ class Trainer():
 
                 self.logs['val_loss'] += loss.detach()
 
-        self.logs['val_loss'] /= len(self.valid_data_loader)
+        # [FIX] Divide by the number of batches ACTUALLY iterated, not the full
+        # loader length. With max_val_batches set, the loop breaks early -- dividing
+        # by len(loader) understated val loss by (len(loader)/max_val_batches)x.
+        n_val_batches = min(
+            getattr(self.params, 'max_val_batches', int(1e12)),
+            len(self.valid_data_loader),
+        )
+        self.logs['val_loss'] /= max(n_val_batches, 1)
 
         if dist.is_initialized():
             dist.all_reduce(self.logs['val_loss'].detach())
@@ -482,6 +520,8 @@ class Trainer():
         if self.world_rank == 0:
             self.log_infile(tolog)
             self.log_globalfile('val', self.iters, float(self.logs['val_loss']), self.scheduler.get_lr()[0])
+            if self.use_wandb:
+                wandb.log({'val/loss': float(self.logs['val_loss'])}, step=self.iters)
 
         self.model.train()
         return 0
@@ -520,6 +560,9 @@ class Trainer():
             print("\n" + "="*80)
             print("TRAINING COMPLETE")
             print("="*80)
+
+        if self.use_wandb:
+            wandb.finish()
 
 
 if __name__ == '__main__':

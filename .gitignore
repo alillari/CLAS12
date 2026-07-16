@@ -70,3 +70,7 @@ temp/
 # SLURM
 slurm-*.out
 sweep_analysis/
+
+*.tar
+*.tar.gz
+*.tar.zst

@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from mmap_ninja import RaggedMmap
+from dev_scripts.ragged_npy_reader import RaggedNpyReader
 from pathlib import Path
 import os
 import glob
@@ -23,86 +24,70 @@ torch.manual_seed(42)
 # TPC space-filling ordering, hardcoded to 4 columns and equal-axis priority.
 
 
-def knn_later_indices_batch(A, k):
+def knn_later_indices_batch(A, k, r_threshold=0.0806, r_col=2):
     """
-    A: Tensor of shape (B, N, 3), where B = batch size, N = number of points per batch, D=3 coordinates.
-       Assumed to be sorted by the last dimension if needed, but sorting is not mandatory for the logic here.
-    k: Number of neighbors to find for each point, using only indices j > i.
-    
-    Returns:
-        Tensor of shape (B, N, 3*k):
-          - For each batch b, row i, we gather up to k neighbors from rows j>i.
-          - If fewer than k neighbors exist, the remainder is padded with -100.
+    A: Tensor (B, N, 3) = (batch, points, [eta, phi, r]). r is column r_col (=2),
+       in NORMALIZED units ([0,1] over r in [6,23] cm; range 17 cm).
+    k: number of neighbors per point.
+    r_threshold: minimum NORMALIZED radius gap a neighbor must exceed to be valid.
+       Default 0.0806 == 1.37 cm / 17 cm, half the smallest inter-band gap
+       (2.732 cm) -- excludes same-band points, keeps the next band out.
+       Raw-cm equivalent: r_threshold = threshold_cm / 17.0.
+
+    [PHYSICS NEXT-NEIGHBOR RULE] neighbor j is valid for query i iff
+       r_j > r_i + r_threshold  (i.e. strictly further out in radius).
+    Among valid neighbors, the k spatially-nearest (full 3D distance) are kept.
+    Fewer than k valid -> padded with -100. Outermost-band points (nothing far
+    enough out) get all-padding targets, which the loss masks out.
+
+    (Replaces the previous sequence-position j>i rule, which selected targets by
+    Hilbert-curve position within a band rather than by physical radius.)
+
+    Returns: (B, N, 3*k).
     """
     B, N, D = A.shape
     assert D == 3, "A must have shape (B, N, 3)"
 
-    # 1) Compute pairwise distances for each batch
-    #    - shape: (B, N, N)
-    #      * A_expanded: (B, N, 1, 3)
-    #      * A_tiled:    (B, 1, N, 3)
-    #      => difference => norm => (B, N, N)
+    # 1) pairwise full-3D distances (B, N, N)
     A_expanded = A.unsqueeze(2)  # (B, N, 1, 3)
     A_tiled = A.unsqueeze(1)     # (B, 1, N, 3)
     pairwise_distances = torch.norm(A_expanded - A_tiled, dim=-1)  # (B, N, N)
 
-    # 2) Only allow neighbors with strictly larger index j>i
-    #    => we set i>=j to infinity so they won't be selected
-    #    Build a mask for the upper triangle above the diagonal (i < j).
-    #    mask_2d shape: (N, N), then broadcast to (B, N, N).
-    mask_2d = torch.triu(torch.ones(N, N, device=A.device), diagonal=1).bool()  # 1 for j>i
-    mask_3d = mask_2d.unsqueeze(0).expand(B, -1, -1)  # (B, N, N)
-    pairwise_distances[~mask_3d] = float('inf')       # i>=j => inf
+    # 2) [PHYSICS RULE] valid iff r_j > r_i + r_threshold
+    r = A[..., r_col]                          # (B, N)
+    r_i = r.unsqueeze(2)                        # (B, N, 1)
+    r_j = r.unsqueeze(1)                        # (B, 1, N)
+    valid = r_j > (r_i + r_threshold)          # (B, N, N)
+    pairwise_distances[~valid] = float('inf')
 
-    # 3) Use top-k to find the nearest neighbors among valid (finite) ones
-    #    - topk(...) along dimension=2
-    #    - largest=False => we want the smallest distances
-    #    * topk_vals: (B, N, k_limited)
-    #    * topk_idx : (B, N, k_limited)
-    #    where k_limited = min(k, N-1)
+    # 3) top-k nearest among valid
     k_limited = min(k, N-1)
     topk_vals, topk_idx = torch.topk(
-        pairwise_distances, 
-        k=k_limited,
-        dim=2,  # neighbor dimension
-        largest=False
-    )  # shapes: (B, N, k_limited), (B, N, k_limited)
+        pairwise_distances, k=k_limited, dim=2, largest=False
+    )
 
-    # 4) If the user-specified k > k_limited, pad with inf/-1 to get final shape (B, N, k)
+    # 4) pad to k if needed
     if k_limited < k:
         pad_size = k - k_limited
         inf_pad = torch.full((B, N, pad_size), float('inf'), device=A.device)
         minus1_pad = torch.full((B, N, pad_size), -1, device=A.device, dtype=torch.long)
+        topk_vals = torch.cat([topk_vals, inf_pad], dim=2)
+        topk_idx  = torch.cat([topk_idx,  minus1_pad], dim=2)
 
-        topk_vals = torch.cat([topk_vals, inf_pad], dim=2)    # (B, N, k)
-        topk_idx  = torch.cat([topk_idx,  minus1_pad], dim=2) # (B, N, k)
-
-    # 5) Convert any inf distances to invalid => set index = -1
-    inf_mask = torch.isinf(topk_vals)  # (B, N, k)
+    # 5) inf distance => invalid (index -1)
+    inf_mask = torch.isinf(topk_vals)
     topk_idx[inf_mask] = -1
 
-    # 6) We now gather the actual coordinates for these neighbor indices
-    #    - Create an output array full of -100 for padding
-    knn_neighbors = torch.full((B, N, k, D), -100, device=A.device, dtype=A.dtype)  # (B, N, k, 3)
-
-    # 6a) Build a "safe" version of the indices, replacing -1 with 0 to avoid index errors
+    # 6) gather coords, padding invalid slots with -100
+    knn_neighbors = torch.full((B, N, k, D), -100, device=A.device, dtype=A.dtype)
     safe_idx = topk_idx.clone()
     safe_idx[safe_idx < 0] = 0
-
-    # 6b) We'll do advanced indexing to fill valid neighbor slots
-    valid_mask = (topk_idx >= 0)  # (B, N, k) => True where neighbor is valid
-
-    # To do advanced indexing, we need the broadcasted batch/row/col indices:
-    b_idx = torch.arange(B, device=A.device).view(B, 1, 1).expand(B, N, k)    # (B, N, k)
-    n_idx = torch.arange(N, device=A.device).view(1, N, 1).expand(B, N, k)    # (B, N, k)
-    # The "safe_idx" dimension is the neighbor index for each (b, n)
-    # so we'll gather from dimension=1 in A => A[b, safe_idx, :]
-    # We'll do advanced indexing on "neighbors[b, n, j, :]" = A[b, safe_idx[b, n, j], :]
-
-    # Where valid, copy the data
+    valid_mask = (topk_idx >= 0)
+    b_idx = torch.arange(B, device=A.device).view(B, 1, 1).expand(B, N, k)
+    n_idx = torch.arange(N, device=A.device).view(1, N, 1).expand(B, N, k)
     knn_neighbors[valid_mask] = A[b_idx[valid_mask], safe_idx[valid_mask], :]
 
-    # 7) Finally, reshape to (B, N, 3*k)
+    # 7) reshape to (B, N, 3*k)
     knn_neighbors = knn_neighbors.view(B, N, 3*k)
     return knn_neighbors
 
@@ -131,6 +116,8 @@ class TPCBatchDataset(Dataset):
                  chunk_training = False,
                  limit_data = False,
                  limit_size = 8000, 
+                 data_fraction = 1.0,
+                 reader_type = 'ragged_mmap',
                  voxelize = True,
                  space_filling_order = None,
                  space_filling_curve = 'z',
@@ -139,9 +126,14 @@ class TPCBatchDataset(Dataset):
         
         split = split
         self.band_classification = band_classification
-        self.memmap_feature = RaggedMmap(os.path.join(data_root, 'features_{}'.format(split)))
-        self.memmap_seg_target = RaggedMmap(os.path.join(data_root, 'seg_target_{}'.format(split)))
-        self.memmap_reg_target = RaggedMmap(os.path.join(data_root, 'reg_target_{}'.format(split)))
+        # [READER TOGGLE] 'ragged_mmap' = real mmap_ninja.RaggedMmap (existing data/mmap).
+        # 'ragged_npy' = Alessio's values.npy+offsets.npy format (e.g. data/mmap_v4),
+        # which is NOT a real RaggedMmap despite similar structure -- see each
+        # folder's WARNING_NOT_RAGGEDMMAP.txt. Default preserves current behavior.
+        reader_cls = RaggedNpyReader if reader_type == 'ragged_npy' else RaggedMmap
+        self.memmap_feature = reader_cls(os.path.join(data_root, 'features_{}'.format(split)))
+        self.memmap_seg_target = reader_cls(os.path.join(data_root, 'seg_target_{}'.format(split)))
+        self.memmap_reg_target = reader_cls(os.path.join(data_root, 'reg_target_{}'.format(split)))
         
 
         self.reco_cols = ['x', 'y', 'z']   # CLAS12: no energy
@@ -177,6 +169,7 @@ class TPCBatchDataset(Dataset):
         # clas12_band_hilbert_order in __getitem__.
         self.limit_data = limit_data
         self.limit_size = limit_size
+        self.data_fraction = data_fraction
         self.len_chunk = len_chunk
         
         self.train = train
@@ -222,27 +215,59 @@ class TPCBatchDataset(Dataset):
         self.toolong = []
         self.longest = 0
         self.shortest = 1e10
-        for i in range(len(self.memmap_feature)):
-            len_ = self.memmap_feature[i].shape[0]
-            if len_ < low_thr:
-                self.tooshort.append(i)
-            elif len_ > high_thr:
-                self.toolong.append(i)
-            else:
-                self.idxlist.append(i)
-                self.seqlens.append(len_)
-                
-                if self.longest < len_:
-                    self.longest = len_
-                if self.shortest > len_:
-                    self.shortest = len_
-           
 
-            if self.limit_data and len(self.idxlist) == self.limit_size: 
-                break
+        # [FAST FILTER] If the reader exposes lengths() (RaggedNpyReader), get all
+        # event lengths instantly from offsets -- avoids millions of per-event
+        # data reads at startup on large datasets. Falls back to the original
+        # per-event loop for readers without it (real RaggedMmap).
+        if hasattr(self.memmap_feature, 'lengths'):
+            import numpy as np
+            lens = np.asarray(self.memmap_feature.lengths())
+            keep = (lens >= low_thr) & (lens <= high_thr)
+            self.tooshort = np.where(lens < low_thr)[0].tolist()
+            self.toolong = np.where(lens > high_thr)[0].tolist()
+            self.idxlist = np.where(keep)[0].tolist()
+            self.seqlens = lens[keep].tolist()
+            if self.limit_data and len(self.idxlist) > self.limit_size:
+                self.idxlist = self.idxlist[:self.limit_size]
+                self.seqlens = self.seqlens[:self.limit_size]
+            if self.seqlens:
+                self.longest = int(max(self.seqlens))
+                self.shortest = int(min(self.seqlens))
+        else:
+            for i in range(len(self.memmap_feature)):
+                len_ = self.memmap_feature[i].shape[0]
+                if len_ < low_thr:
+                    self.tooshort.append(i)
+                elif len_ > high_thr:
+                    self.toolong.append(i)
+                else:
+                    self.idxlist.append(i)
+                    self.seqlens.append(len_)
+
+                    if self.longest < len_:
+                        self.longest = len_
+                    if self.shortest > len_:
+                        self.shortest = len_
+
+
+                if self.limit_data and len(self.idxlist) == self.limit_size: 
+                    break
 
         # self.idxlist = create_sampled_lists_with_seq(self.idxlist, self.seqlens)
-        
+
+        # [DATA FRACTION] keep only the first `data_fraction` of the filtered events.
+        # Applied AFTER filtering so the fraction is of usable events; deterministic
+        # (first N) for reproducibility. Default 1.0 leaves everything unchanged.
+        # True count used is always len(self.idxlist).
+        if getattr(self, 'data_fraction', 1.0) < 1.0:
+            n_total = len(self.idxlist)
+            n_keep = max(1, int(round(n_total * self.data_fraction)))
+            self.idxlist = self.idxlist[:n_keep]
+            self.seqlens = self.seqlens[:n_keep]
+            print('[INFO] data_fraction={}: using {}/{} filtered events'.format(
+                self.data_fraction, n_keep, n_total))
+
         print('[INFO] Filtering by N points. From {}, removed short {} long {}, remaining {}'.format(len(self.memmap_feature),
                                                                                                      len(self.tooshort),
                                                                                                      len(self.toolong),
@@ -408,6 +433,8 @@ def get_data_loader(params, distributed):
                                     normalize = True, 
                                     limit_data = params.limit_data, 
                                     limit_size = params.limit_size, 
+                                    data_fraction = getattr(params, 'data_fraction', 1.0), 
+                                    reader_type = getattr(params, 'reader_type', 'ragged_mmap'), 
                                     nleave = params.nleave, 
                                     order = params.order, 
                                     num_pred_points = params.klen, 
@@ -434,6 +461,7 @@ def get_data_loader(params, distributed):
                                    space_filling_order = params.space_filling_order,
                                    space_filling_curve = params.space_filling_curve,
                                    band_classification = getattr(params, 'band_classification', False),
+                                   reader_type = getattr(params, 'reader_type', 'ragged_mmap'), 
                                    train = False)
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
@@ -477,7 +505,8 @@ def get_val_loader(params, distributed):
                                    chunk_training = params.chunk_training,
                                    train = False,
                                    order = params.order,
-                                   band_classification = getattr(params, 'band_classification', False),)
+                                   band_classification = getattr(params, 'band_classification', False),
+                                   reader_type = getattr(params, 'reader_type', 'ragged_mmap'),)
 
    
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None

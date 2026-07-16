@@ -20,13 +20,13 @@ def suggest_adapteronly_optimizer_params(trial: Any) -> dict[str, float | int]:
         "adapter_weight_decay": trial.suggest_float(
             "adapter_weight_decay",
             1e-6,
-            1e-2,
+            5e-2,
             log=True,
         ),
         "grad_clip_value": trial.suggest_float(
             "grad_clip_value",
-            0.7,
-            6.0,
+            7e-1,
+            4.0,
             log=True,
         ),
         "dropout": trial.suggest_float("dropout", 0.0, 0.15),

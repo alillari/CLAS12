@@ -264,6 +264,8 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
         "embed_dim": int(run["embed_dim"]),
         "model_version": run["model_config"],
     })
+    if run.get("seed") is not None:
+        params["seed"] = int(run["seed"])
     if run.get("model_family") != "adapteronly":
         params.update({
             "num_layers_backbone": int(run["num_layers_backbone"]),
@@ -314,6 +316,8 @@ def train_command(manifest: dict[str, Any], run: dict[str, Any]) -> list[str]:
         "--checkpoint_file_name", f"{run['run_id']}_adapter_checkpoint.pth",
         "--artifact_summary", str(Path(run["artifact_summary"]).resolve()),
     ]
+    if run.get("seed") is not None:
+        command.extend(["--seed", str(int(run["seed"]))])
     if run.get("use_pretrained_backbone", True):
         command.extend([
             "--usepretrain",
@@ -423,11 +427,22 @@ def collate_summary(manifest: dict[str, Any]) -> None:
                 "evaluation_dir": run["evaluation_dir"],
                 "summary_found": summary.exists(),
             }
+            for key in (
+                "seed",
+                "source_study_name",
+                "source_trial_number",
+                "source_trial_value",
+                "source_trial_dir",
+                "selection_reason",
+            ):
+                if key in run:
+                    table_row[key] = run[key]
             if summary.exists():
                 summary_data = read_json(summary)
                 adapter = summary_data.get("methods", {}).get("adapter", {})
                 momentum = adapter.get("momentum", {})
                 table_row.update({
+                    "best_val_loss": summary_data.get("training_history", {}).get("best_val_loss"),
                     "adapter_relative_resolution_68": momentum.get("relative_resolution_68"),
                     "adapter_relative_bias": momentum.get("relative_bias"),
                     "adapter_tail_fraction_10pct": momentum.get("relative_tail_fraction_10pct"),
@@ -440,3 +455,104 @@ def collate_summary(manifest: dict[str, Any]) -> None:
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(table_rows)
+
+    if manifest.get("campaign_type") == "optuna_seed_ablation":
+        collate_seed_ablation_summary(summary_dir, table_rows)
+
+
+def finite_number(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def metric_stats(values: list[float]) -> dict[str, float | int | None]:
+    if not values:
+        return {
+            "n": 0,
+            "mean": None,
+            "std": None,
+            "min": None,
+            "median": None,
+            "max": None,
+        }
+    values = sorted(values)
+    n_values = len(values)
+    mean = sum(values) / n_values
+    variance = (
+        sum((value - mean) ** 2 for value in values) / (n_values - 1)
+        if n_values > 1 else 0.0
+    )
+    midpoint = n_values // 2
+    median = (
+        values[midpoint]
+        if n_values % 2
+        else (values[midpoint - 1] + values[midpoint]) / 2.0
+    )
+    return {
+        "n": n_values,
+        "mean": mean,
+        "std": variance ** 0.5,
+        "min": values[0],
+        "median": median,
+        "max": values[-1],
+    }
+
+
+def collate_seed_ablation_summary(summary_dir: Path, table_rows: list[dict[str, Any]]) -> None:
+    run_out = summary_dir / "seed_ablation_runs.csv"
+    trial_out = summary_dir / "seed_ablation_trials.csv"
+    metric_keys = [
+        "best_val_loss",
+        "adapter_relative_resolution_68",
+        "adapter_tail_fraction_10pct",
+        "adapter_to_cvt_resolution_ratio",
+    ]
+    rows = [
+        row for row in table_rows
+        if row.get("source_trial_number") is not None
+    ]
+    if not rows:
+        return
+
+    run_fields = sorted({key for row in rows for key in row})
+    with run_out.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=run_fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["source_trial_number"]), []).append(row)
+
+    aggregate_rows = []
+    for trial_number, trial_rows in sorted(grouped.items(), key=lambda item: int(item[0])):
+        first = trial_rows[0]
+        aggregate = {
+            "source_trial_number": int(trial_number),
+            "source_trial_value": first.get("source_trial_value"),
+            "source_study_name": first.get("source_study_name"),
+            "selection_reason": first.get("selection_reason"),
+            "n_seed_runs": len(trial_rows),
+            "n_completed_evals": sum(1 for row in trial_rows if row.get("summary_found")),
+            "seeds": ",".join(str(row.get("seed")) for row in trial_rows if row.get("seed") is not None),
+        }
+        for key in metric_keys:
+            values = [
+                number for number in (finite_number(row.get(key)) for row in trial_rows)
+                if number is not None
+            ]
+            stats = metric_stats(values)
+            for stat_key, stat_value in stats.items():
+                aggregate[f"{key}_{stat_key}"] = stat_value
+        aggregate_rows.append(aggregate)
+
+    aggregate_fields = sorted({key for row in aggregate_rows for key in row})
+    with trial_out.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=aggregate_fields)
+        writer.writeheader()
+        writer.writerows(aggregate_rows)

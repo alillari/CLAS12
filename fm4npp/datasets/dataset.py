@@ -7,6 +7,7 @@ import os
 import glob
 import torch.nn as nn
 import torch.nn.functional as F
+from functools import partial
 
 import torch
 from fm4npp.utils import *
@@ -22,6 +23,11 @@ from torch.utils.data.distributed import DistributedSampler
 
 #torch.manual_seed(42)
 
+
+def seed_worker_from_base(base_seed, worker_id):
+    worker_seed = int(base_seed) + int(worker_id)
+    np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
 
 def knn_later_indices_batch(A, k, target=None, return_target=False, pad_value_target=0):
@@ -836,11 +842,23 @@ def get_data_loader(params, distributed):
                                    require_reg_target=getattr(params, 'require_reg_target', False),
                                    require_pid_target=getattr(params, 'require_pid_target', False))
 
-    train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
-    test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
+    seed = getattr(params, "seed", None)
+    seed = int(seed) if seed is not None else None
+    train_sampler = (
+        DistributedSampler(train_dataset, shuffle=True, seed=seed or 0)
+        if distributed else None
+    )
+    test_sampler = (
+        DistributedSampler(test_dataset, shuffle=False, seed=seed or 0)
+        if distributed else None
+    )
 
     my_collate_fn = MyCollator()
-    
+    generator = None
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+
     train_dataloader = DataLoader(train_dataset,
                             batch_size=int(params.local_batch_size),
                             num_workers=params.num_data_workers,
@@ -848,7 +866,9 @@ def get_data_loader(params, distributed):
                             sampler=train_sampler,
                             drop_last=False,
                             pin_memory=True,
-                            collate_fn = my_collate_fn)
+                            collate_fn = my_collate_fn,
+                            generator=generator,
+                            worker_init_fn=partial(seed_worker_from_base, seed) if seed is not None else None)
     
     test_dataloader = DataLoader(test_dataset,
                             batch_size=int(params.local_valid_batch_size),
@@ -857,7 +877,9 @@ def get_data_loader(params, distributed):
                             sampler=test_sampler,
                             drop_last=True,
                             pin_memory=True,
-                            collate_fn = my_collate_fn)
+                            collate_fn = my_collate_fn,
+                            generator=generator,
+                            worker_init_fn=partial(seed_worker_from_base, seed) if seed is not None else None)
     
     return train_dataloader, train_sampler, test_dataloader, test_sampler
 

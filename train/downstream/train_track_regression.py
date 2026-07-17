@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint_file_name", default=None, type=str, help="Deterministic checkpoint filename.")
     parser.add_argument("--artifact_summary", default=None, type=str, help="JSON path for training metadata.")
     parser.add_argument("--resolved_config_path", default=None, type=str, help="Optional JSON path for resolved params.")
+    parser.add_argument("--seed", default=None, type=int, help="Optional random seed for this training run.")
     return parser.parse_args()
 
 
@@ -59,6 +60,7 @@ def main() -> None:
             checkpoint_file_name=args.checkpoint_file_name,
             artifact_summary=args.artifact_summary,
             resolved_config_path=args.resolved_config_path,
+            seed=args.seed,
         )
     )
 

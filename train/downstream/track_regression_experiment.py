@@ -6,6 +6,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -76,6 +77,26 @@ class TrackRegressionExperimentConfig:
     checkpoint_file_name: str | None = None
     artifact_summary: str | None = None
     resolved_config_path: str | None = None
+    seed: int | None = None
+
+
+def set_global_seed(seed: int | None, deterministic: bool = False) -> None:
+    if seed is None:
+        return
+    seed = int(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except ImportError:
+        pass
+    if deterministic and torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
 
 
 def json_safe(value: Any) -> Any:
@@ -133,6 +154,8 @@ def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
 
     if config.checkpoint_dir is not None:
         params.checkpoint_dir = os.path.abspath(config.checkpoint_dir)
+    if config.seed is not None:
+        params.seed = int(config.seed)
 
     if config.usepretrain:
         params.pretrained_ckpt = config.pretrained_ckpt or MODEL2CKPT.get(config.config)
@@ -168,6 +191,10 @@ def train_experiment(
     """Train one resolved downstream track-regression configuration."""
 
     params = resolve_params(config)
+    set_global_seed(
+        getattr(params, "seed", None),
+        deterministic=bool(getattr(params, "deterministic", False)),
+    )
     if config.resolved_config_path:
         _write_json(config.resolved_config_path, params.params)
 
@@ -202,6 +229,7 @@ def train_experiment(
             "final_step": json_safe(getattr(trainer, "global_step", None)),
             "eventnumber": int(config.eventnumber),
             "train_batch_size": int(config.train_batch_size),
+            "seed": json_safe(getattr(params, "seed", None)),
             "embed_dim": json_safe(getattr(params, "embed_dim", None)),
             "base_dim": json_safe(getattr(params, "base_dim", None)),
             "num_layers_backbone": json_safe(getattr(params, "num_layers_backbone", None)),
@@ -225,6 +253,7 @@ def train_experiment(
                 "best_loss": json_safe(getattr(trainer, "best_loss", None)),
                 "final_step": json_safe(getattr(trainer, "global_step", None)),
             },
+            "seed": json_safe(getattr(params, "seed", None)),
         }
     finally:
         trainer.cleanup()

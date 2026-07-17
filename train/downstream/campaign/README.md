@@ -94,6 +94,43 @@ Adapter-only baselines are included by default, one per labeled-data amount.
 They use `scripts/configs/mamba_clas12_track_regression_adapteronly.yaml` and
 omit `--usepretrain`.
 
+## Build An Optuna Seed-Ablation Manifest
+
+To retest a broad sample of completed Optuna trials across several training
+seeds:
+
+```bash
+python train/downstream/tuning/build_track_regression_seed_ablation.py \
+  --storage sqlite:////path/to/study.db \
+  --study-name clas12_adapteronly_tuning \
+  --ablation-name clas12_adapteronly_seed_ablation \
+  --output-root /home/alessio/ML-work/result_deep_storage \
+  --seeds 11,17,23,31,43 \
+  --top-k 5 \
+  --quantile-k 10 \
+  --random-k 0
+```
+
+The builder uses completed trials only. It selects the top trials by objective
+value, evenly spaced quantile trials across the full completed-trial ranking,
+and optional random extra trials controlled by `--sample-seed`. Each selected
+trial is expanded once per seed with run IDs like `trial_000123_seed_17`.
+
+Run the generated manifest with the normal campaign runner:
+
+```bash
+python train/downstream/campaign/run_track_regression_campaign.py \
+  --manifest /home/alessio/ML-work/result_deep_storage/campaigns/clas12_adapteronly_seed_ablation/manifest.yaml \
+  --cuda-device 0
+```
+
+For seed-ablation campaigns, collation also writes:
+
+```text
+summary/seed_ablation_runs.csv
+summary/seed_ablation_trials.csv
+```
+
 To build a manifest without adapter-only baselines:
 
 ```bash

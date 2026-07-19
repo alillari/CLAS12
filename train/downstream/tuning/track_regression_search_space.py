@@ -29,5 +29,5 @@ def suggest_adapteronly_optimizer_params(trial: Any) -> dict[str, float | int]:
             5.0,
             log=True,
         ),
-        "dropout": trial.suggest_float("dropout", 0.6, 0.15),
+        "dropout": trial.suggest_float("dropout", 0.06, 0.15),
     }

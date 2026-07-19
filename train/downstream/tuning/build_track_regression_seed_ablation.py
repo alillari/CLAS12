@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import socket
 import sys
@@ -153,6 +154,38 @@ def trial_training_overrides(trial: Any) -> dict[str, Any]:
     return overrides
 
 
+RUN_SPECIFIC_PARAM_KEYS = {
+    "artifact_root",
+    "downstream_dir",
+    "checkpoint_dir",
+    "model_version",
+    "experiment_dir",
+    "checkpoint_path",
+    "training_log_path",
+    "trained_checkpoint_path",
+    "seed",
+}
+
+
+def source_resolved_config_path(trial: Any) -> Path | None:
+    trial_dir = trial.user_attrs.get("trial_dir")
+    if not trial_dir:
+        return None
+    path = Path(trial_dir) / "config" / "resolved_config.json"
+    return path if path.is_file() else None
+
+
+def source_training_overrides(trial: Any) -> tuple[dict[str, Any], str | None]:
+    resolved_path = source_resolved_config_path(trial)
+    if resolved_path is None:
+        return trial_training_overrides(trial), None
+    with resolved_path.open() as stream:
+        resolved = json.load(stream)
+    for key in RUN_SPECIFIC_PARAM_KEYS:
+        resolved.pop(key, None)
+    return resolved, str(resolved_path.resolve())
+
+
 def build_run_row(
     base_dir: Path,
     base_params: dict[str, Any],
@@ -164,9 +197,12 @@ def build_run_row(
     trial_name = f"trial_{trial.number:06d}"
     run_id = f"{trial_name}_seed_{seed}"
     paths = run_paths(base_dir, run_id)
+    training_overrides, source_config_path = source_training_overrides(trial)
     params = dict(base_params)
     params.update(fixed_overrides(args))
-    params.update(trial_training_overrides(trial))
+    params.update(training_overrides)
+    eventnumber = int(params.get("limit_size", args.eventnumber))
+    train_batch_size = int(params.get("batch_size", args.train_batch_size))
 
     row = {
         "run_id": run_id,
@@ -181,18 +217,19 @@ def build_run_row(
         "embed_dim": int(params.get("embed_dim", params.get("base_dim", 128))),
         "num_layers_backbone": int(params.get("num_layers_backbone", 0)),
         "pretrain_events": 0,
-        "eventnumber": int(args.eventnumber),
-        "labeled_events": int(args.eventnumber),
-        "train_batch_size": int(args.train_batch_size),
+        "eventnumber": eventnumber,
+        "labeled_events": eventnumber,
+        "train_batch_size": train_batch_size,
         "max_samples": int(args.max_samples),
         "status": "pending",
         "model_config": f"{args.config}_{run_id}",
         "seed": int(seed),
-        "training_overrides": trial_training_overrides(trial),
+        "training_overrides": training_overrides,
         "source_study_name": args.study_name,
         "source_trial_number": int(trial.number),
         "source_trial_value": float(trial.value),
         "source_trial_dir": trial.user_attrs.get("trial_dir"),
+        "source_resolved_config": source_config_path,
         "source_trial_checkpoint": trial.user_attrs.get("checkpoint_path"),
         "selection_reason": selection_reason,
     }

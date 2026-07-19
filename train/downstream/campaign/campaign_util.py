@@ -433,6 +433,7 @@ def collate_summary(manifest: dict[str, Any]) -> None:
                 "source_trial_number",
                 "source_trial_value",
                 "source_trial_dir",
+                "source_resolved_config",
                 "selection_reason",
             ):
                 if key in run:

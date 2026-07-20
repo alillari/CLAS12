@@ -190,6 +190,24 @@ print(df[cols].sort_values("value").head(10).to_string(index=False))
 PY
 ```
 
+Completed-study diagnostics:
+
+```bash
+python train/downstream/tuning/analyze_track_regression_optuna.py \
+  --storage sqlite:////home/alessio/ML-work/result_deep_storage/optuna/adapteronly_rangefind_50k.db \
+  --study-name adapteronly_rangefind_50k
+```
+
+By default this writes plots, CSV tables, and `study_summary.json` under:
+
+```text
+<output_root>/<study_name>/analysis/optuna_diagnostics/
+```
+
+The parallel-coordinate and pairwise-interaction plots use the top 20 percent
+of completed trials by default. Use `--parallel-filter all`, `--top-fraction`,
+`--absolute-threshold`, or `--relative-pct` to adjust that selection.
+
 If `params_min_lr_ratio` is missing in an older study, compute it as:
 
 ```text
@@ -209,4 +227,3 @@ value in the next study rather than spending search budget on it.
 If many good trials have `best_step == max_optimizer_steps`, the training budget
 is probably truncating learning. Run a longer, narrower study or train the top
 configs directly for a larger final budget.
-

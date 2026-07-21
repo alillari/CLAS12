@@ -142,6 +142,28 @@ python train/downstream/campaign/build_track_regression_manifest.py \
   --no-adapter-only
 ```
 
+## Use The Best Optuna Fine-Tuning Recipe
+
+To compare pretrained backbones against the adapter-only baseline using the best
+fine-tuning hyperparameters from an AdapterOnly Optuna study:
+
+```bash
+python train/downstream/campaign/build_track_regression_manifest.py \
+  --checkpoint-root /home/alessio/ML-work/pretrained-FMs/campaign_1 \
+  --campaign-name campaign_1_track_regression_best_optuna_recipe \
+  --artifact-root /home/alessio/ML-work/result_deep_storage \
+  --eventnumber 50000 \
+  --optuna-best-trial \
+  --optuna-storage sqlite:////home/alessio/ML-work/result_deep_storage/optuna/adapteronly_rangefind_50k.db \
+  --optuna-study-name adapteronly_rangefind_50k
+```
+
+This imports only the tuned recipe keys: `max_lr`, `min_lr_ratio`, derived
+`min_lr`, `warmup_fraction`, `adapter_weight_decay`, `grad_clip_value`, and
+`dropout`. Dataset size, batch size, paths, and training budget still come from
+the campaign arguments and base configs. Explicit `--training-override KEY=VALUE`
+arguments take precedence over the imported Optuna recipe.
+
 ## Training-Time Controls
 
 Training parameters are inherited from

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 from campaign_util import (
     DEFAULT_ADAPTER_ONLY_MODEL_YAML,
@@ -79,6 +80,19 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="KEY=VALUE",
         help="Additional rendered model YAML override. Can be repeated.",
+    )
+    parser.add_argument(
+        "--optuna-storage",
+        help="Optuna storage URL for importing a best fine-tuning recipe.",
+    )
+    parser.add_argument(
+        "--optuna-study-name",
+        help="Optuna study name for importing a best fine-tuning recipe.",
+    )
+    parser.add_argument(
+        "--optuna-best-trial",
+        action="store_true",
+        help="Apply the best completed Optuna trial's tuned fine-tuning recipe to the campaign.",
     )
     parser.add_argument(
         "--manifest",
@@ -156,14 +170,87 @@ def parse_training_overrides(args: argparse.Namespace) -> dict:
     return overrides
 
 
+TUNED_OPTUNA_PARAM_KEYS = (
+    "max_lr",
+    "min_lr_ratio",
+    "warmup_fraction",
+    "adapter_weight_decay",
+    "grad_clip_value",
+    "dropout",
+)
+
+
+def validate_optuna_args(args: argparse.Namespace) -> None:
+    provided = [args.optuna_storage, args.optuna_study_name]
+    if args.optuna_best_trial:
+        missing = []
+        if not args.optuna_storage:
+            missing.append("--optuna-storage")
+        if not args.optuna_study_name:
+            missing.append("--optuna-study-name")
+        if missing:
+            raise ValueError(
+                "--optuna-best-trial requires " + " and ".join(missing)
+            )
+    elif any(provided):
+        raise ValueError(
+            "--optuna-storage and --optuna-study-name are only used with "
+            "--optuna-best-trial"
+        )
+
+
+def best_trial_recipe(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if not args.optuna_best_trial:
+        return {}, None
+
+    try:
+        import optuna
+    except ImportError as exc:
+        raise RuntimeError(
+            "Optuna best-trial import requested, but optuna is not installed."
+        ) from exc
+
+    study = optuna.load_study(
+        study_name=args.optuna_study_name,
+        storage=args.optuna_storage,
+    )
+    trial = study.best_trial
+    if trial.state != optuna.trial.TrialState.COMPLETE or trial.value is None:
+        raise ValueError(
+            f"Study {args.optuna_study_name!r} best trial is not complete "
+            "or has no objective value."
+        )
+
+    missing = [key for key in TUNED_OPTUNA_PARAM_KEYS if key not in trial.params]
+    if missing:
+        raise ValueError(
+            f"Best trial {trial.number} is missing tuned parameter(s): "
+            + ", ".join(missing)
+        )
+
+    recipe = {key: trial.params[key] for key in TUNED_OPTUNA_PARAM_KEYS}
+    recipe["min_lr"] = float(recipe["max_lr"]) * float(recipe["min_lr_ratio"])
+    source = {
+        "storage": args.optuna_storage,
+        "study_name": args.optuna_study_name,
+        "best_trial_number": int(trial.number),
+        "best_trial_value": float(trial.value),
+        "params": dict(recipe),
+    }
+    return recipe, source
+
+
 def main() -> None:
     args = parse_args()
+    validate_optuna_args(args)
     checkpoint_root = Path(args.checkpoint_root).resolve()
     artifact_root = Path(args.artifact_root).resolve()
     base_dir = campaign_dir(artifact_root, args.campaign_name)
     manifest_path = Path(args.manifest).resolve() if args.manifest else base_dir / "manifest.yaml"
     eventnumbers = parse_eventnumbers(args.eventnumber)
-    training_overrides = parse_training_overrides(args)
+    optuna_overrides, source_optuna = best_trial_recipe(args)
+    training_overrides = dict(optuna_overrides)
+    training_overrides.update(parse_training_overrides(args))
 
     if not checkpoint_root.is_dir():
         raise FileNotFoundError(f"Checkpoint root does not exist: {checkpoint_root}")
@@ -231,6 +318,9 @@ def main() -> None:
         "training_overrides": training_overrides,
         "runs": runs,
     }
+    if source_optuna is not None:
+        manifest["campaign_type"] = "optuna_best_recipe_backbone_comparison"
+        manifest["source_optuna"] = source_optuna
     write_yaml(manifest_path, manifest)
     print(f"Wrote {len(runs)} runs to {manifest_path}")
 

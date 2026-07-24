@@ -74,3 +74,5 @@ sweep_analysis/
 *.tar
 *.tar.gz
 *.tar.zst
+scripts/configs/_grid_generated.yaml
+scripts/configs/_optuna_*.yaml

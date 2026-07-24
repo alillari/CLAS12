@@ -15,7 +15,7 @@
 
 WIDTHS=(256)
 DEPTHS=(12)
-FRACTIONS=(1 2.4 11.6 20 47.6 100)
+FRACTIONS=(11.6)
 
 # --- SWEEP TAG: everything for this sweep lands in ONE descriptive folder ---
 # Convention: Descriptive_Name_YYYY-MM-DD  (ISO date sorts chronologically).

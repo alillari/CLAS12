@@ -168,18 +168,48 @@ class Trainer():
                 find_unused_parameters=True
             )
 
-        # Standard optimizer (no μ-transfer)
-        # Simple AdamW with single learning rate for all parameters
+        # [muP] Simplified width-transfer (mu-parameterization, practical form).
+        # Split trainable params into two groups by tensor rank:
+        #   - VECTOR params (biases, norm gains, Mamba A_log/D): base LR, NOT
+        #     width-scaled (no fan-in that grows with width).
+        #   - MATRIX params (Mamba block weights + output_layer): LR divided by
+        #     the width ratio (embed_dim / mup_base_width). This is the piece
+        #     that gives near-constant optimal LR across widths, so a recipe
+        #     tuned at the base width transfers to other widths.
+        # If use_mup is off, both groups get the same LR -> identical to before.
+        self.mup_base_width = getattr(self.params, 'mup_base_width', 256)
+        self.use_mup = getattr(self.params, 'use_mup', False)
+        cur_width = self.params.embed_dim
+        self.mup_matrix_ratio = (cur_width / self.mup_base_width) if self.use_mup else 1.0
+
+        vector_params, matrix_params = [], []
+        for p in self.model.parameters():
+            if not p.requires_grad:
+                continue
+            (vector_params if p.ndim <= 1 else matrix_params).append(p)
+
+        wd = getattr(self.params, 'weight_decay', 0.1)
         self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+            [
+                {'params': vector_params, 'weight_decay': wd},   # group 0: vectors
+                {'params': matrix_params, 'weight_decay': wd},   # group 1: matrices
+            ],
             lr=self.params.min_lr,
-            weight_decay=getattr(self.params, 'weight_decay', 0.1),
-            betas=(0.9, 0.95)
+            betas=(0.9, 0.95),
         )
+        # index 1 is the matrix group -> the one that gets width-scaled
+        self._mup_matrix_group_idx = 1
 
         if self.world_rank == 0:
-            print(f"✅ Using standard AdamW optimizer (no μ-transfer scaling)")
-            print(f"   Learning rate: {self.params.min_lr}")
+            if self.use_mup:
+                print(f"✅ AdamW with muP width-transfer ENABLED")
+                print(f"   base width: {self.mup_base_width}, current width: {cur_width}")
+                print(f"   matrix-group LR divided by ratio: {self.mup_matrix_ratio:.4f}")
+                print(f"   ({len(vector_params)} vector params @ base LR, "
+                      f"{len(matrix_params)} matrix params @ base LR / {self.mup_matrix_ratio:.3f})")
+            else:
+                print(f"✅ AdamW, muP disabled (all params share one LR)")
+                print(f"   Learning rate: {self.params.min_lr}")
 
         # No mixed precision for Mamba1 (testing simplification alone)
 
@@ -279,7 +309,7 @@ class Trainer():
             if self.world_rank == 0:
                 print(f"Loading checkpoint from {self.checkpoint_path}")
 
-            checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
+            checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
 
             try:
                 self.model.load_state_dict(checkpoint['model_state'])
@@ -408,6 +438,11 @@ class Trainer():
 
             self.optimizer.step()
             self.scheduler.step()
+            # [muP] scheduler sets all groups to the same scheduled LR; divide the
+            # matrix group down by the width ratio so muP scaling survives each step.
+            if self.use_mup and self.mup_matrix_ratio != 1.0:
+                mg = self.optimizer.param_groups[self._mup_matrix_group_idx]
+                mg['lr'] = mg['lr'] / self.mup_matrix_ratio
 
             # Logging
             loss_log = '{},{},{},{},{}'.format(

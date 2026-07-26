@@ -477,6 +477,17 @@ def normalize_delta_p_over_p_rows(rows: list[dict[str, Any]]) -> list[dict[str, 
     return [row for row in normalized if row["bin_center_gev"] is not None]
 
 
+def per_run_delta_p_over_p_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    per_run_rows = []
+    for row in rows:
+        method = row.get("method")
+        if method not in PHYSICS_PLOT_METHODS:
+            continue
+        label = "Adapter" if method == "adapter" else "CVT::Tracks"
+        per_run_rows.append({**row, "trace_label": label})
+    return per_run_rows
+
+
 def collapse_conventional_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     conventional = [row for row in rows if row["family"] == "conventional"]
     others = [row for row in rows if row["family"] != "conventional"]
@@ -502,7 +513,17 @@ def collapse_conventional_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
     return others + collapsed
 
 
-def plot_delta_p_over_p_group(rows: list[dict[str, Any]], output_path: Path, title: str) -> None:
+def grouped_delta_p_over_p_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row["trace_label"]].append(row)
+    return {
+        label: sorted(trace_rows, key=lambda row: row["bin_center_gev"])
+        for label, trace_rows in grouped.items()
+    }
+
+
+def plot_delta_p_over_p_errorbars(rows: list[dict[str, Any]], output_path: Path, title: str) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -510,10 +531,7 @@ def plot_delta_p_over_p_group(rows: list[dict[str, Any]], output_path: Path, tit
 
     if not rows:
         return
-    rows = sorted(rows, key=lambda row: (row["trace_label"], row["bin_center_gev"]))
-    grouped = defaultdict(list)
-    for row in rows:
-        grouped[row["trace_label"]].append(row)
+    grouped = grouped_delta_p_over_p_rows(rows)
 
     fig, ax = plt.subplots(figsize=(9.5, 5.8), constrained_layout=True)
     linestyles = {
@@ -521,8 +539,7 @@ def plot_delta_p_over_p_group(rows: list[dict[str, Any]], output_path: Path, tit
         "adapter_only": "-",
         "pretrained_adapter": "-.",
     }
-    for label, trace_rows in sorted(grouped.items(), key=lambda item: item[0]):
-        trace_rows = sorted(trace_rows, key=lambda row: row["bin_center_gev"])
+    for label, trace_rows in sorted(grouped.items()):
         ax.errorbar(
             [row["bin_center_gev"] for row in trace_rows],
             [row["fit_mean"] for row in trace_rows],
@@ -546,8 +563,77 @@ def plot_delta_p_over_p_group(rows: list[dict[str, Any]], output_path: Path, tit
     plt.close(fig)
 
 
+def plot_delta_p_over_p_scalar(
+    rows: list[dict[str, Any]],
+    output_path: Path,
+    y_key: str,
+    title: str,
+    ylabel: str,
+    zero_line: bool,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not rows:
+        return
+    grouped = grouped_delta_p_over_p_rows(rows)
+    linestyles = {
+        "conventional": "--",
+        "adapter_only": "-",
+        "pretrained_adapter": "-.",
+    }
+    fig, ax = plt.subplots(figsize=(9.5, 5.8), constrained_layout=True)
+    for label, trace_rows in sorted(grouped.items()):
+        trace_rows = [row for row in trace_rows if row.get(y_key) is not None]
+        if not trace_rows:
+            continue
+        ax.plot(
+            [row["bin_center_gev"] for row in trace_rows],
+            [row[y_key] for row in trace_rows],
+            marker="o",
+            linewidth=1.4,
+            linestyle=linestyles.get(trace_rows[0]["family"], "-"),
+            label=label,
+        )
+    if zero_line:
+        ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+    ax.set(xlabel="True p [GeV]", ylabel=ylabel, title=title)
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=170)
+    plt.close(fig)
+
+
+def plot_delta_p_over_p_set(rows: list[dict[str, Any]], output_dir: Path, stem: str, title: str) -> None:
+    plot_delta_p_over_p_errorbars(
+        rows,
+        output_dir / f"{stem}.png",
+        title,
+    )
+    plot_delta_p_over_p_scalar(
+        rows,
+        output_dir / f"{stem}_mean.png",
+        "fit_mean",
+        f"{title}: Gaussian mean",
+        r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$",
+        zero_line=True,
+    )
+    plot_delta_p_over_p_scalar(
+        rows,
+        output_dir / f"{stem}_sigma.png",
+        "fit_sigma",
+        f"{title}: Gaussian sigma",
+        r"Gaussian sigma of $(p_{reco} - p_{true}) / p_{true}$",
+        zero_line=False,
+    )
+
+
 def make_momentum_resolution_plots(delta_rows: list[dict[str, Any]], output_dir: Path) -> None:
-    rows = collapse_conventional_rows(normalize_delta_p_over_p_rows(delta_rows))
+    run_rows = normalize_delta_p_over_p_rows(delta_rows)
+    rows = collapse_conventional_rows(run_rows)
     if not rows:
         return
     plot_dir = output_dir / "momentum_resolution"
@@ -562,11 +648,26 @@ def make_momentum_resolution_plots(delta_rows: list[dict[str, Any]], output_dir:
     for filename, title, families in groups:
         group_rows = [row for row in rows if row["family"] in families]
         if group_rows:
-            plot_delta_p_over_p_group(
+            plot_delta_p_over_p_set(
                 group_rows,
-                plot_dir / f"delta_p_over_p_{filename}.png",
+                plot_dir,
+                f"delta_p_over_p_{filename}",
                 title,
             )
+
+    run_plot_dir = plot_dir / "runs"
+    by_run = defaultdict(list)
+    for row in per_run_delta_p_over_p_rows(run_rows):
+        by_run[row["run_id"]].append(row)
+    for run_id, run_plot_rows in sorted(by_run.items()):
+        if not run_plot_rows:
+            continue
+        plot_delta_p_over_p_set(
+            run_plot_rows,
+            run_plot_dir / safe_label(run_id),
+            "delta_p_over_p",
+            f"Momentum resolution: {safe_label(run_id)}",
+        )
 
 
 def main() -> None:

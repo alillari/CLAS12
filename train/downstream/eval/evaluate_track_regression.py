@@ -1324,6 +1324,61 @@ def make_delta_p_over_p_plot(output_dir, rows):
     fig.savefig(plot_dir / "delta_p_over_p_vs_true_p.png", dpi=160)
     plt.close(fig)
 
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    for method in methods:
+        method_rows = [
+            row for row in rows
+            if row["method"] == method
+            and row.get("fit_mean") is not None
+        ]
+        if not method_rows:
+            continue
+        method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
+        ax.plot(
+            [row["bin_center_gev"] for row in method_rows],
+            [row["fit_mean"] for row in method_rows],
+            marker="o",
+            linewidth=1.5,
+            label=labels.get(method, method),
+        )
+    ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+    ax.set(
+        xlabel="True p [GeV]",
+        ylabel=r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$",
+        title=r"Momentum bias from fitted $\Delta p / p$",
+    )
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.savefig(plot_dir / "delta_p_over_p_mean_vs_true_p.png", dpi=160)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    for method in methods:
+        method_rows = [
+            row for row in rows
+            if row["method"] == method
+            and row.get("fit_sigma") is not None
+        ]
+        if not method_rows:
+            continue
+        method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
+        ax.plot(
+            [row["bin_center_gev"] for row in method_rows],
+            [row["fit_sigma"] for row in method_rows],
+            marker="o",
+            linewidth=1.5,
+            label=labels.get(method, method),
+        )
+    ax.set(
+        xlabel="True p [GeV]",
+        ylabel=r"Gaussian sigma of $(p_{reco} - p_{true}) / p_{true}$",
+        title=r"Momentum resolution from fitted $\Delta p / p$",
+    )
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.savefig(plot_dir / "delta_p_over_p_sigma_vs_true_p.png", dpi=160)
+    plt.close(fig)
+
 
 def make_plots(
     output_dir, truth, predictions, true_p, true_theta, momentum_bins,

@@ -22,6 +22,7 @@ from campaign_util import read_yaml
 LABEL_RE = re.compile(r"(?:^|_)label(?P<label>\d+)(?:_|$)")
 COMPONENTS = ("px_gev", "py_gev", "pz_gev")
 PHYSICS_PLOT_METHODS = ("adapter", "cvt")
+PERCENT_SCALE = 100.0
 COMPONENT_LABELS = {
     "px_gev": "px",
     "py_gev": "py",
@@ -543,8 +544,8 @@ def plot_delta_p_over_p_errorbars(rows: list[dict[str, Any]], output_path: Path,
     for label, trace_rows in sorted(grouped.items()):
         ax.errorbar(
             [row["bin_center_gev"] for row in trace_rows],
-            [row["fit_mean"] for row in trace_rows],
-            yerr=[row["fit_sigma"] for row in trace_rows],
+            [PERCENT_SCALE * row["fit_mean"] for row in trace_rows],
+            yerr=[PERCENT_SCALE * row["fit_sigma"] for row in trace_rows],
             marker="o",
             capsize=3,
             linewidth=1.4,
@@ -554,7 +555,7 @@ def plot_delta_p_over_p_errorbars(rows: list[dict[str, Any]], output_path: Path,
     ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
     ax.set(
         xlabel="True p [GeV]",
-        ylabel=r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$",
+        ylabel=r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$ [%]",
         title=title,
     )
     ax.grid(alpha=0.25)
@@ -592,7 +593,7 @@ def plot_delta_p_over_p_scalar(
             continue
         ax.plot(
             [row["bin_center_gev"] for row in trace_rows],
-            [row[y_key] for row in trace_rows],
+            [PERCENT_SCALE * row[y_key] for row in trace_rows],
             marker="o",
             linewidth=1.4,
             linestyle=linestyles.get(trace_rows[0]["family"], "-"),
@@ -619,7 +620,7 @@ def plot_delta_p_over_p_set(rows: list[dict[str, Any]], output_dir: Path, stem: 
         output_dir / f"{stem}_mean.png",
         "fit_mean",
         f"{title}: Gaussian mean",
-        r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$",
+        r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$ [%]",
         zero_line=True,
     )
     plot_delta_p_over_p_scalar(
@@ -627,7 +628,7 @@ def plot_delta_p_over_p_set(rows: list[dict[str, Any]], output_dir: Path, stem: 
         output_dir / f"{stem}_sigma.png",
         "fit_sigma",
         f"{title}: Gaussian sigma",
-        r"Gaussian sigma of $(p_{reco} - p_{true}) / p_{true}$",
+        r"Gaussian sigma of $(p_{reco} - p_{true}) / p_{true}$ [%]",
         zero_line=False,
     )
 

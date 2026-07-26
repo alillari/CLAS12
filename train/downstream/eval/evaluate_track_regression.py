@@ -1282,6 +1282,7 @@ def make_ml_plots(output_dir, truth, predictions, metric_rows, training_history)
 def make_delta_p_over_p_plot(output_dir, rows):
     import matplotlib.pyplot as plt
 
+    percent = 100.0
     plot_dir = output_dir / "plots"
     plot_dir.mkdir(exist_ok=True)
     methods = [method for method in PHYSICS_PLOT_METHODS if any(row["method"] == method for row in rows)]
@@ -1301,8 +1302,8 @@ def make_delta_p_over_p_plot(output_dir, rows):
             continue
         method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
         x = np.asarray([row["bin_center_gev"] for row in method_rows], dtype=float)
-        y = np.asarray([row["fit_mean"] for row in method_rows], dtype=float)
-        yerr = np.asarray([row["fit_sigma"] for row in method_rows], dtype=float)
+        y = percent * np.asarray([row["fit_mean"] for row in method_rows], dtype=float)
+        yerr = percent * np.asarray([row["fit_sigma"] for row in method_rows], dtype=float)
         ax.errorbar(
             x,
             y,
@@ -1316,7 +1317,7 @@ def make_delta_p_over_p_plot(output_dir, rows):
     ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
     ax.set(
         xlabel="True p [GeV]",
-        ylabel=r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$",
+        ylabel=r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$ [%]",
         title=r"Momentum bias and resolution from fitted $\Delta p / p$",
     )
     ax.grid(alpha=0.25)
@@ -1336,7 +1337,7 @@ def make_delta_p_over_p_plot(output_dir, rows):
         method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
         ax.plot(
             [row["bin_center_gev"] for row in method_rows],
-            [row["fit_mean"] for row in method_rows],
+            [percent * row["fit_mean"] for row in method_rows],
             marker="o",
             linewidth=1.5,
             label=labels.get(method, method),
@@ -1344,7 +1345,7 @@ def make_delta_p_over_p_plot(output_dir, rows):
     ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
     ax.set(
         xlabel="True p [GeV]",
-        ylabel=r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$",
+        ylabel=r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$ [%]",
         title=r"Momentum bias from fitted $\Delta p / p$",
     )
     ax.grid(alpha=0.25)
@@ -1364,14 +1365,14 @@ def make_delta_p_over_p_plot(output_dir, rows):
         method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
         ax.plot(
             [row["bin_center_gev"] for row in method_rows],
-            [row["fit_sigma"] for row in method_rows],
+            [percent * row["fit_sigma"] for row in method_rows],
             marker="o",
             linewidth=1.5,
             label=labels.get(method, method),
         )
     ax.set(
         xlabel="True p [GeV]",
-        ylabel=r"Gaussian sigma of $(p_{reco} - p_{true}) / p_{true}$",
+        ylabel=r"Gaussian sigma of $(p_{reco} - p_{true}) / p_{true}$ [%]",
         title=r"Momentum resolution from fitted $\Delta p / p$",
     )
     ax.grid(alpha=0.25)

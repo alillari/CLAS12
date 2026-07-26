@@ -140,6 +140,13 @@ def load_analysis_config(args):
     config.setdefault("charge_source", "metadata_or_positive")
     config.setdefault("fallback_charge", 1)
     config.setdefault("write_unswung_diagnostics", True)
+    config.setdefault(
+        "delta_p_over_p_bins_gev",
+        config.get("momentum_bins_gev", [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0]),
+    )
+    config.setdefault("delta_p_over_p_min_bin_entries", 50)
+    config.setdefault("delta_p_over_p_histogram_bins", 80)
+    config.setdefault("delta_p_over_p_fit_quantile", 0.98)
     for key, attr in (
         ("model_config", "model_config"),
         ("run_name", "run_name"),
@@ -400,6 +407,110 @@ def add_binned_rows(rows, truth, predictions, values, group_name, edges, labels=
         for method, prediction in predictions.items():
             metric = compact_metrics(truth[selection], prediction[selection])
             rows.append({"group": group_name, "bin": label, "method": method, **metric})
+
+
+def gaussian(x, amplitude, mean, sigma):
+    return amplitude * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
+
+
+def fit_gaussian_residuals(values, histogram_bins, fit_quantile):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return None, None, None, None, "empty"
+
+    tail = 0.5 * (1.0 - float(fit_quantile))
+    if 0.0 < tail < 0.5 and len(values) > 2:
+        low, high = np.quantile(values, [tail, 1.0 - tail])
+        fit_values = values[(values >= low) & (values <= high)]
+    else:
+        fit_values = values
+    if len(fit_values) < 3:
+        return None, None, None, None, "too_few_after_trim"
+
+    moment_mean = float(np.mean(fit_values))
+    moment_sigma = float(np.std(fit_values, ddof=1)) if len(fit_values) > 1 else 0.0
+    if not math.isfinite(moment_sigma) or moment_sigma <= 0:
+        return safe_float(moment_mean), None, None, None, "zero_width"
+
+    counts, edges = np.histogram(fit_values, bins=int(histogram_bins))
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    populated = counts > 0
+    if int(np.sum(populated)) < 3:
+        return safe_float(moment_mean), safe_float(moment_sigma), None, None, "moment_fallback_sparse_histogram"
+
+    try:
+        from scipy.optimize import curve_fit
+
+        p0 = [float(counts.max()), moment_mean, moment_sigma]
+        bounds = ([0.0, float(edges[0]), 1e-12], [np.inf, float(edges[-1]), np.inf])
+        params, covariance = curve_fit(
+            gaussian,
+            centers[populated],
+            counts[populated],
+            p0=p0,
+            bounds=bounds,
+            maxfev=10000,
+        )
+        errors = np.sqrt(np.diag(covariance)) if covariance.size else np.full(3, np.nan)
+        _, mean, sigma = params
+        _, mean_error, sigma_error = errors
+        return (
+            safe_float(mean),
+            safe_float(abs(sigma)),
+            safe_float(mean_error) if math.isfinite(float(mean_error)) else None,
+            safe_float(sigma_error) if math.isfinite(float(sigma_error)) else None,
+            "ok",
+        )
+    except Exception:
+        return (
+            safe_float(moment_mean),
+            safe_float(moment_sigma),
+            None,
+            None,
+            "moment_fallback_fit_failed",
+        )
+
+
+def calculate_delta_p_over_p_fit_rows(truth, predictions, bins, config):
+    true_p, _, _, _ = vector_kinematics(truth)
+    edges = np.asarray(bins, dtype=float)
+    min_entries = int(config["delta_p_over_p_min_bin_entries"])
+    histogram_bins = int(config["delta_p_over_p_histogram_bins"])
+    fit_quantile = float(config["delta_p_over_p_fit_quantile"])
+    rows = []
+
+    for index in range(len(edges) - 1):
+        low = float(edges[index])
+        high = float(edges[index + 1])
+        label = f"[{low}, {high})"
+        selection = (true_p >= low) & (true_p < high) & (true_p > 1e-12)
+        for method in PHYSICS_PLOT_METHODS:
+            pred_p, _, _, _ = vector_kinematics(predictions[method])
+            valid = selection & np.isfinite(true_p) & np.isfinite(pred_p)
+            residual = (pred_p[valid] - true_p[valid]) / true_p[valid]
+            if len(residual) < min_entries:
+                fit_mean = fit_sigma = fit_mean_error = fit_sigma_error = None
+                fit_status = "skipped_sparse"
+            else:
+                fit_mean, fit_sigma, fit_mean_error, fit_sigma_error, fit_status = (
+                    fit_gaussian_residuals(residual, histogram_bins, fit_quantile)
+                )
+            rows.append({
+                "group": "truth_p_gev",
+                "bin": label,
+                "bin_low_gev": low,
+                "bin_high_gev": high,
+                "bin_center_gev": 0.5 * (low + high),
+                "method": method,
+                "n": int(len(residual)),
+                "fit_mean": fit_mean,
+                "fit_sigma": fit_sigma,
+                "fit_mean_error": fit_mean_error,
+                "fit_sigma_error": fit_sigma_error,
+                "fit_status": fit_status,
+            })
+    return rows
 
 
 def write_csv(path, rows):
@@ -1168,6 +1279,52 @@ def make_ml_plots(output_dir, truth, predictions, metric_rows, training_history)
     make_absolute_error_cdf_plot(plot_dir, truth, predictions)
 
 
+def make_delta_p_over_p_plot(output_dir, rows):
+    import matplotlib.pyplot as plt
+
+    plot_dir = output_dir / "plots"
+    plot_dir.mkdir(exist_ok=True)
+    methods = [method for method in PHYSICS_PLOT_METHODS if any(row["method"] == method for row in rows)]
+    if not methods:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    labels = {"adapter": "Adapter", "cvt": "CVT::Tracks"}
+    for method in methods:
+        method_rows = [
+            row for row in rows
+            if row["method"] == method
+            and row.get("fit_mean") is not None
+            and row.get("fit_sigma") is not None
+        ]
+        if not method_rows:
+            continue
+        method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
+        x = np.asarray([row["bin_center_gev"] for row in method_rows], dtype=float)
+        y = np.asarray([row["fit_mean"] for row in method_rows], dtype=float)
+        yerr = np.asarray([row["fit_sigma"] for row in method_rows], dtype=float)
+        ax.errorbar(
+            x,
+            y,
+            yerr=yerr,
+            marker="o",
+            capsize=3,
+            linewidth=1.5,
+            label=labels.get(method, method),
+        )
+
+    ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+    ax.set(
+        xlabel="True p [GeV]",
+        ylabel=r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$",
+        title=r"Momentum bias and resolution from fitted $\Delta p / p$",
+    )
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.savefig(plot_dir / "delta_p_over_p_vs_true_p.png", dpi=160)
+    plt.close(fig)
+
+
 def make_plots(
     output_dir, truth, predictions, true_p, true_theta, momentum_bins,
     theta_bins, config,
@@ -1437,10 +1594,16 @@ def main():
         labels={-1: "negative", 0: "neutral", 1: "positive"},
     )
     write_csv(output_dir / "binned_metrics.csv", binned_rows)
+    delta_p_over_p_bins = np.asarray(config["delta_p_over_p_bins_gev"], dtype=float)
+    delta_p_over_p_rows = calculate_delta_p_over_p_fit_rows(
+        truth, predictions, delta_p_over_p_bins, config
+    )
+    write_csv(output_dir / "delta_p_over_p_fits.csv", delta_p_over_p_rows)
     make_plots(
         output_dir, truth, predictions, true_p, true_theta,
         momentum_bins, theta_bins, config,
     )
+    make_delta_p_over_p_plot(output_dir, delta_p_over_p_rows)
     make_ml_plots(output_dir, truth, predictions, ml_metric_rows, training_history)
 
     trainer.cleanup()

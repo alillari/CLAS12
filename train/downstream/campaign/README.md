@@ -94,6 +94,55 @@ Adapter-only baselines are included by default, one per labeled-data amount.
 They use `scripts/configs/mamba_clas12_track_regression_adapteronly.yaml` and
 omit `--usepretrain`.
 
+## Build An Adapter-Only Campaign With No Backbones
+
+To run only adapter-only baselines over a broad labeled-data range, use an empty
+checkpoint root and pass `--allow-empty`. The checkpoint root must exist, but it
+does not need to contain any pretrained backbone directories.
+
+From the repository root:
+
+```bash
+mkdir -p /tmp/no_pretrained_backbones
+
+python train/downstream/campaign/build_track_regression_manifest.py \
+  --checkpoint-root /tmp/no_pretrained_backbones \
+  --campaign-name adapteronly_label_sweep \
+  --artifact-root /home/alessio/ML-work/result_deep_storage \
+  --eventnumber 100,1000,10000,50000,100000,200000 \
+  --allow-empty
+```
+
+This writes an adapter-only manifest:
+
+```text
+/home/alessio/ML-work/result_deep_storage/campaigns/adapteronly_label_sweep/manifest.yaml
+```
+
+The generated runs have IDs like:
+
+```text
+adapteronly_label100
+adapteronly_label1000
+adapteronly_label10000
+adapteronly_label50000
+adapteronly_label100000
+adapteronly_label200000
+```
+
+Run the campaign normally:
+
+```bash
+python train/downstream/campaign/run_track_regression_campaign.py \
+  --manifest /home/alessio/ML-work/result_deep_storage/campaigns/adapteronly_label_sweep/manifest.yaml \
+  --cuda-device 0
+```
+
+Adapter-only runs set `use_pretrained_backbone: false`, use
+`scripts/configs/mamba_clas12_track_regression_adapteronly.yaml`, and the
+training command omits `--usepretrain`. No pretrained checkpoint is loaded or
+validated for these rows.
+
 ## Build An Optuna Seed-Ablation Manifest
 
 To retest a broad sample of completed Optuna trials across several training
@@ -158,11 +207,43 @@ python train/downstream/campaign/build_track_regression_manifest.py \
   --optuna-study-name adapteronly_rangefind_50k
 ```
 
-This imports only the tuned recipe keys: `max_lr`, `min_lr_ratio`, derived
-`min_lr`, `warmup_fraction`, `adapter_weight_decay`, `grad_clip_value`, and
-`dropout`. Dataset size, batch size, paths, and training budget still come from
-the campaign arguments and base configs. Explicit `--training-override KEY=VALUE`
-arguments take precedence over the imported Optuna recipe.
+This is the recommended way to reuse a good tuning run for a normal campaign
+when you want one shared fine-tuning recipe across adapter-only and pretrained
+backbone rows. The manifest builder loads `study.best_trial` from the Optuna
+storage, records its provenance under `source_optuna`, and writes the selected
+hyperparameters into campaign-level `training_overrides`.
+
+Only the tuned recipe keys are imported:
+
+- `max_lr`
+- `min_lr_ratio`
+- derived `min_lr`
+- `warmup_fraction`
+- `adapter_weight_decay`
+- `grad_clip_value`
+- `dropout`
+
+Dataset size, batch size, paths, checkpoint selection, training budget, and the
+campaign grid still come from the campaign arguments and base configs. Explicit
+`--training-override KEY=VALUE` arguments take precedence over the imported
+Optuna recipe, so you can import the best recipe and still override one value:
+
+```bash
+python train/downstream/campaign/build_track_regression_manifest.py \
+  --checkpoint-root /home/alessio/ML-work/pretrained-FMs/campaign_1 \
+  --campaign-name campaign_1_track_regression_best_optuna_recipe_dropout12 \
+  --artifact-root /home/alessio/ML-work/result_deep_storage \
+  --eventnumber 50000 \
+  --optuna-best-trial \
+  --optuna-storage sqlite:////home/alessio/ML-work/result_deep_storage/optuna/adapteronly_rangefind_50k.db \
+  --optuna-study-name adapteronly_rangefind_50k \
+  --training-override dropout=0.12
+```
+
+Use a tuning study whose fixed settings match the campaign you want to run, or
+intentionally decide which differences are acceptable. In particular, changing
+the labeled-data amount, batch size, training-step budget, validation cadence, or
+dataset split can make the "best" trial less directly transferable.
 
 ## Training-Time Controls
 
@@ -178,6 +259,11 @@ Common time-control options:
 - `--max-train-batches`
 - `--max-val-batches`
 - `--training-override KEY=VALUE`
+
+For optimizer and regularization settings, prefer `--optuna-best-trial` when
+the values should come from a completed tuning run. Use manual
+`--training-override KEY=VALUE` for one-off edits or for parameters that were
+not part of the Optuna search space.
 
 `--max-train-batches` and `--max-val-batches` cap the number of batches used per
 epoch. They are useful for quick exploratory sweeps because they bound the time

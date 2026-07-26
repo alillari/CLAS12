@@ -14,6 +14,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from campaign_util import read_yaml
 
 
@@ -32,6 +34,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", help="Optional explicit manifest path.")
     parser.add_argument("--headline-jsonl", help="Optional explicit campaign_headline_metrics.jsonl path.")
     parser.add_argument("--output-dir", help="Optional explicit plot output directory.")
+    parser.add_argument(
+        "--plot-suite",
+        choices=("standard", "momentum-resolution", "all"),
+        default="standard",
+        help="Plot suite to generate. 'standard' preserves existing campaign plots.",
+    )
     return parser.parse_args()
 
 
@@ -74,6 +82,11 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def read_csv_rows(path: Path) -> list[dict[str, Any]]:
+    with path.open(newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
 def parse_backbone_metadata(run_id: str) -> dict[str, Any]:
     from campaign_util import parse_run_name
 
@@ -107,6 +120,17 @@ def finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return output if math.isfinite(output) else None
+
+
+def finite_int(value: Any) -> int | None:
+    number = finite_float(value)
+    return int(number) if number is not None else None
+
+
+def bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
 def parameter_counter():
@@ -409,21 +433,170 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             )
 
 
+def normalize_delta_p_over_p_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = []
+    for row in rows:
+        fit_mean = finite_float(row.get("fit_mean"))
+        fit_sigma = finite_float(row.get("fit_sigma"))
+        if fit_mean is None or fit_sigma is None:
+            continue
+        method = row.get("method")
+        model_family = row.get("model_family")
+        use_pretrained = bool_value(row.get("use_pretrained_backbone"))
+        if method == "cvt":
+            family = "conventional"
+            trace_label = "CVT::Tracks"
+        elif model_family == "adapteronly" or not use_pretrained:
+            family = "adapter_only"
+            trace_label = (
+                f"AdapterOnly label={safe_label(row.get('labeled_events'))} "
+                f"run={safe_label(row.get('run_id'))}"
+            )
+        else:
+            family = "pretrained_adapter"
+            trace_label = (
+                f"Pretrained+Adapter w={safe_label(row.get('embed_dim'))} "
+                f"pretrain={safe_label(row.get('pretrain_events'))} "
+                f"label={safe_label(row.get('labeled_events'))} "
+                f"run={safe_label(row.get('run_id'))}"
+            )
+        normalized.append({
+            **row,
+            "family": family,
+            "trace_label": trace_label,
+            "bin_center_gev": finite_float(row.get("bin_center_gev")),
+            "bin_low_gev": finite_float(row.get("bin_low_gev")),
+            "bin_high_gev": finite_float(row.get("bin_high_gev")),
+            "fit_mean": fit_mean,
+            "fit_sigma": fit_sigma,
+            "n": finite_int(row.get("n")),
+            "labeled_events": finite_int(row.get("labeled_events")),
+            "embed_dim": finite_int(row.get("embed_dim")),
+            "pretrain_events": finite_int(row.get("pretrain_events")),
+        })
+    return [row for row in normalized if row["bin_center_gev"] is not None]
+
+
+def collapse_conventional_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    conventional = [row for row in rows if row["family"] == "conventional"]
+    others = [row for row in rows if row["family"] != "conventional"]
+    grouped: dict[float, list[dict[str, Any]]] = defaultdict(list)
+    for row in conventional:
+        grouped[row["bin_center_gev"]].append(row)
+
+    collapsed = []
+    for center, group_rows in sorted(grouped.items()):
+        weights = np.asarray([row["n"] or 1 for row in group_rows], dtype=float)
+        means = np.asarray([row["fit_mean"] for row in group_rows], dtype=float)
+        sigmas = np.asarray([row["fit_sigma"] for row in group_rows], dtype=float)
+        first = group_rows[0]
+        collapsed.append({
+            **first,
+            "run_id": "conventional_aggregate",
+            "trace_label": "CVT::Tracks",
+            "bin_center_gev": center,
+            "fit_mean": float(np.average(means, weights=weights)),
+            "fit_sigma": float(np.average(sigmas, weights=weights)),
+            "n": int(np.sum(weights)),
+        })
+    return others + collapsed
+
+
+def plot_delta_p_over_p_group(rows: list[dict[str, Any]], output_path: Path, title: str) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not rows:
+        return
+    rows = sorted(rows, key=lambda row: (row["trace_label"], row["bin_center_gev"]))
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row["trace_label"]].append(row)
+
+    fig, ax = plt.subplots(figsize=(9.5, 5.8), constrained_layout=True)
+    linestyles = {
+        "conventional": "--",
+        "adapter_only": "-",
+        "pretrained_adapter": "-.",
+    }
+    for label, trace_rows in sorted(grouped.items(), key=lambda item: item[0]):
+        trace_rows = sorted(trace_rows, key=lambda row: row["bin_center_gev"])
+        ax.errorbar(
+            [row["bin_center_gev"] for row in trace_rows],
+            [row["fit_mean"] for row in trace_rows],
+            yerr=[row["fit_sigma"] for row in trace_rows],
+            marker="o",
+            capsize=3,
+            linewidth=1.4,
+            linestyle=linestyles.get(trace_rows[0]["family"], "-"),
+            label=label,
+        )
+    ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+    ax.set(
+        xlabel="True p [GeV]",
+        ylabel=r"Gaussian mean of $(p_{reco} - p_{true}) / p_{true}$",
+        title=title,
+    )
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=170)
+    plt.close(fig)
+
+
+def make_momentum_resolution_plots(delta_rows: list[dict[str, Any]], output_dir: Path) -> None:
+    rows = collapse_conventional_rows(normalize_delta_p_over_p_rows(delta_rows))
+    if not rows:
+        return
+    plot_dir = output_dir / "momentum_resolution"
+    groups = [
+        ("conventional", "Conventional CVT::Tracks", {"conventional"}),
+        ("adapter_only", "AdapterOnly", {"adapter_only"}),
+        ("pretrained_adapter", "Pretrained+Adapter", {"pretrained_adapter"}),
+        ("all", "Momentum resolution: all methods", {"conventional", "adapter_only", "pretrained_adapter"}),
+        ("conventional_adapter_only", "Momentum resolution: CVT::Tracks and AdapterOnly", {"conventional", "adapter_only"}),
+        ("conventional_pretrained_adapter", "Momentum resolution: CVT::Tracks and Pretrained+Adapter", {"conventional", "pretrained_adapter"}),
+    ]
+    for filename, title, families in groups:
+        group_rows = [row for row in rows if row["family"] in families]
+        if group_rows:
+            plot_delta_p_over_p_group(
+                group_rows,
+                plot_dir / f"delta_p_over_p_{filename}.png",
+                title,
+            )
+
+
 def main() -> None:
     args = parse_args()
-    _, headline_jsonl, manifest_path, output_dir = resolve_paths(args)
-    if not headline_jsonl.exists():
+    campaign_dir, headline_jsonl, manifest_path, output_dir = resolve_paths(args)
+    if args.plot_suite in ("standard", "all") and not headline_jsonl.exists():
         raise FileNotFoundError(f"Campaign headline JSONL does not exist: {headline_jsonl}")
-    metric_rows = read_jsonl(headline_jsonl)
     manifest_rows = manifest_lookup(manifest_path)
-    rows = build_plot_rows(metric_rows, manifest_rows)
-    if not rows:
-        raise RuntimeError(f"No completed adapter component ml_error rows found in {headline_jsonl}")
-
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_csv(output_dir / "plot_data.csv", rows)
-    write_csv(output_dir / "best_by_slice.csv", best_by_slice(rows))
-    make_plots(rows, output_dir)
+
+    if args.plot_suite in ("standard", "all"):
+        metric_rows = read_jsonl(headline_jsonl)
+        rows = build_plot_rows(metric_rows, manifest_rows)
+        if not rows:
+            raise RuntimeError(f"No completed adapter component ml_error rows found in {headline_jsonl}")
+        write_csv(output_dir / "plot_data.csv", rows)
+        write_csv(output_dir / "best_by_slice.csv", best_by_slice(rows))
+        make_plots(rows, output_dir)
+
+    if args.plot_suite in ("momentum-resolution", "all"):
+        if campaign_dir is None:
+            delta_path = headline_jsonl.parent / "delta_p_over_p_fits.csv"
+        else:
+            delta_path = campaign_dir / "summary" / "delta_p_over_p_fits.csv"
+        if not delta_path.exists():
+            raise FileNotFoundError(
+                f"Delta-p/p fit CSV does not exist: {delta_path}. "
+                "Run campaign collation after reevaluating runs with this feature."
+            )
+        make_momentum_resolution_plots(read_csv_rows(delta_path), output_dir)
     print(f"Wrote campaign plots and CSVs to {output_dir}")
 
 

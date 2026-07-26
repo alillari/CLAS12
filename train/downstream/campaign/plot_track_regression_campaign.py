@@ -21,6 +21,7 @@ from campaign_util import read_yaml
 
 LABEL_RE = re.compile(r"(?:^|_)label(?P<label>\d+)(?:_|$)")
 COMPONENTS = ("px_gev", "py_gev", "pz_gev")
+PHYSICS_PLOT_METHODS = ("adapter", "cvt")
 COMPONENT_LABELS = {
     "px_gev": "px",
     "py_gev": "py",

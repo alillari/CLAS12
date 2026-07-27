@@ -28,6 +28,12 @@ COMPONENT_LABELS = {
     "py_gev": "py",
     "pz_gev": "pz",
 }
+PLOT_KEY_LABELS = {
+    "backbone_width_label": "backbone",
+    "embed_dim": "embed_dim",
+    "labeled_events": "labeled_events",
+    "pretrain_events": "pretrain_events",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -129,6 +135,10 @@ def finite_int(value: Any) -> int | None:
     return int(number) if number is not None else None
 
 
+def plot_key_label(key: str) -> str:
+    return PLOT_KEY_LABELS.get(key, key)
+
+
 def bool_value(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -215,6 +225,11 @@ def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, 
             "labeled_events": int(merged["labeled_events"]) if merged.get("labeled_events") is not None else None,
             "model_family": merged.get("model_family", "mamba1"),
         }
+        row["backbone_width_label"] = (
+            "adapter-only"
+            if row["model_family"] == "adapteronly"
+            else row["embed_dim"]
+        )
         mae_values = []
         rmse_values = []
         r2_values = []
@@ -305,7 +320,10 @@ def plot_faceted_lines(
     if facet_key is None:
         facet_values = [None]
     else:
-        facet_values = sorted({row.get(facet_key) for row in filtered}, key=lambda value: (value is None, value))
+        facet_values = sorted(
+            {row.get(facet_key) for row in filtered},
+            key=lambda value: (value is None, safe_label(value)),
+        )
 
     n_facets = len(facet_values)
     ncols = min(3, n_facets)
@@ -333,7 +351,7 @@ def plot_faceted_lines(
                 [row[x_key] for row in line_rows],
                 [row[y_key] for row in line_rows],
                 marker="o",
-                label=f"{line_key}={safe_label(line_value)}",
+                label=f"{plot_key_label(line_key)}={safe_label(line_value)}",
             )
         if reference_y is not None:
             axis.axhline(reference_y, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
@@ -343,7 +361,7 @@ def plot_faceted_lines(
         axis.set_xlabel(xlabel)
         axis.set_ylabel(ylabel)
         if facet_key is not None:
-            axis.set_title(f"{facet_key}={safe_label(facet_value)}")
+            axis.set_title(f"{plot_key_label(facet_key)}={safe_label(facet_value)}")
         axis.legend(fontsize=8)
 
     for axis in axes_flat[n_facets:]:
@@ -369,7 +387,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             output_dir / f"{metric}_mean_vs_labeled_events_by_width.png",
             x_key="labeled_events",
             y_key=mean_key,
-            line_key="embed_dim",
+            line_key="backbone_width_label",
             facet_key="pretrain_events",
             title=f"Adapter mean {ylabel} vs labeled adapter data ({better} is better)",
             ylabel=f"Mean {ylabel} across px, py, pz",
@@ -392,7 +410,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             x_key="pretrain_events",
             y_key=mean_key,
             line_key="labeled_events",
-            facet_key="embed_dim",
+            facet_key="backbone_width_label",
             title=f"Adapter mean {ylabel} vs backbone pretraining data ({better} is better)",
             ylabel=f"Mean {ylabel} across px, py, pz",
             xlabel="Backbone pretraining events",
@@ -405,7 +423,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
                 output_dir / f"{metric}_{component}_vs_labeled_events_by_width.png",
                 x_key="labeled_events",
                 y_key=component_key,
-                line_key="embed_dim",
+                line_key="backbone_width_label",
                 facet_key="pretrain_events",
                 title=f"Adapter {component_label} {ylabel} vs labeled adapter data ({better} is better)",
                 ylabel=f"{component_label} {ylabel}",
@@ -428,7 +446,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
                 x_key="pretrain_events",
                 y_key=component_key,
                 line_key="labeled_events",
-                facet_key="embed_dim",
+                facet_key="backbone_width_label",
                 title=f"Adapter {component_label} {ylabel} vs backbone pretraining data ({better} is better)",
                 ylabel=f"{component_label} {ylabel}",
                 xlabel="Backbone pretraining events",

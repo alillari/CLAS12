@@ -292,6 +292,17 @@ def safe_label(value: Any) -> str:
     return str(value)
 
 
+def track_count_label(value: Any) -> str:
+    count = finite_int(value)
+    if count is None:
+        return "unknown tracks"
+    if count >= 1000 and count % 1000 == 0:
+        return f"{count // 1000}k tracks"
+    if count >= 1000:
+        return f"{count / 1000:.1f}k tracks"
+    return f"{count} tracks"
+
+
 def plot_faceted_lines(
     rows: list[dict[str, Any]],
     output_path: Path,
@@ -651,12 +662,101 @@ def plot_delta_p_over_p_set(rows: list[dict[str, Any]], output_dir: Path, stem: 
     )
 
 
+def select_presentation_adapter_run(rows: list[dict[str, Any]]) -> str | None:
+    adapter_rows = [row for row in rows if row.get("method") == "adapter"]
+    if not adapter_rows:
+        return None
+    adapter_only = [row for row in adapter_rows if row["family"] == "adapter_only"]
+    candidates = adapter_only or adapter_rows
+    return max(
+        candidates,
+        key=lambda row: (
+            row.get("labeled_events") or -1,
+            row.get("embed_dim") or -1,
+            row.get("pretrain_events") or -1,
+            safe_label(row.get("run_id")),
+        ),
+    ).get("run_id")
+
+
+def plot_presentation_momentum_resolution(rows: list[dict[str, Any]], output_path: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    run_id = select_presentation_adapter_run(rows)
+    if run_id is None:
+        return
+    run_rows = [row for row in rows if row.get("run_id") == run_id]
+    adapter_rows = sorted(
+        [row for row in run_rows if row.get("method") == "adapter" and row.get("fit_sigma") is not None],
+        key=lambda row: row["bin_center_gev"],
+    )
+    cvt_rows = sorted(
+        [row for row in run_rows if row.get("method") == "cvt" and row.get("fit_sigma") is not None],
+        key=lambda row: row["bin_center_gev"],
+    )
+    if not adapter_rows or not cvt_rows:
+        return
+
+    adapter_name = "AdapterOnly" if adapter_rows[0]["family"] == "adapter_only" else "Adapter"
+    adapter_label = f"{adapter_name}, {track_count_label(adapter_rows[0].get('labeled_events'))}"
+    colors = {
+        "adapter": "#0072B2",
+        "cvt": "#D55E00",
+    }
+    with plt.rc_context({
+        "font.size": 20,
+        "axes.labelsize": 24,
+        "axes.titlesize": 24,
+        "xtick.labelsize": 18,
+        "ytick.labelsize": 18,
+        "legend.fontsize": 18,
+        "lines.linewidth": 3.2,
+        "lines.markersize": 9.5,
+    }):
+        fig, ax = plt.subplots(figsize=(10.5, 7.0), constrained_layout=True)
+        ax.plot(
+            [row["bin_center_gev"] for row in adapter_rows],
+            [PERCENT_SCALE * row["fit_sigma"] for row in adapter_rows],
+            marker="o",
+            linestyle="-",
+            linewidth=3.2,
+            markersize=9.5,
+            color=colors["adapter"],
+            label=adapter_label,
+        )
+        ax.plot(
+            [row["bin_center_gev"] for row in cvt_rows],
+            [PERCENT_SCALE * row["fit_sigma"] for row in cvt_rows],
+            marker="s",
+            linestyle="-",
+            linewidth=3.2,
+            markersize=9.5,
+            color=colors["cvt"],
+            label="Conventional CVT reconstruction",
+        )
+        ax.set_xlabel("p [GeV]")
+        ax.set_ylabel("σ(Δp/p) [%]")
+        ax.minorticks_off()
+        ax.grid(True, which="major", alpha=0.28, linewidth=1.1)
+        ax.legend(frameon=False)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=220)
+        plt.close(fig)
+
+
 def make_momentum_resolution_plots(delta_rows: list[dict[str, Any]], output_dir: Path) -> None:
     run_rows = normalize_delta_p_over_p_rows(delta_rows)
     rows = collapse_conventional_rows(run_rows)
     if not rows:
         return
     plot_dir = output_dir / "momentum_resolution"
+    plot_presentation_momentum_resolution(
+        run_rows,
+        plot_dir / "presentation_sigma_delta_p_over_p.png",
+    )
     groups = [
         ("conventional", "Conventional CVT::Tracks", {"conventional"}),
         ("adapter_only", "AdapterOnly", {"adapter_only"}),

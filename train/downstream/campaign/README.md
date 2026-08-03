@@ -421,11 +421,13 @@ Campaign outputs are written outside the repo:
         summary.json
         ml_metrics.csv
         binned_metrics.csv
+        delta_p_over_p_fits.csv
         campaign_headline_metrics.jsonl
         plots/
   summary/
     campaign_headline_metrics.jsonl
     run_table.csv
+    delta_p_over_p_fits.csv
 ```
 
 `status.yaml` records resumable stage state for each run. The main statuses are:
@@ -487,10 +489,29 @@ python train/downstream/campaign/plot_track_regression_campaign.py \
   --campaign-dir /home/alessio/ML-work/result_deep_storage/campaigns/campaign_1_track_regression_label_sweep
 ```
 
+The plotting script has three plot suites:
+
+```bash
+--plot-suite standard              # existing MAE/RMSE/R2 scaling plots
+--plot-suite momentum-resolution   # fitted delta-p/p momentum-resolution plots
+--plot-suite all                   # both suites
+```
+
+For campaigns evaluated before `delta_p_over_p_fits.csv` existed, rerun
+evaluation before making momentum-resolution plots:
+
+```bash
+python train/downstream/campaign/run_track_regression_campaign.py \
+  --manifest /home/alessio/ML-work/result_deep_storage/campaigns/campaign_1_track_regression_label_sweep/manifest.yaml \
+  --force-eval \
+  --cuda-device 0
+```
+
 The plotting script reads:
 
 ```text
 <campaign_dir>/summary/campaign_headline_metrics.jsonl
+<campaign_dir>/summary/delta_p_over_p_fits.csv
 <campaign_dir>/manifest.yaml
 ```
 
@@ -512,6 +533,30 @@ and writes:
   mae_<component>_vs_*.png
   rmse_<component>_vs_*.png
   r2_<component>_vs_*.png
+  momentum_resolution/
+    presentation_sigma_delta_p_over_p.png
+    delta_p_over_p_conventional.png
+    delta_p_over_p_conventional_mean.png
+    delta_p_over_p_conventional_sigma.png
+    delta_p_over_p_adapter_only.png
+    delta_p_over_p_adapter_only_mean.png
+    delta_p_over_p_adapter_only_sigma.png
+    delta_p_over_p_pretrained_adapter.png
+    delta_p_over_p_pretrained_adapter_mean.png
+    delta_p_over_p_pretrained_adapter_sigma.png
+    delta_p_over_p_all.png
+    delta_p_over_p_all_mean.png
+    delta_p_over_p_all_sigma.png
+    delta_p_over_p_conventional_adapter_only.png
+    delta_p_over_p_conventional_adapter_only_mean.png
+    delta_p_over_p_conventional_adapter_only_sigma.png
+    delta_p_over_p_conventional_pretrained_adapter.png
+    delta_p_over_p_conventional_pretrained_adapter_mean.png
+    delta_p_over_p_conventional_pretrained_adapter_sigma.png
+    runs/<run_id>/
+      delta_p_over_p.png
+      delta_p_over_p_mean.png
+      delta_p_over_p_sigma.png
 ```
 
 The three main campaign axes are:
@@ -536,6 +581,18 @@ or CVT reconstruction comparison rows are ignored here. The metrics are:
 - mean MAE averaged across `px`, `py`, and `pz`;
 - mean RMSE averaged across `px`, `py`, and `pz`;
 - mean R2 averaged across `px`, `py`, and `pz`.
+
+Momentum-resolution plots use Gaussian fits to `(p_reco - p_true) / p_true` in
+configured true-momentum bins. The plotted mean is the fitted bias and the
+plotted sigma is the fitted standard deviation, shown as a percentage. Sparse
+bins are skipped during evaluation and recorded in `delta_p_over_p_fits.csv`
+with a `fit_status`.
+
+The presentation plot
+`momentum_resolution/presentation_sigma_delta_p_over_p.png` shows only fitted
+sigma versus `p` for the largest AdapterOnly run when present, compared with the
+matching conventional CVT reconstruction. Its legend reports the selected
+adapter's labeled training-track count, for example `AdapterOnly, 50k tracks`.
 
 ## Troubleshooting
 

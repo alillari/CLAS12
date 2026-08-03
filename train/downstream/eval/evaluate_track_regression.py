@@ -60,8 +60,8 @@ ML_METRIC_LABELS = {
 }
 ENV_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
 DEFAULT_DELTA_P_OVER_P_BINS_GEV = [
-    round(0.2 + 0.1 * index, 10)
-    for index in range(29)
+    round(0.25 + 0.25 * index, 10)
+    for index in range(12)
 ]
 
 

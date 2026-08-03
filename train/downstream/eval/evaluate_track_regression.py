@@ -59,6 +59,10 @@ ML_METRIC_LABELS = {
     "p95_absolute_error": "95th percentile absolute error",
 }
 ENV_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
+DEFAULT_DELTA_P_OVER_P_BINS_GEV = [
+    round(0.2 + 0.1 * index, 10)
+    for index in range(29)
+]
 
 
 class ConfigFormatMap(dict):
@@ -142,10 +146,11 @@ def load_analysis_config(args):
     config.setdefault("write_unswung_diagnostics", True)
     config.setdefault(
         "delta_p_over_p_bins_gev",
-        config.get("momentum_bins_gev", [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0]),
+        DEFAULT_DELTA_P_OVER_P_BINS_GEV,
     )
-    config.setdefault("delta_p_over_p_min_bin_entries", 50)
-    config.setdefault("delta_p_over_p_histogram_bins", 80)
+    config.setdefault("delta_p_over_p_min_bin_entries", 200)
+    config.setdefault("delta_p_over_p_min_populated_histogram_bins", 8)
+    config.setdefault("delta_p_over_p_histogram_bins", 40)
     config.setdefault("delta_p_over_p_fit_quantile", 0.98)
     for key, attr in (
         ("model_config", "model_config"),
@@ -413,7 +418,7 @@ def gaussian(x, amplitude, mean, sigma):
     return amplitude * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
 
 
-def fit_gaussian_residuals(values, histogram_bins, fit_quantile):
+def fit_gaussian_residuals(values, histogram_bins, fit_quantile, min_populated_bins):
     values = np.asarray(values, dtype=float)
     values = values[np.isfinite(values)]
     if not len(values):
@@ -436,8 +441,8 @@ def fit_gaussian_residuals(values, histogram_bins, fit_quantile):
     counts, edges = np.histogram(fit_values, bins=int(histogram_bins))
     centers = 0.5 * (edges[:-1] + edges[1:])
     populated = counts > 0
-    if int(np.sum(populated)) < 3:
-        return safe_float(moment_mean), safe_float(moment_sigma), None, None, "moment_fallback_sparse_histogram"
+    if int(np.sum(populated)) < int(min_populated_bins):
+        return None, None, None, None, "skipped_sparse_histogram"
 
     try:
         from scipy.optimize import curve_fit
@@ -477,6 +482,7 @@ def calculate_delta_p_over_p_fit_rows(truth, predictions, bins, config):
     edges = np.asarray(bins, dtype=float)
     min_entries = int(config["delta_p_over_p_min_bin_entries"])
     histogram_bins = int(config["delta_p_over_p_histogram_bins"])
+    min_populated_bins = int(config["delta_p_over_p_min_populated_histogram_bins"])
     fit_quantile = float(config["delta_p_over_p_fit_quantile"])
     rows = []
 
@@ -494,7 +500,9 @@ def calculate_delta_p_over_p_fit_rows(truth, predictions, bins, config):
                 fit_status = "skipped_sparse"
             else:
                 fit_mean, fit_sigma, fit_mean_error, fit_sigma_error, fit_status = (
-                    fit_gaussian_residuals(residual, histogram_bins, fit_quantile)
+                    fit_gaussian_residuals(
+                        residual, histogram_bins, fit_quantile, min_populated_bins
+                    )
                 )
             rows.append({
                 "group": "truth_p_gev",

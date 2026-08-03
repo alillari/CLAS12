@@ -588,6 +588,21 @@ plotted sigma is the fitted standard deviation, shown as a percentage. Sparse
 bins are skipped during evaluation and recorded in `delta_p_over_p_fits.csv`
 with a `fit_status`.
 
+The default delta-p/p binning is narrow and limited to the region with useful
+coverage:
+
+```yaml
+delta_p_over_p_bins_gev: [0.2, 0.3, ..., 3.0]
+delta_p_over_p_min_bin_entries: 200
+delta_p_over_p_min_populated_histogram_bins: 8
+delta_p_over_p_histogram_bins: 40
+delta_p_over_p_fit_quantile: 0.98
+```
+
+The minimum-entry and populated-histogram-bin cuts are deliberately stricter
+than the broad binned metrics because 0.1 GeV momentum slices need enough
+statistics for stable Gaussian fits.
+
 The presentation plot
 `momentum_resolution/presentation_sigma_delta_p_over_p.png` shows only fitted
 sigma versus `p` for the largest AdapterOnly run when present, compared with the

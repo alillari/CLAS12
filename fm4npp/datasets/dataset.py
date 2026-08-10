@@ -334,7 +334,8 @@ class TPCBatchDataset(Dataset):
                  high_thr=100,
                  max_tracks=150,
                  require_reg_target=False,
-                 require_pid_target=False):
+                 require_pid_target=False,
+                 require_noise_target=False):
 
         self.data_root = data_root
         self.split = split
@@ -360,6 +361,15 @@ class TPCBatchDataset(Dataset):
                 raise
             self.memmap_pid_target = None
             self.has_pid_target = False
+
+        try:
+            self.memmap_noise_target = RaggedMmap(os.path.join(data_root, f'noise_target_{split}'))
+            self.has_noise_target = True
+        except (FileNotFoundError, OSError):
+            if require_noise_target:
+                raise
+            self.memmap_noise_target = None
+            self.has_noise_target = False
 
         try:
             self.memmap_mid_target = RaggedMmap(os.path.join(data_root, f'mid_target_{split}'))
@@ -558,6 +568,13 @@ class TPCBatchDataset(Dataset):
         # Placeholder only for code compatibility. Do not use for a real regression task.
         return torch.zeros((1, n_hits, 7), dtype=torch.float32, device=device)
 
+    def _load_aligned_point_target(self, memmap_target, real_idx, start_idx, r_sort_1d, sorter):
+        point_target = torch.from_numpy(np.copy(memmap_target[real_idx])).unsqueeze(0)
+        if not self.train and self.chunk_training:
+            point_target = point_target[:, start_idx:start_idx + self.len_chunk]
+        point_target = point_target[:, r_sort_1d]
+        return point_target[:, sorter].squeeze(0)
+
     def _to_model_features(self, features):
         """Convert raw event feature tensor (1,N,C) to model feature layout."""
         if self.get_cart:
@@ -649,13 +666,18 @@ class TPCBatchDataset(Dataset):
 
         if self.return_dict:
             if self.has_pid_target:
-                pid_target = torch.from_numpy(np.copy(self.memmap_pid_target[real_idx])).unsqueeze(0)
-                if not self.train and self.chunk_training:
-                    pid_target = pid_target[:, start_idx:start_idx + self.len_chunk]
-                pid_target = pid_target[:, r_sort_1d]
-                serialized_pid_target = pid_target[:, sorter].squeeze(0)
+                serialized_pid_target = self._load_aligned_point_target(
+                    self.memmap_pid_target, real_idx, start_idx, r_sort_1d, sorter
+                )
             else:
                 serialized_pid_target = torch.full_like(serialized_target, -100)
+
+            if self.has_noise_target:
+                serialized_noise_target = self._load_aligned_point_target(
+                    self.memmap_noise_target, real_idx, start_idx, r_sort_1d, sorter
+                )
+            else:
+                serialized_noise_target = torch.full_like(serialized_target, -100)
 
             if self.has_mid_target:
                 mid_target = torch.from_numpy(np.copy(self.memmap_mid_target[real_idx])).unsqueeze(0)
@@ -671,6 +693,7 @@ class TPCBatchDataset(Dataset):
             knearest_points = knearest_points[start_idx:start_idx + self.len_chunk]
             if self.return_dict:
                 serialized_pid_target = serialized_pid_target[start_idx:start_idx + self.len_chunk]
+                serialized_noise_target = serialized_noise_target[start_idx:start_idx + self.len_chunk]
                 if self.has_mid_target:
                     serialized_mid_target = serialized_mid_target[start_idx:start_idx + self.len_chunk]
             if self.return_knn_target:
@@ -683,6 +706,7 @@ class TPCBatchDataset(Dataset):
                 'target': serialized_target,
                 'reg_target': serialized_reg_target,
                 'pid_target': serialized_pid_target,
+                'noise_target': serialized_noise_target,
             }
             if self.has_mid_target:
                 out['mid_target'] = serialized_mid_target
@@ -732,6 +756,7 @@ class MyCollator:
         knearest = torch.stack([self.pad_tensor(d['knearest_points'], point_longest) for d in batch])
         reg = torch.stack([self.pad_tensor(d['reg_target'], point_longest) for d in batch])
         pid = torch.stack([self.pad_tensor(d['pid_target'].unsqueeze(-1), point_longest).squeeze(-1) for d in batch])
+        noise = torch.stack([self.pad_tensor(d['noise_target'].unsqueeze(-1), point_longest).squeeze(-1) for d in batch])
         has_mid_target = 'mid_target' in batch[0]
         if has_mid_target:
             mid = torch.stack([
@@ -748,6 +773,7 @@ class MyCollator:
             'knearest_points': knearest,
             'reg_target': reg,
             'pid_target': pid,
+            'noise_target': noise,
         }
         if has_mid_target:
             out['mid_target'] = mid
@@ -814,7 +840,8 @@ def get_data_loader(params, distributed):
                                     high_thr=getattr(params, 'high_thr', 100),
                                     max_tracks=getattr(params, 'max_tracks', 150),
                                     require_reg_target=getattr(params, 'require_reg_target', False),
-                                    require_pid_target=getattr(params, 'require_pid_target', False))
+                                    require_pid_target=getattr(params, 'require_pid_target', False),
+                                    require_noise_target=getattr(params, 'require_noise_target', False))
     
     test_dataset = TPCBatchDataset(data_root = params.data_root_test, 
                                    version = params.data_version, 
@@ -840,7 +867,8 @@ def get_data_loader(params, distributed):
                                    high_thr=getattr(params, 'high_thr', 100),
                                    max_tracks=getattr(params, 'max_tracks', 150),
                                    require_reg_target=getattr(params, 'require_reg_target', False),
-                                   require_pid_target=getattr(params, 'require_pid_target', False))
+                                   require_pid_target=getattr(params, 'require_pid_target', False),
+                                   require_noise_target=getattr(params, 'require_noise_target', False))
 
     seed = getattr(params, "seed", None)
     seed = int(seed) if seed is not None else None
@@ -906,7 +934,8 @@ def get_val_loader(params, distributed):
                                    return_dict=getattr(params, 'return_dict', False),
                                    return_knn_target=getattr(params, 'return_knn_target', False),
                                    require_reg_target=getattr(params, 'require_reg_target', False),
-                                   require_pid_target=getattr(params, 'require_pid_target', False))
+                                   require_pid_target=getattr(params, 'require_pid_target', False),
+                                   require_noise_target=getattr(params, 'require_noise_target', False))
 
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
     my_collate_fn = MyCollator()

@@ -1,5 +1,7 @@
 # CLAS12 CVT downstream point-classification / AdapterOnly configuration.
 # Intended for train_point_classification.py with --task pid or --task nid.
+# PID reads pid_target_<split>; NID reads binary noise_target_<split>
+# with 0=signal and 1=noise.
 
 default: &default
   # Paths are intentionally placeholders; update them for the target dataset.
@@ -92,4 +94,5 @@ clas12_point_pid_adapteronly:
 clas12_point_nid_adapteronly:
   <<: *default
   task: nid
+  # Requires noise_target_pretrain/ and noise_target_test/ under the data root.
   num_output_classes: 2

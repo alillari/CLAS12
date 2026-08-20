@@ -15,6 +15,7 @@ default: &default
   data_version: clas12_cvt
   input_layout: xyz
   serialization: clas12_band_hilbert
+  clas12_band_config: calibrated12
   batch_size: 128
   local_batch_size: 128
   valid_batch_size: 1

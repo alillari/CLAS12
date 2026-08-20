@@ -134,6 +134,7 @@ class TPCBatchDataset(Dataset):
                  voxelize = True,
                  space_filling_order = None,
                  space_filling_curve = 'z',
+                 clas12_band_config = 'calibrated12',
                  bin_dir = ''):
         
         split = split
@@ -156,6 +157,7 @@ class TPCBatchDataset(Dataset):
         self.voxelize = voxelize
         self.space_filling_order = space_filling_order
         self.space_filling_curve = space_filling_curve
+        self.clas12_band_config = clas12_band_config
         
         # for normalization (CLAS12 values — see CLAS12_CHANGES.md)
         self.eta_lim = {'min':-2.5, 'max':1.5}
@@ -332,6 +334,7 @@ class TPCBatchDataset(Dataset):
             phi=nf[:, 1],
             eta=nf[:, 0],
             r=nf[:, 2],
+            band_config=self.clas12_band_config,
         )
         serialized_points = norm_features[:, zsorter.squeeze()].squeeze(0)
         knearest_points = knearest_points[:, zsorter.squeeze()].squeeze(0)
@@ -393,6 +396,7 @@ def get_data_loader(params, distributed):
                                     bin_dir = params.stat_dir,
                                     space_filling_order = params.space_filling_order,
                                     space_filling_curve = params.space_filling_curve,
+                                    clas12_band_config = getattr(params, 'clas12_band_config', 'calibrated12'),
                                     train = True)
     
     test_dataset = TPCBatchDataset(data_root = params.data_root, 
@@ -408,6 +412,7 @@ def get_data_loader(params, distributed):
                                    order = params.order,
                                    space_filling_order = params.space_filling_order,
                                    space_filling_curve = params.space_filling_curve,
+                                   clas12_band_config = getattr(params, 'clas12_band_config', 'calibrated12'),
                                    train = False)
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
@@ -450,7 +455,8 @@ def get_val_loader(params, distributed):
                                    nleave = params.nleave, 
                                    chunk_training = params.chunk_training,
                                    train = False,
-                                   order = params.order,)
+                                   order = params.order,
+                                   clas12_band_config = getattr(params, 'clas12_band_config', 'calibrated12'),)
 
    
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None

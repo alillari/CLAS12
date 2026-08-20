@@ -330,6 +330,7 @@ class TPCBatchDataset(Dataset):
                  bin_dir='',
                  input_layout='xyz',
                  serialization='clas12_band_hilbert',
+                 clas12_band_config='calibrated12',
                  low_thr=1,
                  high_thr=100,
                  max_tracks=150,
@@ -390,6 +391,10 @@ class TPCBatchDataset(Dataset):
 
         self.input_layout = input_layout.lower()
         self.serialization = serialization
+        self.clas12_band_config = clas12_band_config
+        if self.serialization in {'clas12_band_hilbert_legacy6', 'clas12_band_hilbert_6'}:
+            self.serialization = 'clas12_band_hilbert'
+            self.clas12_band_config = 'legacy6'
         self.is_position_only = self.input_layout in {'xyz', 'etaphr'}
         self.get_cart = get_cart
 
@@ -601,7 +606,12 @@ class TPCBatchDataset(Dataset):
             # norm_features: [eta, phi, r]
             if self.serialization == 'clas12_band_hilbert' and clas12_band_hilbert_order is not None:
                 nf = norm_features.squeeze(0)
-                return clas12_band_hilbert_order(phi=nf[:, 1], eta=nf[:, 0], r=nf[:, 2]).squeeze()
+                return clas12_band_hilbert_order(
+                    phi=nf[:, 1],
+                    eta=nf[:, 0],
+                    r=nf[:, 2],
+                    band_config=self.clas12_band_config,
+                ).squeeze()
             # Robust fallback: radius-only ordering.
             return norm_features[..., -1].argsort(dim=1).squeeze(0)
 
@@ -836,6 +846,7 @@ def get_data_loader(params, distributed):
                                     train = True,
                                     input_layout=getattr(params, 'input_layout', 'xyz'),
                                     serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
+                                    clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
                                     low_thr=getattr(params, 'low_thr', 1),
                                     high_thr=getattr(params, 'high_thr', 100),
                                     max_tracks=getattr(params, 'max_tracks', 150),
@@ -863,6 +874,7 @@ def get_data_loader(params, distributed):
                                    train = False,
                                    input_layout=getattr(params, 'input_layout', 'xyz'),
                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
+                                   clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
                                    low_thr=getattr(params, 'low_thr', 1),
                                    high_thr=getattr(params, 'high_thr', 100),
                                    max_tracks=getattr(params, 'max_tracks', 150),
@@ -925,6 +937,7 @@ def get_val_loader(params, distributed):
                                    order=params.order,
                                    input_layout=getattr(params, 'input_layout', 'xyz'),
                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
+                                   clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
                                    low_thr=getattr(params, 'low_thr', 1),
                                    high_thr=getattr(params, 'high_thr', 100),
                                    max_tracks=getattr(params, 'max_tracks', 150),

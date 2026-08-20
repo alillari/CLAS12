@@ -302,24 +302,18 @@ def decode(hilberts, num_dims, num_bits):
     # Return them in the expected shape.
     return flat_locs.reshape((*orig_shape, num_dims))
 # ============================================================
-# CLAS12-specific addition: exact-layer-band radius grouping +
-# 2D Hilbert ordering within each band.
+# CLAS12-specific addition: radius-band grouping + 2D Hilbert ordering.
 #
-# Rationale (see CLAS12_CHANGES.md "Hilbert axis-priority" section):
-# CLAS12's CVT has exactly 6 known, physically fixed detector radii.
-# Neither encode() above nor the Z-order equivalent has a built-in
-# way to make one axis dominate the curve, and CLAS12's radius is
-# discrete enough that it doesn't need a curve at all -- it needs an
-# exact grouping. This sorts by that exact band first (guaranteeing
-# zero cross-layer interleaving), then runs the existing encode()
-# in 2D over (phi, eta) only as the within-layer tie-break.
+# The default policy is the calibrated 12-band boundary table used by Mike's
+# current pretraining. The older 6-band exact-center policy is retained under
+# band_config="legacy6" for older backbones/configs.
 # ============================================================
 
-# The 6 real CLAS12 CVT layer radii, hardcoded from direct measurement
-# (see r_histogram_check.py output). Order is innermost (BST) to
-# outermost (BMT). Do not derive these from a live dataset -- they are
-# fixed physical detector constants, given here in RAW (unnormalized) units.
-CLAS12_LAYER_RADII_RAW = [
+import json as _json
+import os as _os
+
+
+CLAS12_LEGACY6_LAYER_RADII_RAW = [
     6.52944,    # BST region 1
     9.28923,    # BST region 2
     12.03261,   # BST region 3
@@ -331,7 +325,7 @@ CLAS12_LAYER_RADII_RAW = [
 # Single shared band half-width, chosen as the worst-case observed
 # deviation across all 6 layers (BST region 1), rounded up for margin.
 # Given in RAW (unnormalized) units.
-CLAS12_LAYER_DELTA_RAW = 0.3
+CLAS12_LEGACY6_LAYER_DELTA_RAW = 0.3
 
 # r_lim used by TPCBatchDataset.apply_norm for CLAS12 (see
 # CLAS12_CHANGES.md "Normalization bounds" section) -- must match exactly,
@@ -342,6 +336,7 @@ CLAS12_LAYER_DELTA_RAW = 0.3
 # whatever r_lim TPCBatchDataset actually uses.
 CLAS12_R_LIM_MIN = 6.0
 CLAS12_R_LIM_MAX = 23.0
+CLAS12_DEFAULT_BAND_CONFIG = "calibrated12"
 
 
 def _normalize_r(r_raw, r_min=CLAS12_R_LIM_MIN, r_max=CLAS12_R_LIM_MAX):
@@ -349,38 +344,50 @@ def _normalize_r(r_raw, r_min=CLAS12_R_LIM_MIN, r_max=CLAS12_R_LIM_MAX):
     return (r_raw - r_min) / (r_max - r_min)
 
 
-# Layer radii and delta converted ONCE into the normalized [0,1] space that
-# assign_clas12_layer will actually receive at call time. Delta is divided
-# by the same (max-min) span since min-max normalization is a pure linear
-# rescale -- a fixed absolute raw-space tolerance maps to a fixed absolute
-# normalized-space tolerance, just scaled by 1/(r_max - r_min).
-CLAS12_LAYER_RADII = [_normalize_r(r) for r in CLAS12_LAYER_RADII_RAW]
-CLAS12_LAYER_DELTA = CLAS12_LAYER_DELTA_RAW / (CLAS12_R_LIM_MAX - CLAS12_R_LIM_MIN)
+
+CLAS12_LEGACY6_LAYER_RADII = [_normalize_r(r) for r in CLAS12_LEGACY6_LAYER_RADII_RAW]
+CLAS12_LEGACY6_LAYER_DELTA = CLAS12_LEGACY6_LAYER_DELTA_RAW / (CLAS12_R_LIM_MAX - CLAS12_R_LIM_MIN)
 
 
-def assign_clas12_layer(r, layer_radii=CLAS12_LAYER_RADII, delta=CLAS12_LAYER_DELTA):
-    """
-    Assign each point to exactly one of the 6 fixed CLAS12 layers based on
-    its measured radius r.
+def _calibration_path():
+    return _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)),
+        "..",
+        "dev_scripts",
+        "clas12_band_calibration.json",
+    )
 
-    Params:
-    -------
-     r: 1D tensor of shape (N,), measured radius per point.
-     layer_radii: list of 6 fixed reference radii (innermost to outermost).
-     delta: shared band half-width around each reference radius.
 
-    Returns:
-    --------
-     layer_idx: 1D long tensor of shape (N,), values in [0, len(layer_radii)-1],
-                the assigned layer index per point.
+def load_clas12_band_calibration(path=None):
+    path = path or _calibration_path()
+    with open(path) as stream:
+        cal = _json.load(stream)
+    centers_raw = cal["band_centers_raw_cm"]
+    boundaries_raw = cal["band_boundaries_raw_cm"]
+    r_threshold_raw = cal["suggested_r_threshold_raw_cm"]
+    return {
+        "layer_radii_raw": centers_raw,
+        "layer_radii": [_normalize_r(r) for r in centers_raw],
+        "boundaries_raw": boundaries_raw,
+        "boundaries": [_normalize_r(b) for b in boundaries_raw],
+        "r_threshold_raw": r_threshold_raw,
+        "r_threshold": r_threshold_raw / (CLAS12_R_LIM_MAX - CLAS12_R_LIM_MIN),
+        "n_bands": len(centers_raw),
+    }
 
-    Raises:
-    -------
-     AssertionError if any point's r does not fall within delta of exactly
-     one reference radius. Per CLAS12 detector geometry, every real hit
-     (signal or noise) must fall in one of these bands -- failure here
-     indicates corrupted input data, not a normal case to handle silently.
-    """
+
+_CLAS12_CALIBRATION = load_clas12_band_calibration()
+CLAS12_LAYER_RADII_RAW = _CLAS12_CALIBRATION["layer_radii_raw"]
+CLAS12_LAYER_RADII = _CLAS12_CALIBRATION["layer_radii"]
+CLAS12_BAND_BOUNDARIES = _CLAS12_CALIBRATION["boundaries"]
+CLAS12_KNNN_R_THRESHOLD = _CLAS12_CALIBRATION["r_threshold"]
+
+
+def assign_clas12_layer_legacy6(
+    r,
+    layer_radii=CLAS12_LEGACY6_LAYER_RADII,
+    delta=CLAS12_LEGACY6_LAYER_DELTA,
+):
     layer_radii_t = torch.tensor(layer_radii, dtype=r.dtype, device=r.device)  # (L,)
     diffs = torch.abs(r.unsqueeze(-1) - layer_radii_t.unsqueeze(0))  # (N, L)
     in_band = diffs <= delta  # (N, L)
@@ -396,9 +403,27 @@ def assign_clas12_layer(r, layer_radii=CLAS12_LAYER_RADII, delta=CLAS12_LAYER_DE
     return layer_idx
 
 
-def clas12_band_hilbert_order(phi, eta, r, num_bits=10, scaler=1e4,
-                               layer_radii=CLAS12_LAYER_RADII,
-                               delta=CLAS12_LAYER_DELTA):
+def assign_clas12_layer_calibrated12(r, boundaries=CLAS12_BAND_BOUNDARIES):
+    boundaries_t = torch.tensor(boundaries, dtype=r.dtype, device=r.device)
+    return torch.bucketize(r.contiguous(), boundaries_t)
+
+
+def assign_clas12_layer(r, band_config=CLAS12_DEFAULT_BAND_CONFIG):
+    if band_config in {"calibrated12", "12", "default"}:
+        return assign_clas12_layer_calibrated12(r)
+    if band_config in {"legacy6", "6"}:
+        return assign_clas12_layer_legacy6(r)
+    raise ValueError(f"Unsupported CLAS12 band_config={band_config!r}")
+
+
+def clas12_band_hilbert_order(
+    phi,
+    eta,
+    r,
+    num_bits=10,
+    scaler=1e4,
+    band_config=CLAS12_DEFAULT_BAND_CONFIG,
+):
     """
     Order CLAS12 points by: (1) exact layer band [guaranteed, zero
     cross-layer interleaving], then (2) 2D Hilbert curve over (phi, eta)
@@ -417,7 +442,7 @@ def clas12_band_hilbert_order(phi, eta, r, num_bits=10, scaler=1e4,
              quantizing to the Hilbert hypercube. Must be large enough
              that distinct phi/eta values don't collapse to the same
              integer, but produce values < 2**num_bits after scaling.
-     layer_radii, delta: passed through to assign_clas12_layer.
+     band_config: "calibrated12" (default) or "legacy6".
 
     Returns:
     --------
@@ -434,7 +459,7 @@ def clas12_band_hilbert_order(phi, eta, r, num_bits=10, scaler=1e4,
     N = phi.shape[0]
     assert eta.shape[0] == N and r.shape[0] == N
 
-    layer_idx = assign_clas12_layer(r, layer_radii=layer_radii, delta=delta)  # (N,)
+    layer_idx = assign_clas12_layer(r, band_config=band_config)  # (N,)
 
     # Quantize phi/eta to non-negative integers for the 2D Hilbert encode.
     # Expects phi, eta already normalized to [0, 1] (apply_norm convention) --

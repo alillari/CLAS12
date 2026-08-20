@@ -306,40 +306,42 @@ def decode(hilberts, num_dims, num_bits):
 # 2D Hilbert ordering within each band.
 #
 # Rationale (see CLAS12_CHANGES.md "Hilbert axis-priority" section):
-# CLAS12's CVT has exactly 6 known, physically fixed detector radii.
+# CLAS12's CVT has a known, physically fixed set of detector radii.
 # Neither encode() above nor the Z-order equivalent has a built-in
 # way to make one axis dominate the curve, and CLAS12's radius is
 # discrete enough that it doesn't need a curve at all -- it needs an
 # exact grouping. This sorts by that exact band first (guaranteeing
 # zero cross-layer interleaving), then runs the existing encode()
 # in 2D over (phi, eta) only as the within-layer tie-break.
+#
+# [CALIBRATED] Band boundaries are loaded from a JSON file produced by
+# dev_scripts/calibrate_clas12_bands.py, which finds them empirically from
+# real data (histogram peak + gap analysis) rather than a hand-typed list.
+# This replaced an earlier hardcoded 6-value list that (for the current
+# cluster-point feature source) only matched 3 of the 6 real BMT layers --
+# recalibrate with calibrate_clas12_bands.py whenever the feature source or
+# detector geometry changes (e.g. switching between cross Point0 and
+# cluster-point data, or adding forward-tracking layers).
+#
+# assign_clas12_layer now uses torch.bucketize against BOUNDARIES (cut
+# points between bands) rather than center+delta+exact-match-assert. Every
+# real value is assigned to exactly one band by construction -- there is no
+# "0 or 2+ matches" failure mode, which the old assert-based version had.
 # ============================================================
 
-# The 6 real CLAS12 CVT layer radii, hardcoded from direct measurement
-# (see r_histogram_check.py output). Order is innermost (BST) to
-# outermost (BMT). Do not derive these from a live dataset -- they are
-# fixed physical detector constants, given here in RAW (unnormalized) units.
-CLAS12_LAYER_RADII_RAW = [
-    6.52944,    # BST region 1
-    9.28923,    # BST region 2
-    12.03261,   # BST region 3
-    14.76460,   # BMT region 1
-    19.26460,   # BMT region 2
-    22.26460,   # BMT region 3
-]
+import json as _json
+import os as _os
 
-# Single shared band half-width, chosen as the worst-case observed
-# deviation across all 6 layers (BST region 1), rounded up for margin.
-# Given in RAW (unnormalized) units.
-CLAS12_LAYER_DELTA_RAW = 0.3
+_DEFAULT_CALIBRATION_PATH = _os.path.join(
+    _os.path.dirname(_os.path.abspath(__file__)),
+    "..", "dev_scripts", "clas12_band_calibration.json"
+)
 
 # r_lim used by TPCBatchDataset.apply_norm for CLAS12 (see
 # CLAS12_CHANGES.md "Normalization bounds" section) -- must match exactly,
 # since assign_clas12_layer is called on r AFTER apply_norm has already run
 # (confirmed: apply_norm executes before the space-filling-order branch in
-# __getitem__). Keeping this constant here, alongside the layer radii, so
-# the raw->normalized conversion below always stays consistent with
-# whatever r_lim TPCBatchDataset actually uses.
+# __getitem__).
 CLAS12_R_LIM_MIN = 6.0
 CLAS12_R_LIM_MAX = 23.0
 
@@ -349,56 +351,76 @@ def _normalize_r(r_raw, r_min=CLAS12_R_LIM_MIN, r_max=CLAS12_R_LIM_MAX):
     return (r_raw - r_min) / (r_max - r_min)
 
 
-# Layer radii and delta converted ONCE into the normalized [0,1] space that
-# assign_clas12_layer will actually receive at call time. Delta is divided
-# by the same (max-min) span since min-max normalization is a pure linear
-# rescale -- a fixed absolute raw-space tolerance maps to a fixed absolute
-# normalized-space tolerance, just scaled by 1/(r_max - r_min).
-CLAS12_LAYER_RADII = [_normalize_r(r) for r in CLAS12_LAYER_RADII_RAW]
-CLAS12_LAYER_DELTA = CLAS12_LAYER_DELTA_RAW / (CLAS12_R_LIM_MAX - CLAS12_R_LIM_MIN)
-
-
-def assign_clas12_layer(r, layer_radii=CLAS12_LAYER_RADII, delta=CLAS12_LAYER_DELTA):
+def load_clas12_band_calibration(path=None):
     """
-    Assign each point to exactly one of the 6 fixed CLAS12 layers based on
-    its measured radius r.
+    Load band centers/boundaries/suggested kNNN threshold from the JSON file
+    calibrate_clas12_bands.py produces, and convert everything to the
+    normalized [0,1] r-space assign_clas12_layer/knn_later_indices_batch
+    actually operate in.
+
+    Returns a dict with keys: layer_radii (normalized band centers),
+    boundaries (normalized cut points, len = n_bands - 1), r_threshold
+    (normalized, half the smallest real inter-band gap), and the raw
+    (unnormalized) versions of each for reference/debugging.
+    """
+    path = path or _DEFAULT_CALIBRATION_PATH
+    with open(path) as f:
+        cal = _json.load(f)
+
+    centers_raw = cal["band_centers_raw_cm"]
+    boundaries_raw = cal["band_boundaries_raw_cm"]
+    r_threshold_raw = cal["suggested_r_threshold_raw_cm"]
+
+    return {
+        "layer_radii_raw": centers_raw,
+        "layer_radii": [_normalize_r(r) for r in centers_raw],
+        "boundaries_raw": boundaries_raw,
+        "boundaries": [_normalize_r(b) for b in boundaries_raw],
+        "r_threshold_raw": r_threshold_raw,
+        "r_threshold": r_threshold_raw / (CLAS12_R_LIM_MAX - CLAS12_R_LIM_MIN),
+        "n_bands": len(centers_raw),
+    }
+
+
+# Loaded once at import time, so every call site shares the same calibration
+# without re-reading the file. If the calibration file doesn't exist yet
+# (e.g. fresh checkout before running calibrate_clas12_bands.py once),
+# importing this module will raise -- that's intentional: silently falling
+# back to a stale/wrong hardcoded geometry is worse than failing loudly.
+_CALIBRATION = load_clas12_band_calibration()
+CLAS12_LAYER_RADII = _CALIBRATION["layer_radii"]
+CLAS12_LAYER_RADII_RAW = _CALIBRATION["layer_radii_raw"]
+CLAS12_BAND_BOUNDARIES = _CALIBRATION["boundaries"]
+CLAS12_KNNN_R_THRESHOLD = _CALIBRATION["r_threshold"]
+
+
+def assign_clas12_layer(r, boundaries=CLAS12_BAND_BOUNDARIES):
+    """
+    Assign each point to exactly one CLAS12 layer band based on its measured
+    radius r, using calibrated boundaries (cut points between bands).
 
     Params:
     -------
-     r: 1D tensor of shape (N,), measured radius per point.
-     layer_radii: list of 6 fixed reference radii (innermost to outermost).
-     delta: shared band half-width around each reference radius.
+     r: 1D tensor of shape (N,), measured radius per point (normalized [0,1]
+        space, matching apply_norm's convention).
+     boundaries: sorted list of (n_bands - 1) cut points between bands, in
+                 the same normalized space as r. Loaded from the calibration
+                 file by default.
 
     Returns:
     --------
-     layer_idx: 1D long tensor of shape (N,), values in [0, len(layer_radii)-1],
-                the assigned layer index per point.
-
-    Raises:
-    -------
-     AssertionError if any point's r does not fall within delta of exactly
-     one reference radius. Per CLAS12 detector geometry, every real hit
-     (signal or noise) must fall in one of these bands -- failure here
-     indicates corrupted input data, not a normal case to handle silently.
+     layer_idx: 1D long tensor of shape (N,), values in [0, n_bands - 1],
+                the assigned layer index per point. Every real value maps to
+                exactly one band by construction (torch.bucketize) -- no
+                assert, no possible "0 or 2+ matches" failure.
     """
-    layer_radii_t = torch.tensor(layer_radii, dtype=r.dtype, device=r.device)  # (L,)
-    diffs = torch.abs(r.unsqueeze(-1) - layer_radii_t.unsqueeze(0))  # (N, L)
-    in_band = diffs <= delta  # (N, L)
-
-    n_bands_hit = in_band.sum(dim=-1)  # (N,)
-    assert torch.all(n_bands_hit == 1), (
-        "Found {} point(s) not matching exactly one CLAS12 layer band "
-        "(0 or 2+ matches). This indicates corrupted input data -- "
-        "check raw r values.".format((n_bands_hit != 1).sum().item())
-    )
-
-    layer_idx = in_band.float().argmax(dim=-1)  # (N,)
+    boundaries_t = torch.tensor(boundaries, dtype=r.dtype, device=r.device)
+    layer_idx = torch.bucketize(r.contiguous(), boundaries_t)
     return layer_idx
 
 
 def clas12_band_hilbert_order(phi, eta, r, num_bits=10, scaler=1e4,
-                               layer_radii=CLAS12_LAYER_RADII,
-                               delta=CLAS12_LAYER_DELTA):
+                               boundaries=CLAS12_BAND_BOUNDARIES):
     """
     Order CLAS12 points by: (1) exact layer band [guaranteed, zero
     cross-layer interleaving], then (2) 2D Hilbert curve over (phi, eta)
@@ -417,7 +439,9 @@ def clas12_band_hilbert_order(phi, eta, r, num_bits=10, scaler=1e4,
              quantizing to the Hilbert hypercube. Must be large enough
              that distinct phi/eta values don't collapse to the same
              integer, but produce values < 2**num_bits after scaling.
-     layer_radii, delta: passed through to assign_clas12_layer.
+     boundaries: passed through to assign_clas12_layer (calibrated band
+                 cut points, loaded from clas12_band_calibration.json by
+                 default).
 
     Returns:
     --------
@@ -434,7 +458,7 @@ def clas12_band_hilbert_order(phi, eta, r, num_bits=10, scaler=1e4,
     N = phi.shape[0]
     assert eta.shape[0] == N and r.shape[0] == N
 
-    layer_idx = assign_clas12_layer(r, layer_radii=layer_radii, delta=delta)  # (N,)
+    layer_idx = assign_clas12_layer(r, boundaries=boundaries)  # (N,)
 
     # Quantize phi/eta to non-negative integers for the 2D Hilbert encode.
     # Expects phi, eta already normalized to [0, 1] (apply_norm convention) --

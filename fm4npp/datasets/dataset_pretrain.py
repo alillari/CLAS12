@@ -24,24 +24,36 @@ torch.manual_seed(42)
 # TPC space-filling ordering, hardcoded to 4 columns and equal-axis priority.
 
 
-def knn_later_indices_batch(A, k, r_threshold=0.0806, r_col=2):
+def knn_later_indices_batch(A, k, r_col=2):
     """
     A: Tensor (B, N, 3) = (batch, points, [eta, phi, r]). r is column r_col (=2),
-       in NORMALIZED units ([0,1] over r in [6,23] cm; range 17 cm).
-    k: number of neighbors per point.
-    r_threshold: minimum NORMALIZED radius gap a neighbor must exceed to be valid.
-       Default 0.0806 == 1.37 cm / 17 cm, half the smallest inter-band gap
-       (2.732 cm) -- excludes same-band points, keeps the next band out.
-       Raw-cm equivalent: r_threshold = threshold_cm / 17.0.
+       in NORMALIZED units matching apply_norm's r_lim.
+    k: number of prediction slots per point.
 
-    [PHYSICS NEXT-NEIGHBOR RULE] neighbor j is valid for query i iff
-       r_j > r_i + r_threshold  (i.e. strictly further out in radius).
-    Among valid neighbors, the k spatially-nearest (full 3D distance) are kept.
-    Fewer than k valid -> padded with -100. Outermost-band points (nothing far
-    enough out) get all-padding targets, which the loss masks out.
+    [PHYSICS NEXT-BAND RULE, band-index based] Each point's radius is mapped
+    to a discrete, CALIBRATED CVT layer band via assign_clas12_layer (loaded
+    from dev_scripts/clas12_band_calibration.json -- see calibrate_clas12_bands.py).
+    For prediction slot m (1-indexed, m=1..k), a neighbor j is a valid target
+    for query i iff:
+        band(j) >= band(i) + m
+    i.e. slot 1 must be at least one real band further out, slot 2 at least
+    two bands further out, etc. -- so successive slots are guaranteed to
+    progress to strictly higher bands as m increases, not just be "the next
+    k nearest points" from one shared threshold.
 
-    (Replaces the previous sequence-position j>i rule, which selected targets by
-    Hilbert-curve position within a band rather than by physical radius.)
+    Among the points satisfying slot m's band condition, the single nearest
+    (full 3D distance) is kept for that slot. No valid candidate (e.g. query
+    is within m-1 bands of the outermost layer) -> that slot is padded with
+    -100, masked out by the loss the same way as before.
+
+    [WHY band-index, not a radius threshold] A fixed radius threshold breaks
+    down when within-band spread (e.g. SVT's stereo-angle-driven radius
+    variation across one physical layer, up to ~0.15 cm) is comparable to or
+    larger than the smallest real inter-band gap (e.g. the SVT U/V gap within
+    one region, ~0.20 cm) -- a threshold can't distinguish "moved to a
+    genuinely different layer" from "spread within my own layer". Comparing
+    discrete band INDICES (from the calibrated boundaries) is immune to this,
+    since band assignment already collapses intra-band spread away.
 
     Returns: (B, N, 3*k).
     """
@@ -53,42 +65,35 @@ def knn_later_indices_batch(A, k, r_threshold=0.0806, r_col=2):
     A_tiled = A.unsqueeze(1)     # (B, 1, N, 3)
     pairwise_distances = torch.norm(A_expanded - A_tiled, dim=-1)  # (B, N, N)
 
-    # 2) [PHYSICS RULE] valid iff r_j > r_i + r_threshold
-    r = A[..., r_col]                          # (B, N)
-    r_i = r.unsqueeze(2)                        # (B, N, 1)
-    r_j = r.unsqueeze(1)                        # (B, 1, N)
-    valid = r_j > (r_i + r_threshold)          # (B, N, N)
-    pairwise_distances[~valid] = float('inf')
+    # 2) band index per point (torch.bucketize supports any input shape
+    # against the 1D calibrated boundaries, so this runs on the full (B,N)
+    # tensor directly -- no need to loop over the batch).
+    r = A[..., r_col]                # (B, N)
+    band = assign_clas12_layer(r)    # (B, N), long
+    band_i = band.unsqueeze(2)       # (B, N, 1)
+    band_j = band.unsqueeze(1)       # (B, 1, N)
 
-    # 3) top-k nearest among valid
-    k_limited = min(k, N-1)
-    topk_vals, topk_idx = torch.topk(
-        pairwise_distances, k=k_limited, dim=2, largest=False
-    )
+    # 3) for each slot m=1..k, the nearest point with band_j >= band_i + m
+    slot_idx = torch.full((B, N, k), -1, device=A.device, dtype=torch.long)
+    for m in range(1, k + 1):
+        valid_m = band_j >= (band_i + m)                    # (B, N, N)
+        dist_m = pairwise_distances.masked_fill(~valid_m, float('inf'))
+        nearest_val, nearest_idx = dist_m.min(dim=2)         # (B, N) each
+        has_valid = ~torch.isinf(nearest_val)
+        slot_idx[..., m - 1] = torch.where(
+            has_valid, nearest_idx, torch.full_like(nearest_idx, -1)
+        )
 
-    # 4) pad to k if needed
-    if k_limited < k:
-        pad_size = k - k_limited
-        inf_pad = torch.full((B, N, pad_size), float('inf'), device=A.device)
-        minus1_pad = torch.full((B, N, pad_size), -1, device=A.device, dtype=torch.long)
-        topk_vals = torch.cat([topk_vals, inf_pad], dim=2)
-        topk_idx  = torch.cat([topk_idx,  minus1_pad], dim=2)
-
-    # 5) inf distance => invalid (index -1)
-    inf_mask = torch.isinf(topk_vals)
-    topk_idx[inf_mask] = -1
-
-    # 6) gather coords, padding invalid slots with -100
+    # 4) gather coords, padding invalid slots with -100
     knn_neighbors = torch.full((B, N, k, D), -100, device=A.device, dtype=A.dtype)
-    safe_idx = topk_idx.clone()
+    safe_idx = slot_idx.clone()
     safe_idx[safe_idx < 0] = 0
-    valid_mask = (topk_idx >= 0)
+    valid_mask = (slot_idx >= 0)
     b_idx = torch.arange(B, device=A.device).view(B, 1, 1).expand(B, N, k)
-    n_idx = torch.arange(N, device=A.device).view(1, N, 1).expand(B, N, k)
     knn_neighbors[valid_mask] = A[b_idx[valid_mask], safe_idx[valid_mask], :]
 
-    # 7) reshape to (B, N, 3*k)
-    knn_neighbors = knn_neighbors.view(B, N, 3*k)
+    # 5) reshape to (B, N, 3*k)
+    knn_neighbors = knn_neighbors.view(B, N, 3 * k)
     return knn_neighbors
 
 
@@ -174,7 +179,7 @@ class TPCBatchDataset(Dataset):
         
         self.train = train
         self.chunk_training = chunk_training
-        self.filter_data(low_thr = 1, high_thr = 100)   # OPEN FILTER (single-track test): was 5-40
+        self.filter_data(low_thr = 1, high_thr = 50)   # capped at 50 to bound O(N^2) kNNN memory cost -- keeps 96.7% of events, cuts worst-case N^2 20x (was 100, see check_event_length_dist.py)
         import math
         self.data_scaler = 1 # [TOGGLE][TEMPORARY] SCALER
         

@@ -309,7 +309,7 @@ class Trainer():
             if self.world_rank == 0:
                 print(f"Loading checkpoint from {self.checkpoint_path}")
 
-            checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
 
             try:
                 self.model.load_state_dict(checkpoint['model_state'])
@@ -378,8 +378,6 @@ class Trainer():
             b, c = grouped.size(0), grouped.size(-1)
 
             # Prepare targets
-            # CLAS12: grouped is 3 columns [eta, phi, r], no energy. Reshape to
-            # 3 (was reshape(...,4)[:,:,1:], which assumed a leading E column to strip).
             targets = grouped.reshape(b, -1, 3).to(self.device)
             klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
             grouped = grouped.reshape(b, -1, c).to(self.device)

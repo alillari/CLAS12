@@ -9,25 +9,6 @@ controlled probes meant to isolate whether information is present in a frozen
 backbone representation and whether trained adapters learned to use particular
 backbone layers.
 
-## Environment
-
-Use the same Python environment used for downstream training:
-
-```bash
-/home/alessio/miniconda3/envs/fm4npp/bin/python
-```
-
-For plotting on machines where the home matplotlib cache is not writable, set a
-temporary cache directory:
-
-```bash
-export MPLCONFIGDIR=/tmp/matplotlib-cache
-```
-
-The linear probe runs the backbone forward pass, so it needs the CUDA-visible
-environment required by the installed Mamba kernels. The layer-weight audit only
-loads checkpoints and can run on CPU.
-
 ## `train_linear_probe.py`
 
 Fits one affine linear map per frozen backbone layer:
@@ -71,16 +52,14 @@ Useful controls:
 
 ### Example
 
-Small GPU smoke test:
+Small smoke test:
 
 ```bash
-export MPLCONFIGDIR=/tmp/matplotlib-cache
-/home/alessio/miniconda3/envs/fm4npp/bin/python \
-  train/downstream/probes/train_linear_probe.py \
+python train/downstream/probes/train_linear_probe.py \
   --yaml_config scripts/configs/mamba_clas12_track_regression_pretrained.yaml \
   --config clas12_track_regression_pretrained \
-  --pretrained_ckpt /home/alessio/mnt/edgexpert-a02c/ML-work/pretrained-FMs/campaign_2/scale_w256_d12_n5483352/ckpt_best.tar \
-  --output_dir /tmp/clas12_linear_probe_w256_smoke \
+  --pretrained_ckpt /path/to/pretrained_backbone/ckpt_best.tar \
+  --output_dir /path/to/probe_outputs/linear_probe_smoke \
   --eventnumber 10000 \
   --batch_size 32 \
   --num_workers 4 \
@@ -92,13 +71,11 @@ export MPLCONFIGDIR=/tmp/matplotlib-cache
 Larger run:
 
 ```bash
-export MPLCONFIGDIR=/tmp/matplotlib-cache
-/home/alessio/miniconda3/envs/fm4npp/bin/python \
-  train/downstream/probes/train_linear_probe.py \
+python train/downstream/probes/train_linear_probe.py \
   --yaml_config scripts/configs/mamba_clas12_track_regression_pretrained.yaml \
   --config clas12_track_regression_pretrained \
-  --pretrained_ckpt /home/alessio/mnt/edgexpert-a02c/ML-work/pretrained-FMs/campaign_2/scale_w256_d12_n5483352/ckpt_best.tar \
-  --output_dir /home/alessio/mnt/edgexpert-a02c/ML-work/result_deep_storage/probes/linear_probe_w256 \
+  --pretrained_ckpt /path/to/pretrained_backbone/ckpt_best.tar \
+  --output_dir /path/to/probe_outputs/linear_probe \
   --eventnumber 100000 \
   --batch_size 64 \
   --num_workers 8 \
@@ -177,19 +154,18 @@ Optional:
 Audit one local checkpoint directory:
 
 ```bash
-/home/alessio/miniconda3/envs/fm4npp/bin/python \
-  train/downstream/probes/audit_layer_weights.py \
-  train/downstream/downstream_log/clas12_track_regression_adapteronly/checkpoints \
-  --output_dir /tmp/clas12_layer_audit
+python train/downstream/probes/audit_layer_weights.py \
+  /path/to/adapter_checkpoints \
+  --output_dir /path/to/probe_outputs/layer_weight_audit
 ```
 
-Audit a mounted campaign:
+Audit multiple checkpoint roots:
 
 ```bash
-/home/alessio/miniconda3/envs/fm4npp/bin/python \
-  train/downstream/probes/audit_layer_weights.py \
-  /home/alessio/mnt/edgexpert-a02c/ML-work/result_deep_storage/campaigns/pretrained_plus_adapteronly_label_sweep \
-  --output_dir /home/alessio/mnt/edgexpert-a02c/ML-work/result_deep_storage/probes/layer_weight_audit
+python train/downstream/probes/audit_layer_weights.py \
+  /path/to/first_adapter_campaign \
+  /path/to/second_adapter_campaign \
+  --output_dir /path/to/probe_outputs/layer_weight_audit
 ```
 
 ### Outputs

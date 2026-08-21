@@ -342,6 +342,7 @@ class TPCBatchDataset(Dataset):
         self.split = split
         self.memmap_feature = RaggedMmap(os.path.join(data_root, f'features_{split}'))
         self.memmap_seg_target = RaggedMmap(os.path.join(data_root, f'seg_target_{split}'))
+        self.n_feature_events = len(self.memmap_feature)
 
         # Downstream loaders often expect reg_target, but CLAS12 adapter-only may not need it.
         # Load it when present; otherwise create a zero placeholder only for return_dict/return_reg compatibility.
@@ -354,40 +355,16 @@ class TPCBatchDataset(Dataset):
             self.memmap_reg_target = None
             self.has_reg_target = False
 
-        try:
-            self.memmap_pid_target = RaggedMmap(os.path.join(data_root, f'pid_target_{split}'))
-            self.has_pid_target = True
-        except (FileNotFoundError, OSError):
-            if require_pid_target:
-                raise
-            self.memmap_pid_target = None
-            self.has_pid_target = False
+        self.memmap_pid_target, self.has_pid_target = self._open_optional_point_target(
+            f'pid_target_{split}', require=require_pid_target
+        )
+        self.memmap_noise_target, self.has_noise_target = self._open_optional_point_target(
+            f'noise_target_{split}', require=require_noise_target
+        )
 
-        try:
-            self.memmap_noise_target = RaggedMmap(os.path.join(data_root, f'noise_target_{split}'))
-            self.has_noise_target = True
-        except (FileNotFoundError, OSError):
-            if require_noise_target:
-                raise
-            self.memmap_noise_target = None
-            self.has_noise_target = False
-
-        try:
-            self.memmap_mid_target = RaggedMmap(os.path.join(data_root, f'mid_target_{split}'))
-
-            if len(self.memmap_mid_target) == len(self.memmap_feature):
-                self.has_mid_target = True
-            else:
-                print(
-                    f"[INFO] Ignoring mid_target_{split}: "
-                    f"len={len(self.memmap_mid_target)}, expected={len(self.memmap_feature)}"
-                )
-                self.memmap_mid_target = None
-                self.has_mid_target = False
-
-        except (FileNotFoundError, OSError, IndexError):
-            self.memmap_mid_target = None
-            self.has_mid_target = False
+        self.memmap_mid_target, self.has_mid_target = self._open_optional_point_target(
+            f'mid_target_{split}', require=False
+        )
 
         self.input_layout = input_layout.lower()
         self.serialization = serialization
@@ -566,6 +543,28 @@ class TPCBatchDataset(Dataset):
         if not self.train and self.chunk_training:
             return len(self.idxlist_chunking)
         return len(self.idxlist)
+
+    def _open_optional_point_target(self, name, require=False):
+        path = os.path.join(self.data_root, name)
+        try:
+            memmap_target = RaggedMmap(path)
+        except (FileNotFoundError, OSError, IndexError):
+            if require:
+                raise
+            return None, False
+
+        n_target_events = len(memmap_target)
+        if n_target_events == self.n_feature_events:
+            return memmap_target, True
+
+        msg = (
+            f"{name} has {n_target_events} events but features_{self.split} "
+            f"has {self.n_feature_events}"
+        )
+        if require:
+            raise ValueError(msg)
+        print(f"[INFO] Ignoring {name}: {msg}")
+        return None, False
 
     def _load_optional_reg_target(self, real_idx, n_hits, device=None):
         if self.has_reg_target:

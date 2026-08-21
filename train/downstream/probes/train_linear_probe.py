@@ -10,6 +10,7 @@ import math
 import os
 import random
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,11 @@ from track_regression_experiment import (  # noqa: E402
     set_global_seed,
 )
 from track_regression_trainer import DownstreamTrainer  # noqa: E402
+
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - tqdm is optional
+    tqdm = None
 
 
 class _TargetNormalizerHolder(nn.Module):
@@ -188,16 +194,26 @@ def add_intercept(x: torch.Tensor) -> torch.Tensor:
     return torch.cat([x, ones], dim=1)
 
 
+def add_intercept_layers(x_layers: torch.Tensor) -> torch.Tensor:
+    ones = torch.ones(
+        x_layers.shape[0],
+        x_layers.shape[1],
+        1,
+        dtype=x_layers.dtype,
+        device=x_layers.device,
+    )
+    return torch.cat([x_layers, ones], dim=2)
+
+
 def update_fit_stats(stats: SufficientStats, x_layers: torch.Tensor, y: torch.Tensor) -> None:
     x_layers = x_layers.to(dtype=torch.float64, device="cpu")
     y = y.to(dtype=torch.float64, device="cpu")
     stats.count += int(y.shape[0])
     stats.y_sum += y.sum(dim=0)
     stats.y2_sum += (y * y).sum(dim=0)
-    for layer_idx in range(x_layers.shape[0]):
-        x_aug = add_intercept(x_layers[layer_idx])
-        stats.xtx[layer_idx] += x_aug.T @ x_aug
-        stats.xty[layer_idx] += x_aug.T @ y
+    x_aug = add_intercept_layers(x_layers)
+    stats.xtx += torch.einsum("lbi,lbj->lij", x_aug, x_aug)
+    stats.xty += torch.einsum("lbi,bo->lio", x_aug, y)
 
 
 def solve_ridge(stats: SufficientStats, alpha: float) -> torch.Tensor:
@@ -218,24 +234,34 @@ def solve_ridge(stats: SufficientStats, alpha: float) -> torch.Tensor:
 def update_eval_stats(stats: EvalStats, coeffs: torch.Tensor, x_layers: torch.Tensor, y: torch.Tensor) -> None:
     x_layers = x_layers.to(dtype=torch.float64, device="cpu")
     y = y.to(dtype=torch.float64, device="cpu")
+    coeffs = coeffs.to(dtype=torch.float64, device="cpu")
     stats.count += int(y.shape[0])
     stats.y_sum += y.sum(dim=0)
     stats.y2_sum += (y * y).sum(dim=0)
-    for layer_idx in range(x_layers.shape[0]):
-        pred = add_intercept(x_layers[layer_idx]) @ coeffs[layer_idx]
-        residual = pred - y
-        stats.sse[layer_idx] += (residual * residual).sum(dim=0)
-        stats.sae[layer_idx] += residual.abs().sum(dim=0)
+    pred = torch.einsum("lbi,lio->lbo", add_intercept_layers(x_layers), coeffs)
+    residual = pred - y.unsqueeze(0)
+    stats.sse += (residual * residual).sum(dim=1)
+    stats.sae += residual.abs().sum(dim=1)
 
 
 def iter_probe_batches(
     trainer: DownstreamTrainer,
     loader: Iterable,
     max_batches: int | None,
+    desc: str,
 ):
     device = trainer.device
+    total = max_batches
+    if total is None:
+        try:
+            total = len(loader)
+        except TypeError:
+            total = None
+    iterator = loader
+    if tqdm is not None:
+        iterator = tqdm(loader, total=total, desc=desc, unit="batch")
     with torch.no_grad():
-        for batch_idx, batch in enumerate(loader):
+        for batch_idx, batch in enumerate(iterator):
             if max_batches is not None and batch_idx >= max_batches:
                 break
             points = batch["points"].to(device)
@@ -258,12 +284,18 @@ def fit_probe(
     max_batches: int | None,
     ridge_alpha: float,
     collect_control_events: int,
+    desc: str,
 ):
     stats = None
     collected_x = []
     collected_y = []
     collected_count = 0
-    for x_layers, y in iter_probe_batches(trainer, trainer.train_data_loader, max_batches):
+    for x_layers, y in iter_probe_batches(
+        trainer,
+        trainer.train_data_loader,
+        max_batches,
+        desc=desc,
+    ):
         if stats is None:
             stats = SufficientStats.empty(x_layers.shape[0], x_layers.shape[-1], y.shape[-1])
         update_fit_stats(stats, x_layers, y)
@@ -285,13 +317,41 @@ def evaluate_probe(
     trainer: DownstreamTrainer,
     coeffs: torch.Tensor,
     max_batches: int | None,
+    desc: str,
 ) -> EvalStats:
     eval_stats = None
-    for x_layers, y in iter_probe_batches(trainer, trainer.val_data_loader, max_batches):
+    for x_layers, y in iter_probe_batches(
+        trainer,
+        trainer.val_data_loader,
+        max_batches,
+        desc=desc,
+    ):
         if eval_stats is None:
             eval_stats = EvalStats.empty(coeffs.shape[0], y.shape[-1])
         update_eval_stats(eval_stats, coeffs, x_layers, y)
     if eval_stats is None or eval_stats.count == 0:
+        raise RuntimeError("No valid evaluation events were available for the probe")
+    return eval_stats
+
+
+def evaluate_probe_many(
+    trainer: DownstreamTrainer,
+    coeff_sets: dict[str, torch.Tensor],
+    max_batches: int | None,
+    desc: str,
+) -> dict[str, EvalStats]:
+    eval_stats: dict[str, EvalStats] = {}
+    for x_layers, y in iter_probe_batches(
+        trainer,
+        trainer.val_data_loader,
+        max_batches,
+        desc=desc,
+    ):
+        for name, coeffs in coeff_sets.items():
+            if name not in eval_stats:
+                eval_stats[name] = EvalStats.empty(coeffs.shape[0], y.shape[-1])
+            update_eval_stats(eval_stats[name], coeffs, x_layers, y)
+    if not eval_stats:
         raise RuntimeError("No valid evaluation events were available for the probe")
     return eval_stats
 
@@ -417,21 +477,20 @@ def run_one_probe(
     name: str,
     pretrained_ckpt: str | None,
 ) -> tuple[list[dict], dict, torch.Tensor]:
+    start_time = time.monotonic()
+    print(f"[{name}] initializing trainer", flush=True)
     trainer = setup_trainer(args, output_dir, pretrained_ckpt, name)
     try:
+        print(f"[{name}] extracting train features", flush=True)
         coeffs, train_stats, train_mean, control_x, control_y = fit_probe(
             trainer,
             max_batches=args.max_train_batches,
             ridge_alpha=args.ridge_alpha,
             collect_control_events=args.shuffled_control_events,
+            desc=f"{name} train",
         )
-        eval_stats = evaluate_probe(
-            trainer,
-            coeffs,
-            max_batches=args.max_eval_batches,
-        )
-        rows, summary = summarize_eval(name, coeffs, eval_stats, train_mean, train_stats)
-
+        coeff_sets = {name: coeffs}
+        print(f"[{name}] fit complete on {train_stats.count} train events", flush=True)
         shuffled_coeffs = fit_shuffled_control(
             control_x,
             control_y,
@@ -439,15 +498,22 @@ def run_one_probe(
             seed=args.seed + 17,
         )
         if shuffled_coeffs is not None:
-            shuffled_eval = evaluate_probe(
-                trainer,
-                shuffled_coeffs,
-                max_batches=args.max_eval_batches,
-            )
+            coeff_sets[f"{name}_shuffled_labels"] = shuffled_coeffs
+        print(f"[{name}] evaluating {len(coeff_sets)} coefficient set(s)", flush=True)
+        eval_stats_by_name = evaluate_probe_many(
+            trainer,
+            coeff_sets,
+            max_batches=args.max_eval_batches,
+            desc=f"{name} eval",
+        )
+        eval_stats = eval_stats_by_name[name]
+        rows, summary = summarize_eval(name, coeffs, eval_stats, train_mean, train_stats)
+
+        if shuffled_coeffs is not None:
             shuffled_rows, shuffled_summary = summarize_eval(
                 f"{name}_shuffled_labels",
                 shuffled_coeffs,
-                shuffled_eval,
+                eval_stats_by_name[f"{name}_shuffled_labels"],
                 train_mean,
                 train_stats,
             )
@@ -455,6 +521,7 @@ def run_one_probe(
             summary["shuffled_label_control"] = shuffled_summary
     finally:
         trainer.cleanup()
+    print(f"[{name}] finished in {time.monotonic() - start_time:.1f} seconds", flush=True)
     return rows, summary, coeffs
 
 

@@ -12,11 +12,11 @@ default: &default
   #   reg_target_pretrain/, reg_target_test/   <-- must be real momentum targets
   # Optional, if your dataset.py return_dict path uses them:
   #   pid_target_pretrain/, pid_target_test/
-  data_root: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_2_raggedmmap/
-  data_root_train: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_2_raggedmmap/
-  data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_2_raggedmmap/
-  stat_dir: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats
-  regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats/regression_target_stats.json
+  data_root: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_cluster_track_strict_v5_03/
+  data_root_train: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_cluster_track_strict_v5_03/
+  data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_cluster_track_strict_v5_03/
+  stat_dir: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/
+  regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats.json
   artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage/july-8th}
   downstream_dir: "{artifact_root}/downstream_log/clas12_track_regression_adapteronly"
   checkpoint_dir: "{downstream_dir}/checkpoints"

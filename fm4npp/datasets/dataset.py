@@ -627,6 +627,7 @@ class TPCBatchDataset(Dataset):
         return torch.arange(N, device=device)
 
     def __getitem__(self, index):
+        start_idx = 0
         if not self.train and self.chunk_training:
             real_idx, start_idx = self.idxlist_chunking[index]
         else:

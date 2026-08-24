@@ -33,7 +33,11 @@ from fm4npp.models.mamba2 import Mamba2
 from model import *
 from loss import *
 from downstream_util import *
-from regression_utils import load_regression_target_stats, regression_column_indices
+from regression_utils import (
+    load_regression_target_stats,
+    regression_output_dim,
+    transform_regression_target_torch,
+)
 
 class DownstreamTrainer():
     
@@ -93,9 +97,7 @@ class DownstreamTrainer():
         self.params["regression_target_stats"] = stats_path
         # The task mapping is the source of truth for the regression head width.
         # Set it here so training and inference construct compatible heads.
-        self.params["num_output_classes"] = len(
-            regression_column_indices(params.task)
-        )
+        self.params["num_output_classes"] = regression_output_dim(params.task)
         self.regression_loss = getattr(params, "regression_loss", "mse").lower()
         if self.regression_loss not in {"mse", "mae", "huber"}:
             raise ValueError(
@@ -501,6 +503,8 @@ class DownstreamTrainer():
                     outputs=outputs,
                     targets=targets,
                     option=self.regression_loss,
+                    angular_indices=self.regression_target_stats["angular_indices"],
+                    target_std=self.regression_target_stats["std"],
                 )
                 target_list.append(targets['target'].cpu())
                 target_valid_list.append(targets['target_valid'].cpu())
@@ -766,8 +770,7 @@ class DownstreamTrainer():
             5: vtx_z
             6: energy
         """
-        indices = regression_column_indices(self.params.task)
-        per_hit_target = reg[..., list(indices)]
+        per_hit_target = transform_regression_target_torch(reg, self.params.task)
 
         # Regression truth is stored once per hit, although the prediction is
         # event-level. Collapse valid, finite copies to one target per event.
@@ -818,6 +821,8 @@ class DownstreamTrainer():
             outputs=outputs,
             targets=targets,
             option=self.regression_loss,
+            angular_indices=self.regression_target_stats["angular_indices"],
+            target_std=self.regression_target_stats["std"],
         )
 
         loss = losses['loss']
@@ -1031,6 +1036,8 @@ class DownstreamTrainer():
                     outputs=outputs,
                     targets=targets,
                     option=self.regression_loss,
+                    angular_indices=self.regression_target_stats["angular_indices"],
+                    target_std=self.regression_target_stats["std"],
                 )
 
                
@@ -1058,6 +1065,9 @@ class DownstreamTrainer():
             'best_step': getattr(self, "best_step", None),
             'best_epoch': getattr(self, "best_epoch", None),
             'current_loss': loss,
+            'regression_task': self.regression_target_stats["task"],
+            'regression_target_columns': self.regression_target_stats["columns"],
+            'regression_target_stats': self.regression_target_stats["path"],
             'params': vars(self.params)  # Save all hyperparameters
         }
 
@@ -1092,6 +1102,14 @@ class DownstreamTrainer():
             raise KeyError(
                 f"Adapter checkpoint {checkpoint_path} is missing 'model_state_dict'. "
                 "This loader expects a downstream adapter checkpoint, not a pretrained backbone."
+            )
+        checkpoint_task = checkpoint.get("regression_task")
+        current_task = self.regression_target_stats["task"]
+        if checkpoint_task is not None and checkpoint_task != current_task:
+            raise ValueError(
+                "Adapter checkpoint regression task does not match the current "
+                f"configuration: checkpoint has {checkpoint_task!r}, config has "
+                f"{current_task!r}. Use the matching model YAML/task and stats file."
             )
     
         # 3. Handle DDP keys

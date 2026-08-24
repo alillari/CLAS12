@@ -29,6 +29,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from fm4npp.utils import YParams  # noqa: E402
 from model import MambaTrackRegressionHead  # noqa: E402
+from regression_utils import target_to_cartesian_numpy  # noqa: E402
 from track_regression_trainer import DownstreamTrainer  # noqa: E402
 
 
@@ -1465,6 +1466,7 @@ def main():
     trainer.load_checkpoint(str(config["checkpoint"]), inference=True)
     trainer.down_model.eval()
     trainer.model.eval()
+    regression_task = trainer.regression_target_stats["task"]
 
     dataset = trainer.val_data_loader.dataset
     aux = RaggedMmap(str(Path(params.data_root_test) / "aux_target_test"))
@@ -1495,8 +1497,10 @@ def main():
                 prediction = trainer.down_model(points, feature=None, padding_mask=mask)["pred_regression"]
 
             normalized_truth = trainer.build_regression_targets(regression, mask)["target"]
-            prediction = trainer.down_model.target_normalizer.denormalize(prediction).cpu().numpy()
-            truth = trainer.down_model.target_normalizer.denormalize(normalized_truth).cpu().numpy()
+            prediction_native = trainer.down_model.target_normalizer.denormalize(prediction).cpu().numpy()
+            truth_native = trainer.down_model.target_normalizer.denormalize(normalized_truth).cpu().numpy()
+            prediction = target_to_cartesian_numpy(prediction_native, regression_task)
+            truth = target_to_cartesian_numpy(truth_native, regression_task)
 
             take = min(batch_size, remaining)
             for local_index in range(take):
@@ -1505,6 +1509,8 @@ def main():
                 aux_row = first_valid_row(aux[real_index]).astype(float) * aux_scale
                 pid_values = np.asarray(dataset.memmap_pid_target[real_index]).reshape(-1)
                 pid_class = int(pid_values[0]) if len(pid_values) else -1
+                true_native = truth_native[local_index]
+                pred_native = prediction_native[local_index]
                 true_vector = truth[local_index] * target_scale
                 pred_vector = prediction[local_index] * target_scale
                 true_p, true_pt, true_theta, true_phi = vector_kinematics(true_vector)
@@ -1523,6 +1529,17 @@ def main():
                     "adapter_p_gev": pred_p, "adapter_pt_gev": pred_pt, "adapter_theta_deg": pred_theta, "adapter_phi_deg": pred_phi,
                     "adapter_eta": pred_eta,
                 }
+                if regression_task == "p_phi_eta":
+                    record.update({
+                        "true_native_p_gev": true_native[0] * target_scale,
+                        "true_native_phi_rad": true_native[1],
+                        "true_native_phi_deg": np.degrees(true_native[1]),
+                        "true_native_eta": true_native[2],
+                        "adapter_native_p_gev": pred_native[0] * target_scale,
+                        "adapter_native_phi_rad": pred_native[1],
+                        "adapter_native_phi_deg": np.degrees(pred_native[1]),
+                        "adapter_native_eta": pred_native[2],
+                    })
                 record.update({name + "_gev": value for name, value in zip(AUX_LAYOUT, aux_row)})
                 records.append(record)
             cursor += batch_size
@@ -1600,7 +1617,13 @@ def main():
     summary = {
         "checkpoint": str(config["checkpoint"]),
         "model_config": config["model_config"],
-        "training_target_definition": "MC::True momentum at innermost matched CVT hit",
+        "training_target_task": regression_task,
+        "training_target_columns": trainer.regression_target_stats["columns"],
+        "training_target_definition": (
+            "Derived (p, phi, eta) from MC::True Cartesian momentum at innermost matched CVT hit"
+            if regression_task == "p_phi_eta"
+            else "MC::True momentum at innermost matched CVT hit"
+        ),
         "comparison_truth": comparison_truth,
         "comparison_truth_definition": truth_definition,
         "adapter_comparison_definition": (

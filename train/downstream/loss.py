@@ -572,7 +572,7 @@ def compute_point_loss(outputs, targets, mask, matcher, no_object_class=0):
     }
 
 
-def masked_regression_loss(outputs, targets, option="mse"):
+def masked_regression_loss(outputs, targets, option="mse", angular_indices=(), target_std=None):
     pred = outputs["pred"]
     truth = targets["target"]
     option = option.lower()
@@ -589,22 +589,34 @@ def masked_regression_loss(outputs, targets, option="mse"):
         # Return a differentiable zero if a batch contains no valid targets.
         return {"loss": pred.sum() * 0.0}
 
+    residual = pred - truth
+    if angular_indices:
+        if target_std is None:
+            raise ValueError("target_std is required when angular_indices are configured")
+        std = torch.as_tensor(target_std, dtype=residual.dtype, device=residual.device)
+        for index in angular_indices:
+            scale = std[int(index)].clamp_min(1.0e-12)
+            raw_delta = residual[..., int(index)] * scale
+            wrapped = torch.atan2(torch.sin(raw_delta), torch.cos(raw_delta))
+            residual = residual.clone()
+            residual[..., int(index)] = wrapped / scale
+
     if option == "mse":
         loss = torch.nn.functional.mse_loss(
-            pred[valid],
-            truth[valid],
+            residual[valid],
+            torch.zeros_like(residual[valid]),
             reduction="mean",
         )
     elif option == "mae":
         loss = torch.nn.functional.l1_loss(
-            pred[valid],
-            truth[valid],
+            residual[valid],
+            torch.zeros_like(residual[valid]),
             reduction="mean",
         )
     elif option == "huber":
         loss = torch.nn.functional.smooth_l1_loss(
-            pred[valid],
-            truth[valid],
+            residual[valid],
+            torch.zeros_like(residual[valid]),
             reduction="mean",
         )
     else:

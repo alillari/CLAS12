@@ -22,20 +22,21 @@ from regression_utils import (
 
 
 class RegressionTargetTransformTest(unittest.TestCase):
-    def test_p_phi_eta_round_trip_numpy(self):
+    def test_pt_phi_eta_round_trip_numpy(self):
         reg = np.array([
             [300.0, 400.0, 1200.0, 0.0, 0.0, 0.0, 1300.0],
             [-500.0, 250.0, -700.0, 0.0, 0.0, 0.0, 900.0],
         ])
-        target = transform_regression_target_numpy(reg, "p_phi_eta")
-        cart = target_to_cartesian_numpy(target, "p_phi_eta")
+        target = transform_regression_target_numpy(reg, "pt_phi_eta")
+        np.testing.assert_allclose(target[:, 0], np.hypot(reg[:, 0], reg[:, 1]))
+        cart = target_to_cartesian_numpy(target, "pt_phi_eta")
         np.testing.assert_allclose(cart, reg[:, :3], rtol=1.0e-6, atol=1.0e-6)
 
-    def test_p_phi_eta_torch_matches_numpy(self):
+    def test_pt_phi_eta_torch_matches_numpy(self):
         reg = np.array([[300.0, 400.0, 1200.0, 0.0, 0.0, 0.0, 1300.0]])
-        expected = transform_regression_target_numpy(reg, "p_phi_eta")
+        expected = transform_regression_target_numpy(reg, "pt_phi_eta")
         actual = transform_regression_target_torch(
-            torch.as_tensor(reg, dtype=torch.float32), "p_phi_eta"
+            torch.as_tensor(reg, dtype=torch.float32), "pt_phi_eta"
         ).numpy()
         np.testing.assert_allclose(actual, expected, rtol=1.0e-6, atol=1.0e-6)
 
@@ -51,7 +52,7 @@ class RegressionTargetTransformTest(unittest.TestCase):
         )["loss"]
         self.assertLess(float(loss), 0.01)
 
-    def test_p_phi_eta_rejects_raw_cartesian_stats(self):
+    def test_pt_phi_eta_rejects_raw_cartesian_stats(self):
         payload = {
             "version": 1,
             "columns": list(REGRESSION_TARGET_COLUMNS),
@@ -62,7 +63,7 @@ class RegressionTargetTransformTest(unittest.TestCase):
             path = Path(tmpdir) / "stats.json"
             path.write_text(json.dumps(payload))
             with self.assertRaises(ValueError):
-                load_regression_target_stats(path, "p_phi_eta")
+                load_regression_target_stats(path, "pt_phi_eta")
 
 
 if __name__ == "__main__":

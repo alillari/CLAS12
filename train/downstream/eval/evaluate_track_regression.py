@@ -1529,13 +1529,13 @@ def main():
                     "adapter_p_gev": pred_p, "adapter_pt_gev": pred_pt, "adapter_theta_deg": pred_theta, "adapter_phi_deg": pred_phi,
                     "adapter_eta": pred_eta,
                 }
-                if regression_task == "p_phi_eta":
+                if regression_task == "pt_phi_eta":
                     record.update({
-                        "true_native_p_gev": true_native[0] * target_scale,
+                        "true_native_pt_gev": true_native[0] * target_scale,
                         "true_native_phi_rad": true_native[1],
                         "true_native_phi_deg": np.degrees(true_native[1]),
                         "true_native_eta": true_native[2],
-                        "adapter_native_p_gev": pred_native[0] * target_scale,
+                        "adapter_native_pt_gev": pred_native[0] * target_scale,
                         "adapter_native_phi_rad": pred_native[1],
                         "adapter_native_phi_deg": np.degrees(pred_native[1]),
                         "adapter_native_eta": pred_native[2],
@@ -1620,8 +1620,8 @@ def main():
         "training_target_task": regression_task,
         "training_target_columns": trainer.regression_target_stats["columns"],
         "training_target_definition": (
-            "Derived (p, phi, eta) from MC::True Cartesian momentum at innermost matched CVT hit"
-            if regression_task == "p_phi_eta"
+            "Derived cylindrical (pT, phi, eta) from MC::True Cartesian momentum at innermost matched CVT hit"
+            if regression_task == "pt_phi_eta"
             else "MC::True momentum at innermost matched CVT hit"
         ),
         "comparison_truth": comparison_truth,

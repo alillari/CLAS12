@@ -508,6 +508,10 @@ def normalize_delta_p_over_p_rows(rows: list[dict[str, Any]]) -> list[dict[str, 
     return [row for row in normalized if row["bin_center_gev"] is not None]
 
 
+def normalize_delta_theta_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return normalize_delta_p_over_p_rows(rows)
+
+
 def per_run_delta_p_over_p_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     per_run_rows = []
     for row in rows:
@@ -517,6 +521,10 @@ def per_run_delta_p_over_p_rows(rows: list[dict[str, Any]]) -> list[dict[str, An
         label = "Adapter" if method == "adapter" else "CVT::Tracks"
         per_run_rows.append({**row, "trace_label": label})
     return per_run_rows
+
+
+def per_run_delta_theta_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return per_run_delta_p_over_p_rows(rows)
 
 
 def collapse_conventional_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -662,6 +670,114 @@ def plot_delta_p_over_p_set(rows: list[dict[str, Any]], output_dir: Path, stem: 
     )
 
 
+def plot_delta_theta_errorbars(rows: list[dict[str, Any]], output_path: Path, title: str) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not rows:
+        return
+    grouped = grouped_delta_p_over_p_rows(rows)
+
+    fig, ax = plt.subplots(figsize=(9.5, 5.8), constrained_layout=True)
+    linestyles = {
+        "conventional": "--",
+        "adapter_only": "-",
+        "pretrained_adapter": "-.",
+    }
+    for label, trace_rows in sorted(grouped.items()):
+        ax.errorbar(
+            [row["bin_center_gev"] for row in trace_rows],
+            [row["fit_mean"] for row in trace_rows],
+            yerr=[row["fit_sigma"] for row in trace_rows],
+            marker="o",
+            capsize=3,
+            linewidth=1.4,
+            linestyle=linestyles.get(trace_rows[0]["family"], "-"),
+            label=label,
+        )
+    ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+    ax.set(
+        xlabel="True p [GeV]",
+        ylabel=r"Gaussian mean of $\theta_{reco} - \theta_{true}$ [deg]",
+        title=title,
+    )
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=170)
+    plt.close(fig)
+
+
+def plot_delta_theta_scalar(
+    rows: list[dict[str, Any]],
+    output_path: Path,
+    y_key: str,
+    title: str,
+    ylabel: str,
+    zero_line: bool,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not rows:
+        return
+    grouped = grouped_delta_p_over_p_rows(rows)
+    linestyles = {
+        "conventional": "--",
+        "adapter_only": "-",
+        "pretrained_adapter": "-.",
+    }
+    fig, ax = plt.subplots(figsize=(9.5, 5.8), constrained_layout=True)
+    for label, trace_rows in sorted(grouped.items()):
+        trace_rows = [row for row in trace_rows if row.get(y_key) is not None]
+        if not trace_rows:
+            continue
+        ax.plot(
+            [row["bin_center_gev"] for row in trace_rows],
+            [row[y_key] for row in trace_rows],
+            marker="o",
+            linewidth=1.4,
+            linestyle=linestyles.get(trace_rows[0]["family"], "-"),
+            label=label,
+        )
+    if zero_line:
+        ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+    ax.set(xlabel="True p [GeV]", ylabel=ylabel, title=title)
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=170)
+    plt.close(fig)
+
+
+def plot_delta_theta_set(rows: list[dict[str, Any]], output_dir: Path, stem: str, title: str) -> None:
+    plot_delta_theta_errorbars(
+        rows,
+        output_dir / f"{stem}.png",
+        title,
+    )
+    plot_delta_theta_scalar(
+        rows,
+        output_dir / f"{stem}_mean.png",
+        "fit_mean",
+        f"{title}: Gaussian mean",
+        r"Gaussian mean of $\theta_{reco} - \theta_{true}$ [deg]",
+        zero_line=True,
+    )
+    plot_delta_theta_scalar(
+        rows,
+        output_dir / f"{stem}_sigma.png",
+        "fit_sigma",
+        f"{title}: Gaussian sigma",
+        r"Gaussian sigma of $\theta_{reco} - \theta_{true}$ [deg]",
+        zero_line=False,
+    )
+
+
 def select_presentation_adapter_run(rows: list[dict[str, Any]]) -> str | None:
     adapter_rows = [row for row in rows if row.get("method") == "adapter"]
     if not adapter_rows:
@@ -747,6 +863,74 @@ def plot_presentation_momentum_resolution(rows: list[dict[str, Any]], output_pat
         plt.close(fig)
 
 
+def plot_presentation_theta_resolution(rows: list[dict[str, Any]], output_path: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    run_id = select_presentation_adapter_run(rows)
+    if run_id is None:
+        return
+    run_rows = [row for row in rows if row.get("run_id") == run_id]
+    adapter_rows = sorted(
+        [row for row in run_rows if row.get("method") == "adapter" and row.get("fit_sigma") is not None],
+        key=lambda row: row["bin_center_gev"],
+    )
+    cvt_rows = sorted(
+        [row for row in run_rows if row.get("method") == "cvt" and row.get("fit_sigma") is not None],
+        key=lambda row: row["bin_center_gev"],
+    )
+    if not adapter_rows or not cvt_rows:
+        return
+
+    adapter_name = "AdapterOnly" if adapter_rows[0]["family"] == "adapter_only" else "Adapter"
+    adapter_label = f"{adapter_name}, {track_count_label(adapter_rows[0].get('labeled_events'))}"
+    colors = {
+        "adapter": "#0072B2",
+        "cvt": "#D55E00",
+    }
+    with plt.rc_context({
+        "font.size": 20,
+        "axes.labelsize": 24,
+        "axes.titlesize": 24,
+        "xtick.labelsize": 18,
+        "ytick.labelsize": 18,
+        "legend.fontsize": 18,
+        "lines.linewidth": 3.2,
+        "lines.markersize": 9.5,
+    }):
+        fig, ax = plt.subplots(figsize=(10.5, 7.0), constrained_layout=True)
+        ax.plot(
+            [row["bin_center_gev"] for row in adapter_rows],
+            [row["fit_sigma"] for row in adapter_rows],
+            marker="o",
+            linestyle="-",
+            linewidth=3.2,
+            markersize=9.5,
+            color=colors["adapter"],
+            label=adapter_label,
+        )
+        ax.plot(
+            [row["bin_center_gev"] for row in cvt_rows],
+            [row["fit_sigma"] for row in cvt_rows],
+            marker="s",
+            linestyle="-",
+            linewidth=3.2,
+            markersize=9.5,
+            color=colors["cvt"],
+            label="Conventional CVT reconstruction",
+        )
+        ax.set_xlabel("p [GeV]")
+        ax.set_ylabel("σ(Δθ) [deg]")
+        ax.minorticks_off()
+        ax.grid(True, which="major", alpha=0.28, linewidth=1.1)
+        ax.legend(frameon=False)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=220)
+        plt.close(fig)
+
+
 def make_momentum_resolution_plots(delta_rows: list[dict[str, Any]], output_dir: Path) -> None:
     run_rows = normalize_delta_p_over_p_rows(delta_rows)
     rows = collapse_conventional_rows(run_rows)
@@ -790,6 +974,49 @@ def make_momentum_resolution_plots(delta_rows: list[dict[str, Any]], output_dir:
         )
 
 
+def make_theta_resolution_plots(delta_rows: list[dict[str, Any]], output_dir: Path) -> None:
+    run_rows = normalize_delta_theta_rows(delta_rows)
+    rows = collapse_conventional_rows(run_rows)
+    if not rows:
+        return
+    plot_dir = output_dir / "momentum_resolution"
+    plot_presentation_theta_resolution(
+        run_rows,
+        plot_dir / "presentation_sigma_delta_theta.png",
+    )
+    groups = [
+        ("conventional", "Polar-angle resolution: Conventional CVT::Tracks", {"conventional"}),
+        ("adapter_only", "Polar-angle resolution: AdapterOnly", {"adapter_only"}),
+        ("pretrained_adapter", "Polar-angle resolution: Pretrained+Adapter", {"pretrained_adapter"}),
+        ("all", "Polar-angle resolution: all methods", {"conventional", "adapter_only", "pretrained_adapter"}),
+        ("conventional_adapter_only", "Polar-angle resolution: CVT::Tracks and AdapterOnly", {"conventional", "adapter_only"}),
+        ("conventional_pretrained_adapter", "Polar-angle resolution: CVT::Tracks and Pretrained+Adapter", {"conventional", "pretrained_adapter"}),
+    ]
+    for filename, title, families in groups:
+        group_rows = [row for row in rows if row["family"] in families]
+        if group_rows:
+            plot_delta_theta_set(
+                group_rows,
+                plot_dir,
+                f"delta_theta_{filename}",
+                title,
+            )
+
+    run_plot_dir = plot_dir / "runs"
+    by_run = defaultdict(list)
+    for row in per_run_delta_theta_rows(run_rows):
+        by_run[row["run_id"]].append(row)
+    for run_id, run_plot_rows in sorted(by_run.items()):
+        if not run_plot_rows:
+            continue
+        plot_delta_theta_set(
+            run_plot_rows,
+            run_plot_dir / safe_label(run_id),
+            "delta_theta",
+            f"Polar-angle resolution: {safe_label(run_id)}",
+        )
+
+
 def main() -> None:
     args = parse_args()
     campaign_dir, headline_jsonl, manifest_path, output_dir = resolve_paths(args)
@@ -810,14 +1037,18 @@ def main() -> None:
     if args.plot_suite in ("momentum-resolution", "all"):
         if campaign_dir is None:
             delta_path = headline_jsonl.parent / "delta_p_over_p_fits.csv"
+            delta_theta_path = headline_jsonl.parent / "delta_theta_fits.csv"
         else:
             delta_path = campaign_dir / "summary" / "delta_p_over_p_fits.csv"
+            delta_theta_path = campaign_dir / "summary" / "delta_theta_fits.csv"
         if not delta_path.exists():
             raise FileNotFoundError(
                 f"Delta-p/p fit CSV does not exist: {delta_path}. "
                 "Run campaign collation after reevaluating runs with this feature."
             )
         make_momentum_resolution_plots(read_csv_rows(delta_path), output_dir)
+        if delta_theta_path.exists():
+            make_theta_resolution_plots(read_csv_rows(delta_theta_path), output_dir)
     print(f"Wrote campaign plots and CSVs to {output_dir}")
 
 

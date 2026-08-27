@@ -153,6 +153,11 @@ def load_analysis_config(args):
     config.setdefault("delta_p_over_p_min_populated_histogram_bins", 8)
     config.setdefault("delta_p_over_p_histogram_bins", 40)
     config.setdefault("delta_p_over_p_fit_quantile", 0.98)
+    config.setdefault("delta_theta_bins_gev", config["delta_p_over_p_bins_gev"])
+    config.setdefault("delta_theta_min_bin_entries", 200)
+    config.setdefault("delta_theta_min_populated_histogram_bins", 8)
+    config.setdefault("delta_theta_histogram_bins", 40)
+    config.setdefault("delta_theta_fit_quantile", 0.98)
     for key, attr in (
         ("model_config", "model_config"),
         ("run_name", "run_name"),
@@ -436,7 +441,14 @@ def fit_gaussian_residuals(values, histogram_bins, fit_quantile, min_populated_b
 
     moment_mean = float(np.mean(fit_values))
     moment_sigma = float(np.std(fit_values, ddof=1)) if len(fit_values) > 1 else 0.0
-    if not math.isfinite(moment_sigma) or moment_sigma <= 0:
+    value_range = float(np.ptp(fit_values))
+    zero_width_tolerance = max(1e-12, 1e-12 * abs(moment_mean))
+    if (
+        not math.isfinite(moment_sigma)
+        or moment_sigma <= 0
+        or not math.isfinite(value_range)
+        or value_range <= zero_width_tolerance
+    ):
         return safe_float(moment_mean), None, None, None, "zero_width"
 
     counts, edges = np.histogram(fit_values, bins=int(histogram_bins))
@@ -478,13 +490,21 @@ def fit_gaussian_residuals(values, histogram_bins, fit_quantile, min_populated_b
         )
 
 
-def calculate_delta_p_over_p_fit_rows(truth, predictions, bins, config):
+def calculate_binned_residual_fit_rows(
+    truth,
+    predictions,
+    bins,
+    config,
+    *,
+    config_prefix,
+    residual_fn,
+):
     true_p, _, _, _ = vector_kinematics(truth)
     edges = np.asarray(bins, dtype=float)
-    min_entries = int(config["delta_p_over_p_min_bin_entries"])
-    histogram_bins = int(config["delta_p_over_p_histogram_bins"])
-    min_populated_bins = int(config["delta_p_over_p_min_populated_histogram_bins"])
-    fit_quantile = float(config["delta_p_over_p_fit_quantile"])
+    min_entries = int(config[f"{config_prefix}_min_bin_entries"])
+    histogram_bins = int(config[f"{config_prefix}_histogram_bins"])
+    min_populated_bins = int(config[f"{config_prefix}_min_populated_histogram_bins"])
+    fit_quantile = float(config[f"{config_prefix}_fit_quantile"])
     rows = []
 
     for index in range(len(edges) - 1):
@@ -493,9 +513,9 @@ def calculate_delta_p_over_p_fit_rows(truth, predictions, bins, config):
         label = f"[{low}, {high})"
         selection = (true_p >= low) & (true_p < high) & (true_p > 1e-12)
         for method in PHYSICS_PLOT_METHODS:
-            pred_p, _, _, _ = vector_kinematics(predictions[method])
-            valid = selection & np.isfinite(true_p) & np.isfinite(pred_p)
-            residual = (pred_p[valid] - true_p[valid]) / true_p[valid]
+            residual_values, finite = residual_fn(truth, predictions[method])
+            valid = selection & finite
+            residual = residual_values[valid]
             if len(residual) < min_entries:
                 fit_mean = fit_sigma = fit_mean_error = fit_sigma_error = None
                 fit_status = "skipped_sparse"
@@ -520,6 +540,45 @@ def calculate_delta_p_over_p_fit_rows(truth, predictions, bins, config):
                 "fit_status": fit_status,
             })
     return rows
+
+
+def delta_p_over_p_residual(truth, prediction):
+    true_p, _, _, _ = vector_kinematics(truth)
+    pred_p, _, _, _ = vector_kinematics(prediction)
+    finite = np.isfinite(true_p) & np.isfinite(pred_p) & (true_p > 1e-12)
+    residual = np.full_like(true_p, np.nan, dtype=float)
+    residual[finite] = (pred_p[finite] - true_p[finite]) / true_p[finite]
+    return residual, finite
+
+
+def delta_theta_residual_deg(truth, prediction):
+    _, _, true_theta, _ = vector_kinematics(truth)
+    _, _, pred_theta, _ = vector_kinematics(prediction)
+    residual = pred_theta - true_theta
+    finite = np.isfinite(true_theta) & np.isfinite(pred_theta)
+    return residual, finite
+
+
+def calculate_delta_p_over_p_fit_rows(truth, predictions, bins, config):
+    return calculate_binned_residual_fit_rows(
+        truth,
+        predictions,
+        bins,
+        config,
+        config_prefix="delta_p_over_p",
+        residual_fn=delta_p_over_p_residual,
+    )
+
+
+def calculate_delta_theta_fit_rows(truth, predictions, bins, config):
+    return calculate_binned_residual_fit_rows(
+        truth,
+        predictions,
+        bins,
+        config,
+        config_prefix="delta_theta",
+        residual_fn=delta_theta_residual_deg,
+    )
 
 
 def write_csv(path, rows):
@@ -1291,7 +1350,6 @@ def make_ml_plots(output_dir, truth, predictions, metric_rows, training_history)
 def make_delta_p_over_p_plot(output_dir, rows):
     import matplotlib.pyplot as plt
 
-    percent = 100.0
     plot_dir = output_dir / "plots"
     plot_dir.mkdir(exist_ok=True)
     methods = [method for method in PHYSICS_PLOT_METHODS if any(row["method"] == method for row in rows)]
@@ -1311,8 +1369,8 @@ def make_delta_p_over_p_plot(output_dir, rows):
             continue
         method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
         x = np.asarray([row["bin_center_gev"] for row in method_rows], dtype=float)
-        y = percent * np.asarray([row["fit_mean"] for row in method_rows], dtype=float)
-        yerr = percent * np.asarray([row["fit_sigma"] for row in method_rows], dtype=float)
+        y = 100.0 * np.asarray([row["fit_mean"] for row in method_rows], dtype=float)
+        yerr = 100.0 * np.asarray([row["fit_sigma"] for row in method_rows], dtype=float)
         ax.errorbar(
             x,
             y,
@@ -1346,7 +1404,7 @@ def make_delta_p_over_p_plot(output_dir, rows):
         method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
         ax.plot(
             [row["bin_center_gev"] for row in method_rows],
-            [percent * row["fit_mean"] for row in method_rows],
+            [100.0 * row["fit_mean"] for row in method_rows],
             marker="o",
             linewidth=1.5,
             label=labels.get(method, method),
@@ -1374,7 +1432,7 @@ def make_delta_p_over_p_plot(output_dir, rows):
         method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
         ax.plot(
             [row["bin_center_gev"] for row in method_rows],
-            [percent * row["fit_sigma"] for row in method_rows],
+            [100.0 * row["fit_sigma"] for row in method_rows],
             marker="o",
             linewidth=1.5,
             label=labels.get(method, method),
@@ -1387,6 +1445,103 @@ def make_delta_p_over_p_plot(output_dir, rows):
     ax.grid(alpha=0.25)
     ax.legend()
     fig.savefig(plot_dir / "delta_p_over_p_sigma_vs_true_p.png", dpi=160)
+    plt.close(fig)
+
+
+def make_delta_theta_plot(output_dir, rows):
+    import matplotlib.pyplot as plt
+
+    plot_dir = output_dir / "plots"
+    plot_dir.mkdir(exist_ok=True)
+    methods = [method for method in PHYSICS_PLOT_METHODS if any(row["method"] == method for row in rows)]
+    if not methods:
+        return
+
+    labels = {"adapter": "Adapter", "cvt": "CVT::Tracks"}
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    for method in methods:
+        method_rows = [
+            row for row in rows
+            if row["method"] == method
+            and row.get("fit_mean") is not None
+            and row.get("fit_sigma") is not None
+        ]
+        if not method_rows:
+            continue
+        method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
+        ax.errorbar(
+            [row["bin_center_gev"] for row in method_rows],
+            [row["fit_mean"] for row in method_rows],
+            yerr=[row["fit_sigma"] for row in method_rows],
+            marker="o",
+            capsize=3,
+            linewidth=1.5,
+            label=labels.get(method, method),
+        )
+    ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+    ax.set(
+        xlabel="True p [GeV]",
+        ylabel=r"Gaussian mean of $\theta_{reco} - \theta_{true}$ [deg]",
+        title=r"Polar-angle bias and resolution from fitted $\Delta\theta$",
+    )
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.savefig(plot_dir / "delta_theta_vs_true_p.png", dpi=160)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    for method in methods:
+        method_rows = [
+            row for row in rows
+            if row["method"] == method
+            and row.get("fit_mean") is not None
+        ]
+        if not method_rows:
+            continue
+        method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
+        ax.plot(
+            [row["bin_center_gev"] for row in method_rows],
+            [row["fit_mean"] for row in method_rows],
+            marker="o",
+            linewidth=1.5,
+            label=labels.get(method, method),
+        )
+    ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.65)
+    ax.set(
+        xlabel="True p [GeV]",
+        ylabel=r"Gaussian mean of $\theta_{reco} - \theta_{true}$ [deg]",
+        title=r"Polar-angle bias from fitted $\Delta\theta$",
+    )
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.savefig(plot_dir / "delta_theta_mean_vs_true_p.png", dpi=160)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    for method in methods:
+        method_rows = [
+            row for row in rows
+            if row["method"] == method
+            and row.get("fit_sigma") is not None
+        ]
+        if not method_rows:
+            continue
+        method_rows = sorted(method_rows, key=lambda row: row["bin_center_gev"])
+        ax.plot(
+            [row["bin_center_gev"] for row in method_rows],
+            [row["fit_sigma"] for row in method_rows],
+            marker="o",
+            linewidth=1.5,
+            label=labels.get(method, method),
+        )
+    ax.set(
+        xlabel="True p [GeV]",
+        ylabel=r"Gaussian sigma of $\theta_{reco} - \theta_{true}$ [deg]",
+        title=r"Polar-angle resolution from fitted $\Delta\theta$",
+    )
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.savefig(plot_dir / "delta_theta_sigma_vs_true_p.png", dpi=160)
     plt.close(fig)
 
 
@@ -1686,11 +1841,17 @@ def main():
         truth, predictions, delta_p_over_p_bins, config
     )
     write_csv(output_dir / "delta_p_over_p_fits.csv", delta_p_over_p_rows)
+    delta_theta_bins = np.asarray(config["delta_theta_bins_gev"], dtype=float)
+    delta_theta_rows = calculate_delta_theta_fit_rows(
+        truth, predictions, delta_theta_bins, config
+    )
+    write_csv(output_dir / "delta_theta_fits.csv", delta_theta_rows)
     make_plots(
         output_dir, truth, predictions, true_p, true_theta,
         momentum_bins, theta_bins, config,
     )
     make_delta_p_over_p_plot(output_dir, delta_p_over_p_rows)
+    make_delta_theta_plot(output_dir, delta_theta_rows)
     make_ml_plots(output_dir, truth, predictions, ml_metric_rows, training_history)
 
     trainer.cleanup()

@@ -422,12 +422,14 @@ Campaign outputs are written outside the repo:
         ml_metrics.csv
         binned_metrics.csv
         delta_p_over_p_fits.csv
+        delta_theta_fits.csv
         campaign_headline_metrics.jsonl
         plots/
   summary/
     campaign_headline_metrics.jsonl
     run_table.csv
     delta_p_over_p_fits.csv
+    delta_theta_fits.csv
 ```
 
 `status.yaml` records resumable stage state for each run. The main statuses are:
@@ -497,8 +499,9 @@ The plotting script has three plot suites:
 --plot-suite all                   # both suites
 ```
 
-For campaigns evaluated before `delta_p_over_p_fits.csv` existed, rerun
-evaluation before making momentum-resolution plots:
+For campaigns evaluated before `delta_p_over_p_fits.csv` or
+`delta_theta_fits.csv` existed, rerun evaluation before making the corresponding
+resolution plots:
 
 ```bash
 python train/downstream/campaign/run_track_regression_campaign.py \
@@ -512,6 +515,7 @@ The plotting script reads:
 ```text
 <campaign_dir>/summary/campaign_headline_metrics.jsonl
 <campaign_dir>/summary/delta_p_over_p_fits.csv
+<campaign_dir>/summary/delta_theta_fits.csv
 <campaign_dir>/manifest.yaml
 ```
 
@@ -535,28 +539,50 @@ and writes:
   r2_<component>_vs_*.png
   momentum_resolution/
     presentation_sigma_delta_p_over_p.png
+    presentation_sigma_delta_theta.png
     delta_p_over_p_conventional.png
     delta_p_over_p_conventional_mean.png
     delta_p_over_p_conventional_sigma.png
+    delta_theta_conventional.png
+    delta_theta_conventional_mean.png
+    delta_theta_conventional_sigma.png
     delta_p_over_p_adapter_only.png
     delta_p_over_p_adapter_only_mean.png
     delta_p_over_p_adapter_only_sigma.png
+    delta_theta_adapter_only.png
+    delta_theta_adapter_only_mean.png
+    delta_theta_adapter_only_sigma.png
     delta_p_over_p_pretrained_adapter.png
     delta_p_over_p_pretrained_adapter_mean.png
     delta_p_over_p_pretrained_adapter_sigma.png
+    delta_theta_pretrained_adapter.png
+    delta_theta_pretrained_adapter_mean.png
+    delta_theta_pretrained_adapter_sigma.png
     delta_p_over_p_all.png
     delta_p_over_p_all_mean.png
     delta_p_over_p_all_sigma.png
+    delta_theta_all.png
+    delta_theta_all_mean.png
+    delta_theta_all_sigma.png
     delta_p_over_p_conventional_adapter_only.png
     delta_p_over_p_conventional_adapter_only_mean.png
     delta_p_over_p_conventional_adapter_only_sigma.png
+    delta_theta_conventional_adapter_only.png
+    delta_theta_conventional_adapter_only_mean.png
+    delta_theta_conventional_adapter_only_sigma.png
     delta_p_over_p_conventional_pretrained_adapter.png
     delta_p_over_p_conventional_pretrained_adapter_mean.png
     delta_p_over_p_conventional_pretrained_adapter_sigma.png
+    delta_theta_conventional_pretrained_adapter.png
+    delta_theta_conventional_pretrained_adapter_mean.png
+    delta_theta_conventional_pretrained_adapter_sigma.png
     runs/<run_id>/
       delta_p_over_p.png
       delta_p_over_p_mean.png
       delta_p_over_p_sigma.png
+      delta_theta.png
+      delta_theta_mean.png
+      delta_theta_sigma.png
 ```
 
 The three main campaign axes are:
@@ -588,6 +614,10 @@ plotted sigma is the fitted standard deviation, shown as a percentage. Sparse
 bins are skipped during evaluation and recorded in `delta_p_over_p_fits.csv`
 with a `fit_status`.
 
+Polar-angle resolution plots use the same fit machinery and true-momentum bins
+for `theta_reco - theta_true`. The fitted mean and sigma are shown in degrees
+and recorded in `delta_theta_fits.csv`.
+
 The default delta-p/p binning is limited to the region with useful
 coverage:
 
@@ -597,6 +627,11 @@ delta_p_over_p_min_bin_entries: 200
 delta_p_over_p_min_populated_histogram_bins: 8
 delta_p_over_p_histogram_bins: 40
 delta_p_over_p_fit_quantile: 0.98
+delta_theta_bins_gev: [0.25, 0.5, ..., 3.0]
+delta_theta_min_bin_entries: 200
+delta_theta_min_populated_histogram_bins: 8
+delta_theta_histogram_bins: 40
+delta_theta_fit_quantile: 0.98
 ```
 
 The minimum-entry and populated-histogram-bin cuts are deliberately stricter
@@ -608,6 +643,8 @@ The presentation plot
 sigma versus `p` for the largest AdapterOnly run when present, compared with the
 matching conventional CVT reconstruction. Its legend reports the selected
 adapter's labeled training-track count, for example `AdapterOnly, 50k tracks`.
+`momentum_resolution/presentation_sigma_delta_theta.png` uses the same selected
+run and baseline, with `σ(Δθ)` in degrees.
 
 ## Troubleshooting
 

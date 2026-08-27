@@ -45,6 +45,9 @@ The analysis writes:
 - `training_history.csv`: parsed epoch, train-loss, validation-loss, and
   epoch-time values when the checkpoint training log is available;
 - `binned_metrics.csv`: momentum, polar-angle, and PID differential metrics;
+- `delta_p_over_p_fits.csv` and `delta_theta_fits.csv`: Gaussian residual fits
+  in configured true-momentum bins for detailed momentum and polar-angle
+  resolution plots;
 - `plots/`: residual and resolution plots.
 
 `plots/ml/` contains ML-oriented diagnostics:
@@ -70,6 +73,15 @@ The same directory contains direct per-track error comparisons. Their x-axis
 is the absolute CVT error, their y-axis is the absolute Adapter error, and the
 diagonal means equal performance. Tracks below the diagonal favor the Adapter;
 the annotated percentage reports how often that occurs.
+
+`plots/` also contains detailed one-dimensional fit summaries:
+
+- `delta_p_over_p_vs_true_p.png`, `delta_p_over_p_mean_vs_true_p.png`, and
+  `delta_p_over_p_sigma_vs_true_p.png` fit `(p_reco - p_true) / p_true` in
+  true-momentum bins and display the mean/sigma as percentages;
+- `delta_theta_vs_true_p.png`, `delta_theta_mean_vs_true_p.png`, and
+  `delta_theta_sigma_vs_true_p.png` fit `theta_reco - theta_true` in the same
+  style of true-momentum bins and display the mean/sigma in degrees.
 
 The current CLAS12 dataset stores MC entrance momentum in MeV and auxiliary
 reconstruction momentum in GeV. Those conversions are explicit in the YAML.

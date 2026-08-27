@@ -406,15 +406,18 @@ def collate_summary(manifest: dict[str, Any]) -> None:
     headline_out = summary_dir / "campaign_headline_metrics.jsonl"
     table_out = summary_dir / "run_table.csv"
     delta_p_over_p_out = summary_dir / "delta_p_over_p_fits.csv"
+    delta_theta_out = summary_dir / "delta_theta_fits.csv"
 
     table_rows = []
     delta_p_over_p_rows = []
+    delta_theta_rows = []
     with headline_out.open("w") as headline_stream:
         for run in manifest.get("runs", []):
             evaluation_dir = Path(run["evaluation_dir"])
             headline = evaluation_dir / "campaign_headline_metrics.jsonl"
             summary = evaluation_dir / "summary.json"
             delta_p_over_p = evaluation_dir / "delta_p_over_p_fits.csv"
+            delta_theta = evaluation_dir / "delta_theta_fits.csv"
             if headline.exists():
                 with headline.open() as stream:
                     shutil.copyfileobj(stream, headline_stream)
@@ -467,6 +470,20 @@ def collate_summary(manifest: dict[str, Any]) -> None:
                             "labeled_events": run.get("labeled_events", run.get("eventnumber")),
                             **fit_row,
                         })
+            if delta_theta.exists():
+                with delta_theta.open(newline="") as stream:
+                    for fit_row in csv.DictReader(stream):
+                        delta_theta_rows.append({
+                            "run_id": run["run_id"],
+                            "backbone_run_id": run.get("backbone_run_id"),
+                            "use_pretrained_backbone": run.get("use_pretrained_backbone", True),
+                            "model_family": run.get("model_family", DEFAULT_MODEL_FAMILY),
+                            "embed_dim": run["embed_dim"],
+                            "num_layers_backbone": run["num_layers_backbone"],
+                            "pretrain_events": run["pretrain_events"],
+                            "labeled_events": run.get("labeled_events", run.get("eventnumber")),
+                            **fit_row,
+                        })
 
     fieldnames = sorted({key for row in table_rows for key in row})
     with table_out.open("w", newline="") as stream:
@@ -482,6 +499,15 @@ def collate_summary(manifest: dict[str, Any]) -> None:
             writer.writerows(delta_p_over_p_rows)
     elif delta_p_over_p_out.exists():
         delta_p_over_p_out.unlink()
+
+    if delta_theta_rows:
+        delta_fields = sorted({key for row in delta_theta_rows for key in row})
+        with delta_theta_out.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=delta_fields)
+            writer.writeheader()
+            writer.writerows(delta_theta_rows)
+    elif delta_theta_out.exists():
+        delta_theta_out.unlink()
 
     if manifest.get("campaign_type") == "optuna_seed_ablation":
         collate_seed_ablation_summary(summary_dir, table_rows)

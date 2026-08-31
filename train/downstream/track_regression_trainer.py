@@ -480,7 +480,10 @@ class DownstreamTrainer():
                 #    targets = {
                 #        'labels': noise_labels,  # B X N tensor with noise id
                 #    }
-                targets = self.build_regression_targets(reg, mask)
+                target_segment_mask = inputdict.get('target_segment_mask')
+                if target_segment_mask is not None:
+                    target_segment_mask = target_segment_mask.to(self.device).bool()
+                targets = self.build_regression_targets(reg, mask, target_segment_mask)
 
                 self.down_optimizer.zero_grad()
                 if pretrain:
@@ -759,7 +762,7 @@ class DownstreamTrainer():
                 })
 
 
-    def build_regression_targets(self, reg, hit_mask):
+    def build_regression_targets(self, reg, hit_mask, target_segment_mask=None):
         """
         reg_target columns:
             0: px
@@ -774,7 +777,10 @@ class DownstreamTrainer():
 
         # Regression truth is stored once per hit, although the prediction is
         # event-level. Collapse valid, finite copies to one target per event.
-        valid = hit_mask.unsqueeze(-1) & torch.isfinite(per_hit_target)
+        effective_mask = hit_mask
+        if target_segment_mask is not None:
+            effective_mask = effective_mask & target_segment_mask
+        valid = effective_mask.unsqueeze(-1) & torch.isfinite(per_hit_target)
         counts = valid.sum(dim=1)
         target = torch.where(
             valid, per_hit_target, torch.zeros_like(per_hit_target)
@@ -800,7 +806,10 @@ class DownstreamTrainer():
         mask = grouped[..., 0] != -100 # B X N
         reg = inputdict['reg_target'].to(self.device)  # B X N X 8
 
-        targets = self.build_regression_targets(reg, mask)
+        target_segment_mask = inputdict.get('target_segment_mask')
+        if target_segment_mask is not None:
+            target_segment_mask = target_segment_mask.to(self.device).bool()
+        targets = self.build_regression_targets(reg, mask, target_segment_mask)
 
         self.down_optimizer.zero_grad()
         if pretrain:
@@ -1012,7 +1021,10 @@ class DownstreamTrainer():
                 #        'labels': noise_labels,  # B X N tensor with noise id
                 #    }
 
-                targets = self.build_regression_targets(reg, mask)
+                target_segment_mask = inputdict.get('target_segment_mask')
+                if target_segment_mask is not None:
+                    target_segment_mask = target_segment_mask.to(self.device).bool()
+                targets = self.build_regression_targets(reg, mask, target_segment_mask)
 
                 self.down_optimizer.zero_grad()
                 if pretrain:

@@ -478,9 +478,21 @@ class DownstreamTrainer():
         #    num_prototypes=self.params.max_gt_classes
         #).to(self.device)
 
-        self.down_model = MambaAttentionHead(input_dim=self.params.embed_dim, num_layers=0,
-                                  num_embedder_layers= self.params.num_embedder_layers, 
-                                  d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_prototypes = self.params.max_gt_classes, dropout= self.params.downstream_dropout).to(self.device)
+        self.down_model = MambaAttentionHead(
+            input_dim=self.params.embed_dim,
+            embed_dim=self.params.embed_dim,
+            num_layers=0,
+            num_embedder_layers=self.params.num_embedder_layers,
+            d_state=64,
+            d_conv=4,
+            expand=2,
+            num_feature_layers=self.params.num_layers_backbone,
+            num_output_dim=self.params.embed_dim,
+            num_prototypes=self.params.max_gt_classes,
+            embed_method=getattr(self.params, "embed_method", "add"),
+            pe_method=getattr(self.params, "pe_method", "nerf"),
+            dropout=getattr(self.params, "downstream_dropout", 0.0),
+        ).to(self.device)
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
         print(f"Total parameters in down_model: {total_params}")
@@ -558,7 +570,7 @@ class DownstreamTrainer():
                         pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
                         #pred_logit = self.down_model(grouped, feature, pretrain=pretrain) #B X N X C_classes
                     else:
-                        pred_dict = self.down_model(grouped, feature=None)
+                        pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
                         #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
                     #softmax it to the prob
                     #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
@@ -731,9 +743,21 @@ class DownstreamTrainer():
             print(f"✅ Mamba v2 Model Initialized (Safe Scaling for {num_layers} Layers")
                 
     
-        self.down_model = MambaAttentionHead(input_dim=self.params.embed_dim, num_layers=0,
-                                  num_embedder_layers= self.params.num_embedder_layers, 
-                                  d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_prototypes = self.params.max_gt_classes).to(self.device)
+        self.down_model = MambaAttentionHead(
+            input_dim=self.params.embed_dim,
+            embed_dim=self.params.embed_dim,
+            num_layers=0,
+            num_embedder_layers=self.params.num_embedder_layers,
+            d_state=64,
+            d_conv=4,
+            expand=2,
+            num_feature_layers=self.params.num_layers_backbone,
+            num_output_dim=self.params.embed_dim,
+            num_prototypes=self.params.max_gt_classes,
+            embed_method=getattr(self.params, "embed_method", "add"),
+            pe_method=getattr(self.params, "pe_method", "nerf"),
+            dropout=getattr(self.params, "downstream_dropout", 0.0),
+        ).to(self.device)
         
         initialize_mamba2(self.down_model, 3, num_residuals=1)
 
@@ -921,7 +945,7 @@ class DownstreamTrainer():
                     pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None)
+                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
                     #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
                 #softmax it to the prob
                 #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
@@ -1013,7 +1037,7 @@ class DownstreamTrainer():
                         pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
                         #pred_logit = self.down_model(grouped, feature, pretrain=pretrain) #B X N X C_classes
                     else:
-                        pred_dict = self.down_model(grouped, feature=None)
+                        pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
                         #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
                     #softmax it to the prob
                     #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes

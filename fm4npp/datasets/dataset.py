@@ -767,6 +767,28 @@ class MyCollator:
         reg = torch.stack([self.pad_tensor(d['reg_target'], point_longest) for d in batch])
         pid = torch.stack([self.pad_tensor(d['pid_target'].unsqueeze(-1), point_longest).squeeze(-1) for d in batch])
         noise = torch.stack([self.pad_tensor(d['noise_target'].unsqueeze(-1), point_longest).squeeze(-1) for d in batch])
+        has_target_segment_mask = 'target_segment_mask' in batch[0]
+        if has_target_segment_mask:
+            target_segment_mask = torch.stack([
+                F.pad(
+                    d['target_segment_mask'].to(torch.bool),
+                    (0, point_longest - d['target_segment_mask'].size(0)),
+                    value=False,
+                )
+                for d in batch
+            ])
+        has_source_event_index = 'source_event_index' in batch[0]
+        if has_source_event_index:
+            source_event_index = torch.as_tensor(
+                [int(d['source_event_index']) for d in batch],
+                dtype=torch.long,
+            )
+        has_segment_label = 'segment_label' in batch[0]
+        if has_segment_label:
+            segment_label = torch.as_tensor(
+                [int(d['segment_label']) for d in batch],
+                dtype=torch.long,
+            )
         has_mid_target = 'mid_target' in batch[0]
         if has_mid_target:
             mid = torch.stack([
@@ -785,6 +807,12 @@ class MyCollator:
             'pid_target': pid,
             'noise_target': noise,
         }
+        if has_target_segment_mask:
+            out['target_segment_mask'] = target_segment_mask
+        if has_source_event_index:
+            out['source_event_index'] = source_event_index
+        if has_segment_label:
+            out['segment_label'] = segment_label
         if has_mid_target:
             out['mid_target'] = mid
         if has_knn_target:
@@ -812,6 +840,254 @@ class MyCollator:
 
 
 
+class EventSegmentTPCBatchDataset(TPCBatchDataset):
+    """Virtual adapter skim that exposes one accepted event segment per sample."""
+
+    def __init__(self,
+                 *args,
+                 segment_target_source='mctrue',
+                 segment_min_clusters=12,
+                 segment_exact_clusters=False,
+                 segment_ignore_label=-1,
+                 **kwargs):
+        self.segment_target_source = str(segment_target_source).lower()
+        self.segment_min_clusters = int(segment_min_clusters)
+        self.segment_exact_clusters = bool(segment_exact_clusters)
+        self.segment_ignore_label = int(segment_ignore_label)
+        self.memmap_segment_source = None
+        if self.segment_target_source not in {'mctrue', 'seg_target', 'coatjava'}:
+            raise ValueError(
+                "segment_target_source must be 'mctrue', 'seg_target', or 'coatjava'"
+            )
+        if self.segment_min_clusters <= 0:
+            raise ValueError("segment_min_clusters must be positive")
+        super().__init__(*args, **kwargs)
+        if self.segment_target_source == 'coatjava':
+            self.memmap_segment_source = self._open_required_segment_source('coatjava_seg_pred')
+            self.filter_data(low_thr=self.low_thr, high_thr=self.high_thr, max_tracks=self.max_tracks)
+        elif self.segment_target_source in {'mctrue', 'seg_target'}:
+            self.memmap_segment_source = self.memmap_seg_target
+
+    def _open_required_segment_source(self, stem):
+        path = os.path.join(self.data_root, f'{stem}_{self.split}')
+        memmap_target = RaggedMmap(path)
+        if len(memmap_target) != self.n_feature_events:
+            raise ValueError(
+                f"{stem}_{self.split} has {len(memmap_target)} events but "
+                f"features_{self.split} has {self.n_feature_events}"
+            )
+        return memmap_target
+
+    def _segment_source_for_filtering(self):
+        return self.memmap_segment_source or self.memmap_seg_target
+
+    def _accepted_segment_labels(self, labels):
+        labels = np.asarray(labels)
+        out = []
+        for label in sorted(int(x) for x in np.unique(labels) if int(x) != self.segment_ignore_label):
+            n_points = int(np.sum(labels == label))
+            if self.segment_exact_clusters:
+                if n_points != self.segment_min_clusters:
+                    continue
+            elif n_points < self.segment_min_clusters:
+                continue
+            out.append((label, n_points))
+        return out
+
+    def filter_data(self, low_thr=-1, high_thr=10e10, max_tracks=150):
+        self.idxlist = []
+        self.seqlens = []
+        self.tooshort = []
+        self.toolong = []
+        self.toomanytracks = []
+        self.longest = 0
+        self.shortest = 1e10
+        segment_source = self._segment_source_for_filtering()
+        print(
+            '[INFO] Filtering event segments. '
+            f'Source: {self.segment_target_source}, min clusters: {self.segment_min_clusters}, '
+            f'exact: {self.segment_exact_clusters}, point low/high: {low_thr}/{high_thr}'
+        )
+        for event_idx in range(len(self.memmap_feature)):
+            labels = np.asarray(segment_source[event_idx])
+            for label, n_points in self._accepted_segment_labels(labels):
+                if n_points < low_thr:
+                    self.tooshort.append((event_idx, label))
+                elif n_points > high_thr:
+                    self.toolong.append((event_idx, label))
+                else:
+                    self.idxlist.append((event_idx, label))
+                    self.seqlens.append(n_points)
+                    self.longest = max(self.longest, n_points)
+                    self.shortest = min(self.shortest, n_points)
+
+                if self.limit_data and len(self.idxlist) == self.limit_size:
+                    break
+            if self.limit_data and len(self.idxlist) == self.limit_size:
+                break
+
+        print('[INFO] Filtering event segments. From {}, removed short {} long {}, remaining {}.'.format(
+            len(self.memmap_feature), len(self.tooshort), len(self.toolong), len(self.idxlist)))
+        print('[INFO] Shortest segment: {}, Longest segment: {}'.format(self.shortest, self.longest))
+
+        if not self.train and self.chunk_training:
+            self.idxlist_chunking = []
+            for k, sample_key in enumerate(self.idxlist):
+                seqlen = self.seqlens[k]
+                start_indices = get_chunk_start_indices(self.len_chunk, seqlen)
+                for sidx in start_indices:
+                    if seqlen - sidx > self.low_thr:
+                        self.idxlist_chunking.append((sample_key, sidx))
+            print('[INFO] Chunking the validation segment view. Original {} -> Chunk all {}'.format(
+                len(self.idxlist), len(self.idxlist_chunking)))
+
+    def _load_selected_point_target(self, memmap_target, real_idx, segment_mask, start_idx, r_sort_1d, sorter):
+        point_target = torch.from_numpy(np.copy(memmap_target[real_idx])).unsqueeze(0)
+        point_target = point_target[:, segment_mask]
+        if not self.train and self.chunk_training:
+            point_target = point_target[:, start_idx:start_idx + self.len_chunk]
+        point_target = point_target[:, r_sort_1d]
+        return point_target[:, sorter].squeeze(0)
+
+    def __getitem__(self, index):
+        start_idx = 0
+        if not self.train and self.chunk_training:
+            (real_idx, segment_label), start_idx = self.idxlist_chunking[index]
+        else:
+            real_idx, segment_label = self.idxlist[index]
+
+        segment_labels = np.asarray(self._segment_source_for_filtering()[real_idx])
+        segment_mask_np = segment_labels == int(segment_label)
+        segment_mask = torch.as_tensor(segment_mask_np, dtype=torch.bool)
+
+        features_np = np.copy(self.memmap_feature[real_idx])[segment_mask_np]
+        target_np = np.zeros(features_np.shape[0], dtype=np.int64)
+        features = torch.from_numpy(features_np).float().unsqueeze(0)
+        target = torch.from_numpy(target_np).unsqueeze(0)
+        reg_target = self._load_optional_reg_target(real_idx, len(segment_labels), device=features.device)
+        reg_target = reg_target[:, segment_mask]
+
+        if not self.train and self.chunk_training:
+            features = features[:, start_idx:start_idx + self.len_chunk]
+            target = target[:, start_idx:start_idx + self.len_chunk]
+            reg_target = reg_target[:, start_idx:start_idx + self.len_chunk]
+
+        model_features = self._to_model_features(features)
+        norm_features = self.apply_norm(model_features) if self.normalize else model_features
+        r_sort = norm_features[..., -1].argsort(dim=1)
+        r_sort_1d = r_sort.squeeze(0)
+        norm_features = norm_features[:, r_sort_1d]
+        norm_target = target[:, r_sort_1d]
+        norm_reg_target = reg_target[:, r_sort_1d]
+
+        knn_input = norm_features if self.is_position_only else norm_features[..., 1:]
+        if self.return_knn_target:
+            knearest_points, knearest_target = knn_later_indices_batch(
+                knn_input,
+                k=self.num_pred_points,
+                target=norm_target,
+                return_target=True,
+                pad_value_target=0,
+            )
+        else:
+            knearest_points = knn_later_indices_batch(knn_input, k=self.num_pred_points)
+
+        sorter = self._compute_sorter(norm_features)
+        serialized_points = norm_features[:, sorter].squeeze(0)
+        serialized_target = norm_target[:, sorter].squeeze(0)
+        serialized_reg_target = norm_reg_target[:, sorter].squeeze(0)
+        knearest_points = knearest_points[:, sorter].squeeze(0)
+        if self.return_knn_target:
+            knearest_target = knearest_target[:, sorter].squeeze(0)
+
+        if self.return_dict:
+            if self.has_pid_target:
+                serialized_pid_target = self._load_selected_point_target(
+                    self.memmap_pid_target, real_idx, segment_mask, start_idx, r_sort_1d, sorter
+                )
+            else:
+                serialized_pid_target = torch.full_like(serialized_target, -100)
+
+            if self.has_noise_target:
+                serialized_noise_target = self._load_selected_point_target(
+                    self.memmap_noise_target, real_idx, segment_mask, start_idx, r_sort_1d, sorter
+                )
+            else:
+                serialized_noise_target = torch.full_like(serialized_target, -100)
+
+            serialized_target_segment_mask = torch.ones_like(serialized_target, dtype=torch.bool)
+
+            if self.has_mid_target:
+                serialized_mid_target = self._load_selected_point_target(
+                    self.memmap_mid_target, real_idx, segment_mask, start_idx, r_sort_1d, sorter
+                )
+
+        if self.chunk_training and self.train:
+            serialized_points, start_idx = self.cut_chunk(serialized_points, self.len_chunk)
+            serialized_target = serialized_target[start_idx:start_idx + self.len_chunk]
+            serialized_reg_target = serialized_reg_target[start_idx:start_idx + self.len_chunk]
+            knearest_points = knearest_points[start_idx:start_idx + self.len_chunk]
+            if self.return_dict:
+                serialized_pid_target = serialized_pid_target[start_idx:start_idx + self.len_chunk]
+                serialized_noise_target = serialized_noise_target[start_idx:start_idx + self.len_chunk]
+                serialized_target_segment_mask = serialized_target_segment_mask[start_idx:start_idx + self.len_chunk]
+                if self.has_mid_target:
+                    serialized_mid_target = serialized_mid_target[start_idx:start_idx + self.len_chunk]
+            if self.return_knn_target:
+                knearest_target = knearest_target[start_idx:start_idx + self.len_chunk]
+
+        if self.return_dict:
+            out = {
+                'points': serialized_points * self.data_scaler,
+                'knearest_points': knearest_points * self.data_scaler,
+                'target': serialized_target,
+                'reg_target': serialized_reg_target,
+                'pid_target': serialized_pid_target,
+                'noise_target': serialized_noise_target,
+                'target_segment_mask': serialized_target_segment_mask,
+                'source_event_index': int(real_idx),
+                'segment_label': int(segment_label),
+            }
+            if self.has_mid_target:
+                out['mid_target'] = serialized_mid_target
+            if self.return_knn_target:
+                out['knearest_target'] = knearest_target
+            return out
+
+        if self.return_reg:
+            return (serialized_points * self.data_scaler,
+                    serialized_target,
+                    knearest_points * self.data_scaler,
+                    serialized_reg_target)
+
+        return (serialized_points * self.data_scaler,
+                serialized_target,
+                knearest_points * self.data_scaler)
+
+
+ADAPTER_SAMPLE_MODE_DATASETS = {
+    'track_legacy': TPCBatchDataset,
+    'event_segment': EventSegmentTPCBatchDataset,
+}
+
+
+def resolve_adapter_sample_mode(params):
+    mode = str(getattr(params, 'adapter_sample_mode', 'track_legacy'))
+    if mode not in ADAPTER_SAMPLE_MODE_DATASETS:
+        valid = ', '.join(sorted(ADAPTER_SAMPLE_MODE_DATASETS))
+        raise ValueError(f"Unknown adapter_sample_mode {mode!r}. Valid modes: {valid}")
+
+    dataset_cls = ADAPTER_SAMPLE_MODE_DATASETS[mode]
+    dataset_kwargs = {}
+    if dataset_cls is EventSegmentTPCBatchDataset:
+        dataset_kwargs = {
+            'segment_target_source': getattr(params, 'segment_target_source', 'mctrue'),
+            'segment_min_clusters': getattr(params, 'segment_min_clusters', 12),
+            'segment_exact_clusters': getattr(params, 'segment_exact_clusters', False),
+        }
+    return mode, dataset_cls, dataset_kwargs
+
+
 def get_data_loader(params, distributed):
     """Construct train/test dataloaders from params.
 
@@ -825,7 +1101,9 @@ def get_data_loader(params, distributed):
       train_dataloader, train_sampler, test_dataloader, test_sampler
     """
 
-    train_dataset = TPCBatchDataset(data_root = params.data_root, 
+    _, dataset_cls, sample_mode_kwargs = resolve_adapter_sample_mode(params)
+
+    train_dataset = dataset_cls(data_root = params.data_root, 
                                     version = params.data_version, 
                                     split = 'pretrain', 
                                     group_size = params.group_size, 
@@ -852,9 +1130,10 @@ def get_data_loader(params, distributed):
                                     max_tracks=getattr(params, 'max_tracks', 150),
                                     require_reg_target=getattr(params, 'require_reg_target', False),
                                     require_pid_target=getattr(params, 'require_pid_target', False),
-                                    require_noise_target=getattr(params, 'require_noise_target', False))
+                                    require_noise_target=getattr(params, 'require_noise_target', False),
+                                    **sample_mode_kwargs)
     
-    test_dataset = TPCBatchDataset(data_root = params.data_root_test, 
+    test_dataset = dataset_cls(data_root = params.data_root_test, 
                                    version = params.data_version, 
                                    split = 'test', 
                                    num_pred_points = params.klen,
@@ -880,7 +1159,8 @@ def get_data_loader(params, distributed):
                                    max_tracks=getattr(params, 'max_tracks', 150),
                                    require_reg_target=getattr(params, 'require_reg_target', False),
                                    require_pid_target=getattr(params, 'require_pid_target', False),
-                                   require_noise_target=getattr(params, 'require_noise_target', False))
+                                   require_noise_target=getattr(params, 'require_noise_target', False),
+                                   **sample_mode_kwargs)
 
     seed = getattr(params, "seed", None)
     seed = int(seed) if seed is not None else None
@@ -925,7 +1205,9 @@ def get_data_loader(params, distributed):
 
 def get_val_loader(params, distributed):
 
-    test_dataset = TPCBatchDataset(data_root=params.data_root,
+    _, dataset_cls, sample_mode_kwargs = resolve_adapter_sample_mode(params)
+
+    test_dataset = dataset_cls(data_root=params.data_root,
                                    version=params.data_version,
                                    split='test',
                                    num_pred_points=params.klen,
@@ -948,7 +1230,8 @@ def get_val_loader(params, distributed):
                                    return_knn_target=getattr(params, 'return_knn_target', False),
                                    require_reg_target=getattr(params, 'require_reg_target', False),
                                    require_pid_target=getattr(params, 'require_pid_target', False),
-                                   require_noise_target=getattr(params, 'require_noise_target', False))
+                                   require_noise_target=getattr(params, 'require_noise_target', False),
+                                   **sample_mode_kwargs)
 
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
     my_collate_fn = MyCollator()

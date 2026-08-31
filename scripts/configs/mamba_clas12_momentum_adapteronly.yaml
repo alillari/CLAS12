@@ -56,6 +56,10 @@ default: &default
   return_reg: true               # momentum task should receive reg_target from dataset
   return_reg_test: true
   return_knn_target: false
+  adapter_sample_mode: track_legacy   # set to event_segment for virtual per-segment adapter skims
+  segment_target_source: mctrue       # event_segment: use v6_01 seg_target labels by default
+  segment_min_clusters: 12            # event_segment: reject truth segments with fewer clusters
+  segment_exact_clusters: false       # event_segment: true reproduces strict exactly-12 behavior
 
   # === Compatibility flags that some trainers reference ===
   rep_aaai: false

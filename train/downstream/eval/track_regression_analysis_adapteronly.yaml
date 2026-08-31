@@ -1,18 +1,19 @@
 analysis:
   # Paths are resolved relative to this file.
-  # Set CLAS12_ARTIFACT_ROOT to evaluate checkpoints stored under a different root.
-  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage/july-8th}
-  run_name: clas12_track_regression_adapteronly
-  analysis_tag: track_regression_baseline
-  model_yaml: ../../../scripts/configs/mamba_clas12_track_regression_adapteronly.yaml
-  model_config: clas12_track_regression_adapteronly
-  checkpoint: "{artifact_root}/downstream_log/{run_name}/checkpoints/clas12_track_regression_adapteronly_nerf_mom_d100000_0_checkpoint.pth"
-  # null infers the sibling training log from the checkpoint name:
-  # *_checkpoint.pth -> *.log
-  training_log: null
-  output_dir: "{artifact_root}/downstream_log/{run_name}/evaluation_output/{analysis_tag}"
+  # This is a standalone example of the current campaign output layout.
+  # Campaign runs normally render their own absolute config/analysis.yaml.
+  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/mnt/edgexpert-a02c/ML-work/result_deep_storage}
+  campaign_name: ${CLAS12_CAMPAIGN_NAME:-campaign_3_cluster_track_regression}
+  campaign_root: "{artifact_root}/campaigns/{campaign_name}"
+  run_name: adapteronly_label50000
+  analysis_tag: "{campaign_name}_{run_name}"
+  model_yaml: "{campaign_root}/runs/{run_name}/config/model.yaml"
+  model_config: clas12_track_regression_adapteronly_adapteronly_label50000
+  checkpoint: "{campaign_root}/runs/{run_name}/checkpoints/{run_name}_adapter_checkpoint.pth"
+  training_log: "{campaign_root}/runs/{run_name}/checkpoints/{run_name}.log"
+  output_dir: "{campaign_root}/runs/{run_name}/evaluation"
 
-  run_num: "0"
+  run_num: adapteronly_label50000
   batch_size: 128
   num_workers: 0
   max_samples: 10000

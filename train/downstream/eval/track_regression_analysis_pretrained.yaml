@@ -1,23 +1,25 @@
 analysis:
   # Paths are resolved relative to this file.
-  # Set CLAS12_ARTIFACT_ROOT to evaluate checkpoints stored under a different root.
-  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage/july-8th}
-  run_name: clas12_track_regression_pretrained
-  analysis_tag: track_regression_pretrained
-  model_yaml: ../../../scripts/configs/mamba_clas12_track_regression_pretrained.yaml
-  model_config: clas12_track_regression_pretrained
-  checkpoint: "{artifact_root}/downstream_log/{run_name}/checkpoints/clas12_track_regression_pretrained_nerf_mom_d100000_0_checkpoint.pth"
-  # null infers the sibling training log from the checkpoint name:
-  # *_checkpoint.pth -> *.log
-  training_log: null
-  output_dir: "{artifact_root}/downstream_log/{run_name}/evaluation_output/{analysis_tag}"
+  # This is a standalone example of the current campaign output layout.
+  # Campaign runs normally render their own absolute config/analysis.yaml.
+  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/mnt/edgexpert-a02c/ML-work/result_deep_storage}
+  campaign_name: ${CLAS12_CAMPAIGN_NAME:-campaign_3_cluster_track_regression}
+  campaign_root: "{artifact_root}/campaigns/{campaign_name}"
+  pretrain_root: ${CLAS12_PRETRAIN_ROOT:-/home/alessio/mnt/edgexpert-a02c/ML-work/pretrained-FMs/campaign_3}
+  run_name: scale_w128_d12_n39553933
+  analysis_tag: "{campaign_name}_{run_name}"
+  model_yaml: "{campaign_root}/runs/{run_name}/config/model.yaml"
+  model_config: clas12_track_regression_pretrained_scale_w128_d12_n39553933
+  checkpoint: "{campaign_root}/runs/{run_name}/checkpoints/{run_name}_adapter_checkpoint.pth"
+  training_log: "{campaign_root}/runs/{run_name}/checkpoints/{run_name}.log"
+  output_dir: "{campaign_root}/runs/{run_name}/evaluation"
 
-  run_num: "0"
+  run_num: scale_w128_d12_n39553933
   batch_size: 128
   num_workers: 0
   max_samples: 10000
-  use_pretrained_backbone: false
-  pretrained_checkpoint: null
+  use_pretrained_backbone: true
+  pretrained_checkpoint: "{pretrain_root}/{run_name}/ckpt_best.tar"
   include_sample_metadata: true
   # null selects <data_root_test>/samples_test.jsonl
   sample_metadata_jsonl: null

@@ -303,6 +303,26 @@ def track_count_label(value: Any) -> str:
     return f"{count} tracks"
 
 
+def is_adapter_only_row(row: dict[str, Any]) -> bool:
+    return row.get("model_family") == "adapteronly" or row.get("backbone_run_id") == "adapteronly"
+
+
+def pretrain_events_is_meaningful(rows: list[dict[str, Any]]) -> bool:
+    """Return true only for real pretrained-data sweeps.
+
+    AdapterOnly rows conventionally carry pretrain_events=0, but that is not a
+    backbone pretraining size and should not create a separate facet by itself.
+    """
+    pretrained_event_counts = {
+        int(row["pretrain_events"])
+        for row in rows
+        if not is_adapter_only_row(row)
+        and row.get("pretrain_events") is not None
+        and int(row["pretrain_events"]) > 0
+    }
+    return len(pretrained_event_counts) > 1
+
+
 def plot_faceted_lines(
     rows: list[dict[str, Any]],
     output_path: Path,
@@ -386,6 +406,8 @@ def plot_faceted_lines(
 def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
     size_x = "backbone_n_params" if any(row.get("backbone_n_params") for row in rows) else "embed_dim"
     size_xlabel = "Backbone trainable parameters" if size_x == "backbone_n_params" else "Backbone embed dim"
+    pretrain_axis_is_meaningful = pretrain_events_is_meaningful(rows)
+    pretrain_facet_key = "pretrain_events" if pretrain_axis_is_meaningful else None
 
     for metric, ylabel, better in (
         ("mae", "MAE [GeV]", "lower"),
@@ -399,7 +421,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             x_key="labeled_events",
             y_key=mean_key,
             line_key="backbone_width_label",
-            facet_key="pretrain_events",
+            facet_key=pretrain_facet_key,
             title=f"Adapter mean {ylabel} vs labeled adapter data ({better} is better)",
             ylabel=f"Mean {ylabel} across px, py, pz",
             xlabel="Adapter labeled events",
@@ -410,22 +432,23 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             x_key=size_x,
             y_key=mean_key,
             line_key="labeled_events",
-            facet_key="pretrain_events",
+            facet_key=pretrain_facet_key,
             title=f"Adapter mean {ylabel} vs backbone size ({better} is better)",
             ylabel=f"Mean {ylabel} across px, py, pz",
             xlabel=size_xlabel,
         )
-        plot_faceted_lines(
-            rows,
-            output_dir / f"{metric}_mean_vs_pretrain_events_by_labeled_events.png",
-            x_key="pretrain_events",
-            y_key=mean_key,
-            line_key="labeled_events",
-            facet_key="backbone_width_label",
-            title=f"Adapter mean {ylabel} vs backbone pretraining data ({better} is better)",
-            ylabel=f"Mean {ylabel} across px, py, pz",
-            xlabel="Backbone pretraining events",
-        )
+        if pretrain_axis_is_meaningful:
+            plot_faceted_lines(
+                rows,
+                output_dir / f"{metric}_mean_vs_pretrain_events_by_labeled_events.png",
+                x_key="pretrain_events",
+                y_key=mean_key,
+                line_key="labeled_events",
+                facet_key="backbone_width_label",
+                title=f"Adapter mean {ylabel} vs backbone pretraining data ({better} is better)",
+                ylabel=f"Mean {ylabel} across px, py, pz",
+                xlabel="Backbone pretraining events",
+            )
         for component in COMPONENTS:
             component_key = f"adapter_{metric}_{component}"
             component_label = COMPONENT_LABELS[component]
@@ -435,7 +458,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
                 x_key="labeled_events",
                 y_key=component_key,
                 line_key="backbone_width_label",
-                facet_key="pretrain_events",
+                facet_key=pretrain_facet_key,
                 title=f"Adapter {component_label} {ylabel} vs labeled adapter data ({better} is better)",
                 ylabel=f"{component_label} {ylabel}",
                 xlabel="Adapter labeled events",
@@ -446,22 +469,23 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
                 x_key=size_x,
                 y_key=component_key,
                 line_key="labeled_events",
-                facet_key="pretrain_events",
+                facet_key=pretrain_facet_key,
                 title=f"Adapter {component_label} {ylabel} vs backbone size ({better} is better)",
                 ylabel=f"{component_label} {ylabel}",
                 xlabel=size_xlabel,
             )
-            plot_faceted_lines(
-                rows,
-                output_dir / f"{metric}_{component}_vs_pretrain_events_by_labeled_events.png",
-                x_key="pretrain_events",
-                y_key=component_key,
-                line_key="labeled_events",
-                facet_key="backbone_width_label",
-                title=f"Adapter {component_label} {ylabel} vs backbone pretraining data ({better} is better)",
-                ylabel=f"{component_label} {ylabel}",
-                xlabel="Backbone pretraining events",
-            )
+            if pretrain_axis_is_meaningful:
+                plot_faceted_lines(
+                    rows,
+                    output_dir / f"{metric}_{component}_vs_pretrain_events_by_labeled_events.png",
+                    x_key="pretrain_events",
+                    y_key=component_key,
+                    line_key="labeled_events",
+                    facet_key="backbone_width_label",
+                    title=f"Adapter {component_label} {ylabel} vs backbone pretraining data ({better} is better)",
+                    ylabel=f"{component_label} {ylabel}",
+                    xlabel="Backbone pretraining events",
+                )
 
 
 def normalize_delta_p_over_p_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -219,6 +219,60 @@ def first_valid_row(array):
     return array[np.flatnonzero(valid)[0]] if valid.any() else array[0]
 
 
+def _batch_int(batch, key, local_index, default=None):
+    if key not in batch:
+        return default
+    value = batch[key][local_index]
+    if hasattr(value, "item"):
+        value = value.item()
+    return int(value)
+
+
+def resolve_evaluation_sample_identity(batch, dataset, dataset_index, local_index):
+    """Return event-plus-segment identity while preserving legacy idxlist behavior."""
+    real_index = _batch_int(batch, "source_event_index", local_index)
+    segment_label = _batch_int(batch, "segment_label", local_index)
+    if real_index is not None:
+        return real_index, segment_label
+
+    sample_key = dataset.idxlist[dataset_index]
+    if isinstance(sample_key, tuple):
+        real_index, segment_label = sample_key
+        return int(real_index), int(segment_label)
+    return int(sample_key), None
+
+
+def _segment_labels_for_dataset(dataset, real_index):
+    if hasattr(dataset, "_segment_source_for_filtering"):
+        return np.asarray(dataset._segment_source_for_filtering()[real_index])
+    if hasattr(dataset, "memmap_seg_target"):
+        return np.asarray(dataset.memmap_seg_target[real_index])
+    return None
+
+
+def aux_row_for_sample(dataset, aux, real_index, segment_label):
+    aux_values = np.asarray(aux[real_index])
+    if segment_label is None:
+        return first_valid_row(aux_values)
+
+    segment_labels = _segment_labels_for_dataset(dataset, real_index)
+    if segment_labels is None:
+        raise ValueError(
+            "Event-segment evaluation needs segment labels to select aligned aux_target rows"
+        )
+    if len(aux_values) != len(segment_labels):
+        raise ValueError(
+            f"aux_target row {real_index} has {len(aux_values)} entries but "
+            f"segment labels have {len(segment_labels)}"
+        )
+    selected = aux_values[segment_labels == int(segment_label)]
+    if len(selected) == 0:
+        raise ValueError(
+            f"No aux_target entries for event {real_index}, segment {segment_label}"
+        )
+    return first_valid_row(selected)
+
+
 def vector_kinematics(vector):
     px, py, pz = np.moveaxis(np.asarray(vector), -1, 0)
     pt = np.hypot(px, py)
@@ -716,21 +770,26 @@ def make_swingback_diagnostics(raw_truth, doca_truth, charge, config):
 
 def attach_sample_metadata(records, path):
     """Attach JSONL metadata by the original RaggedMmap row index."""
-    by_index = {record["real_index"]: record for record in records}
+    by_index = {}
+    for record in records:
+        by_index.setdefault(record["real_index"], []).append(record)
     remaining = set(by_index)
     with Path(path).open() as stream:
         for index, line in enumerate(stream):
             if index in remaining:
                 metadata = json.loads(line)
-                pdg = int(metadata.get("pid", 0))
-                by_index[index].update({
-                    "source_file": metadata.get("source_file", ""),
-                    "event": metadata.get("event", ""),
-                    "reco_track_id": metadata.get("trkid", ""),
-                    "truth_track_id": metadata.get("truth_tid", ""),
-                    "pdg": pdg,
-                    "charge": pdg_charge(pdg),
-                })
+                metadata_pid = metadata.get("pid")
+                pdg = int(metadata_pid) if metadata_pid is not None else ""
+                charge = pdg_charge(pdg) if metadata_pid is not None else ""
+                for record in by_index[index]:
+                    record.update({
+                        "source_file": metadata.get("source_file", ""),
+                        "event": metadata.get("event", ""),
+                        "reco_track_id": metadata.get("trkid", ""),
+                        "truth_track_id": metadata.get("truth_tid", ""),
+                        "pdg": pdg,
+                        "charge": charge,
+                    })
                 remaining.remove(index)
                 if not remaining:
                     break
@@ -1629,6 +1688,7 @@ def main():
     aux_scale = float(config["auxiliary_momentum_scale_to_gev"])
     max_samples = int(config["max_samples"])
     use_pretrained = bool(config["use_pretrained_backbone"])
+    adapter_sample_mode = str(getattr(params, "adapter_sample_mode", "track_legacy"))
 
     records = []
     cursor = 0
@@ -1660,9 +1720,19 @@ def main():
             take = min(batch_size, remaining)
             for local_index in range(take):
                 dataset_index = cursor + local_index
-                real_index = int(dataset.idxlist[dataset_index])
-                aux_row = first_valid_row(aux[real_index]).astype(float) * aux_scale
-                pid_values = np.asarray(dataset.memmap_pid_target[real_index]).reshape(-1)
+                real_index, segment_label = resolve_evaluation_sample_identity(
+                    batch, dataset, dataset_index, local_index
+                )
+                aux_row = aux_row_for_sample(
+                    dataset, aux, real_index, segment_label
+                ).astype(float) * aux_scale
+                if "pid_target" in batch:
+                    pid_values = np.asarray(
+                        batch["pid_target"][local_index].detach().cpu()
+                    ).reshape(-1)
+                    pid_values = pid_values[pid_values != -100]
+                else:
+                    pid_values = np.asarray(dataset.memmap_pid_target[real_index]).reshape(-1)
                 pid_class = int(pid_values[0]) if len(pid_values) else -1
                 true_native = truth_native[local_index]
                 pred_native = prediction_native[local_index]
@@ -1674,6 +1744,9 @@ def main():
                 pred_eta = kinematic_variables(pred_vector)["eta"]
                 record = {
                     "real_index": real_index,
+                    "source_event_index": real_index,
+                    "segment_label": "" if segment_label is None else int(segment_label),
+                    "adapter_sample_mode": adapter_sample_mode,
                     "n_hits": int(mask[local_index].sum().item()),
                     "pid_class": pid_class,
                     "pid_label": str(config["pid_labels"].get(pid_class, "unknown")),

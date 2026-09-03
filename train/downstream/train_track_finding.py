@@ -1,142 +1,71 @@
 #!/usr/bin/env python3
-"""
-Downstream tracking training script.
-"""
-import os
-import sys
+"""CLI wrapper for downstream event-level track-finding training."""
+
+from __future__ import annotations
+
 import argparse
-import gc
+import sys
+from pathlib import Path
 
-import torch
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
-# ensure fm4npp modules can be found
-sys.path.append('../..')
-
-
-from fm4npp.utils import YParams
-from track_finding_trainer import DownstreamTrainer
-
-def main():
-    parser = argparse.ArgumentParser(description="Downstream tracking training script")
-    parser.add_argument("--yaml_config", default='', type=str, help="Path to YAML config file")
-    parser.add_argument("--config", default='', type=str, help="Model config name")
-    parser.add_argument("--run_num", default='0', type=str, help="Sub run number")
-    parser.add_argument("--root_dir", default='/home/shuhang/FM4NPP/downstream_log/', type=str, help="Root dir to store results")
-    parser.add_argument("--global_log_dir", default='globallogs', type=str, help="Global dir to store logging only")
-    parser.add_argument("--eventnumber", default=70000, type=int, help="downstream training event number")
-    #parser.add_argument("--usepretrain", default=True, type=str, help="use pretrain model")
-    parser.add_argument(
-        "--usepretrain",
-        dest="usepretrain",
-        action="store_true",
-        help="enable using the pretrained model (default)",
+try:
+    from .track_finding_experiment import (
+        TrackFindingExperimentConfig,
+        train_experiment,
     )
-    parser.add_argument(
-        "--no-pretrain",
-        dest="usepretrain",
-        action="store_false",
-        help="disable pretrained model",
+except ImportError:
+    from track_finding_experiment import (
+        TrackFindingExperimentConfig,
+        train_experiment,
     )
-    parser.set_defaults(usepretrain=True)
-    parser.add_argument("--train_batch_size", default=32, type=int, help="train batch size")
-    parser.add_argument("--mambaversion", default=None, type=str, help="Override mamba2/mamba1 from the YAML config")
-    parser.add_argument("--pretrained_ckpt", default=None, type=str, help="Optional path to pretrained checkpoint if --usepretrain is set.")
-    args = parser.parse_args()
-
-    # Mapping from model name to log file and checkpoint paths
-    model2log = {
-        'd9_m1_k5_p20': '/home/shuhang/FMNP/PRETRAIN_MAMBA/globallogs/config_d9_m1_k5_p20_run_noAMP0_data_version:pp_12M|limit_size:10000000|model_version:mtest1.csv',
-        'd9_m3_k5_p20': '/home/shuhang/FMNP/PRETRAIN_MAMBA/globallogs/config_d9_m4_k5_p20_run_noAMP0_data_version:pp_12M|limit_size:10000000|model_version:mtest1.csv',
-        'd9_m4_k5_p20': '/home/shuhang/FMNP/PRETRAIN_MAMBA/globallogs/config_d9_m3_k5_p20_run_noAMP0_data_version:pp_12M|limit_size:10000000|model_version:mtest1.csv',
-        'd9_m5_k5_p20': '/home/shuhang/FMNP/PRETRAIN_MAMBA/globallogs/config_d9_m5_k5_p20_run_noAMP1_data_version:pp_12M|limit_size:10000000|model_version:mtest1.csv',
-        'd9_nerf_m1_k5_p20': '/home/shuhang/FMNP/PRETRAIN_MAMBA/globallogs/config_d9_m1_k5_p20_run_noAMP0_data_version:pp_12M|limit_size:10000000|model_version:mtest1.csv',
-        'd9_nerf_m3_k5_p20': '/home/shuhang/FMNP/PRETRAIN_MAMBA/globallogs/config_d9_m4_k5_p20_run_noAMP0_data_version:pp_12M|limit_size:10000000|model_version:mtest1.csv',
-        'd9_nerf_m4_k5_p20': '/home/shuhang/FMNP/PRETRAIN_MAMBA/globallogs/config_d9_m3_k5_p20_run_noAMP0_data_version:pp_12M|limit_size:10000000|model_version:mtest1.csv',
-        'd9_nerf_m5_k5_p20': '/home/shuhang/FMNP/PRETRAIN_MAMBA/globallogs/config_d9_m5_k5_p20_run_noAMP1_data_version:pp_12M|limit_size:10000000|model_version:mtest1.csv',
-    }
-    
-    model2ckpt = {
-        'd9_m5_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m5_k5.ckpt',
-        'd9_m1_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m1_k5.ckpt',
-        'd9_m3_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m3_k5.ckpt',
-        'd9_m4_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m4_k5.ckpt',
-        'd9_m4_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m4_k5.ckpt',
-        'd9_m5_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m5_k5.ckpt',
-        'd9_m1_k30_p20':'/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m1_k30.ckpt',
-        'd9_m3_k30_p20':'/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m3_k30.ckpt',
-        'd9_m4_k30_p20':'/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m4_k30.ckpt',
-        'd9_m5_k30_p20':'/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m5_k30.ckpt',
-        'd9_m64_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m64_k5_debugged.ckpt',
-        'd9_m64_k30_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m64_k30.ckpt',
-        'd9_m96_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m96_k5.ckpt',
-        'd9_m96_k30_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m96_k30.ckpt',
-        'd9_m128_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m128_k5.ckpt',
-        'd9_m128_k30_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m128_k30.ckpt',
-        'd9_m192_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m192_k5.ckpt',
-        'd9_m192_k30_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m192_k30.ckpt',
-        'ablate_reference': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_reference.ckpt',
-        'ablate_pe_PROJ': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_pe_PROJ.ckpt',
-        'ablate_pe_FF': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_pe_FF.ckpt',
-        'ablate_pe_CPE': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_pe_CPE.ckpt',
-        'ablate_order_RPE': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_order_RPE.ckpt',
-        'ablate_order_REP': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_order_REP.ckpt',
-        'ablate_order_PER': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_order_PER.ckpt',
-        'ablate_embedconcat': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_embedconcat.ckpt',
-        'ablate_lossreweight': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_lossreweight.ckpt',
-        'ablate_space_filling_hilbert': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_space_filling_hilbert.ckpt',
-        'ablate_space_filling_z': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_space_filling_z.ckpt',
-        'ablate_novoxelize': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_novoxelize.ckpt',
-        # 5M Parameter Models
-        'longformer_5m_downstream': '/pscratch/sd/d/dpark1/NPFN/PRETRAIN_MAMBA/longformer_5m/try1/training_checkpoints/ckpt_best.tar',
-        'linformer_5m_downstream': '/pscratch/sd/d/dpark1/NPFN/PRETRAIN_MAMBA/linformer_5m/try0/training_checkpoints/ckpt_best.tar',
-        'mamba_5m_downstream': '/pscratch/sd/d/dpark1/NPFN/PRETRAIN_MAMBA/mamba_5m/try0/training_checkpoints/ckpt_best.tar',
-    }
-
-    # Example overrides for running in a notebook; uncomment to hardcode
-    # args.yaml_config = "/home/shuhangli/FMNP/FM4NPP/scripts/configs/mamba.yaml"
-    # args.config = "d9_m96_k5_p20"
-    # args.run_num = "2"
-
-    # Initialize parameters
-    params = YParams(os.path.abspath(args.yaml_config), args.config)
-    params.continue_from_best = True
-    params.batch_size = int(args.train_batch_size)
-    params.limit_data = True
-    params.limit_size = int(args.eventnumber)
-    params.valid_batch_size = 1
-    if args.usepretrain:
-        params.pretrained_ckpt = args.pretrained_ckpt or model2ckpt.get(args.config)
-        if params.pretrained_ckpt is None:
-            raise ValueError(
-                f"--usepretrain was set, but no checkpoint was provided and "
-                f"args.config={args.config!r} is not in model2ckpt."
-            )
-    else:
-        params.pretrained_ckpt = None
-    base_name = f"{args.config}_nerf_tracking_head_d{params.limit_size}_{args.run_num}"
-    if args.usepretrain:
-        params.log_file_name = base_name + ".log"
-    else:
-        params.log_file_name = base_name + "_nopretrain.log"
-    params.loss_matched_ce_weight = 0.5
-    params.loss_unmatched_ce_weight = 0.1
-    params.loss_dice_weight = 1
-    params.loss_focal_weight = 30
-    params.num_embedder_layers = 0
-    if args.mambaversion is not None:
-        params.mambaversion = args.mambaversion
 
 
-    # Launch and train
-    trainer = DownstreamTrainer(params, args)
-    trainer.launch()
-    checkpoint_path = None
-    trainer.train(pretrain=args.usepretrain, train_from_checkpoint=False, checkpoint_path=checkpoint_path)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--yaml_config", default="", type=str, help="Path to YAML config file")
+    parser.add_argument("--config", default="", type=str, help="Model config name")
+    parser.add_argument("--run_num", default="0", type=str, help="Sub run number")
+    parser.add_argument("--root_dir", default="./downstream_log/", type=str, help="Root dir to store results")
+    parser.add_argument("--global_log_dir", default="globallogs", type=str, help="Global dir to store logging only")
+    parser.add_argument("--eventnumber", default=50000, type=int, help="Downstream training event number")
+    parser.add_argument("--usepretrain", action="store_true", help="Use pretrained backbone")
+    parser.add_argument("--no-pretrain", dest="usepretrain", action="store_false", help="Disable pretrained backbone")
+    parser.set_defaults(usepretrain=False)
+    parser.add_argument("--train_batch_size", default=32, type=int, help="Train batch size")
+    parser.add_argument("--pretrained_ckpt", default=None, type=str, help="Required pretrained checkpoint path with --usepretrain.")
+    parser.add_argument("--checkpoint_dir", default=None, type=str, help="Explicit checkpoint/log directory.")
+    parser.add_argument("--log_file_name", default=None, type=str, help="Deterministic training log filename.")
+    parser.add_argument("--checkpoint_file_name", default=None, type=str, help="Deterministic checkpoint filename.")
+    parser.add_argument("--artifact_summary", default=None, type=str, help="JSON path for training metadata.")
+    parser.add_argument("--resolved_config_path", default=None, type=str, help="Optional JSON path for resolved params.")
+    parser.add_argument("--seed", default=None, type=int, help="Optional random seed for this training run.")
+    return parser.parse_args()
 
-    # Cleanup
-    trainer.cleanup()
-    torch.cuda.empty_cache()
-    gc.collect()
+
+def main() -> None:
+    args = parse_args()
+    train_experiment(
+        TrackFindingExperimentConfig(
+            yaml_config=args.yaml_config,
+            config=args.config,
+            run_num=args.run_num,
+            root_dir=args.root_dir,
+            global_log_dir=args.global_log_dir,
+            eventnumber=args.eventnumber,
+            usepretrain=args.usepretrain,
+            train_batch_size=args.train_batch_size,
+            pretrained_ckpt=args.pretrained_ckpt,
+            checkpoint_dir=args.checkpoint_dir,
+            log_file_name=args.log_file_name,
+            checkpoint_file_name=args.checkpoint_file_name,
+            artifact_summary=args.artifact_summary,
+            resolved_config_path=args.resolved_config_path,
+            seed=args.seed,
+        )
+    )
+
 
 if __name__ == "__main__":
     main()

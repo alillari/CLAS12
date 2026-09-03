@@ -36,6 +36,7 @@ from fm4npp.models.linformer_gpt import LinformerGPT
 from trackinghead import *
 from loss import *
 from downstream_util import get_early_stopping_config
+from track_finding_metrics import MatchConfig, event_track_metrics, summarize_event_metrics
 
 
 class DownstreamTrainer():
@@ -320,11 +321,16 @@ class DownstreamTrainer():
         ], weight_decay=0.1, betas=(0.9, 0.95))
 
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+        backbone_cycle_steps = int(getattr(self.params, 'total_steps', 200))
+        backbone_warmup_steps = min(
+            int(getattr(self.params, 'warmup_steps', 20)),
+            max(0, backbone_cycle_steps - 1),
+        )
         self.scheduler = CosineAnnealingWarmupRestarts(self.optimizer,
-                                          first_cycle_steps=getattr(self.params, 'total_steps', 200),
+                                          first_cycle_steps=backbone_cycle_steps,
                                           max_lr=self.params.max_lr,
                                           min_lr=self.params.min_lr,
-                                          warmup_steps=self.params.warmup_steps)
+                                          warmup_steps=backbone_warmup_steps)
 
         
         # get the dataloaders
@@ -422,14 +428,26 @@ class DownstreamTrainer():
         raise ValueError(f"Unexpected track-finding batch with {len(batch)} elements")
 
     def _build_track_targets(self, labels, mask):
+        background_label = int(getattr(self.params, "background_label", -1))
         targets = []
         inverse_valid_list = []
         for batch_idx in range(labels.size(0)):
             valid = mask[batch_idx]
             sample_labels = labels[batch_idx]
-            valid_labels = sample_labels[valid]
+            signal_valid = valid & (sample_labels != background_label)
+            valid_labels = sample_labels[signal_valid]
             if valid_labels.numel() == 0:
-                raise ValueError("Track-finding batch contains no valid points")
+                targets.append({
+                    "masks": torch.zeros(
+                        0,
+                        sample_labels.size(0),
+                        device=labels.device,
+                        dtype=torch.float32,
+                    ),
+                    "labels": torch.zeros(0, dtype=torch.long, device=labels.device),
+                })
+                inverse_valid_list.append(torch.zeros(0, dtype=torch.long, device=labels.device))
+                continue
 
             unique_labels, inverse_valid = torch.unique(
                 valid_labels,
@@ -447,7 +465,7 @@ class DownstreamTrainer():
                 device=labels.device,
                 dtype=valid_one_hot.dtype,
             )
-            sample_masks[:, valid] = valid_one_hot.permute(1, 0)
+            sample_masks[:, signal_valid] = valid_one_hot.permute(1, 0)
             targets.append({
                 "masks": sample_masks,
                 "labels": torch.ones(n_gt_classes, dtype=torch.long, device=labels.device),
@@ -456,14 +474,36 @@ class DownstreamTrainer():
         return targets, inverse_valid_list
 
     def _batch_adjusted_rand(self, inverse_valid_list, assignments, mask):
-        scores = []
-        for batch_idx, inverse_valid in enumerate(inverse_valid_list):
-            pred_valid = assignments[batch_idx][mask[batch_idx]]
-            scores.append(adjusted_rand_score(
-                inverse_valid.detach().cpu().numpy(),
-                pred_valid.detach().cpu().numpy(),
-            ))
+        rows = self._batch_event_metrics(inverse_valid_list, assignments, mask)
+        scores = [row["ari_signal"] for row in rows if row.get("ari_signal") is not None]
         return float(np.mean(scores)) if scores else 0.0
+
+    def _batch_event_metrics(self, inverse_valid_list, assignments, mask, classes=None):
+        del inverse_valid_list
+        labels = getattr(self, "_last_labels_for_metrics", None)
+        if labels is None:
+            return []
+        config = MatchConfig(
+            background_label=int(getattr(self.params, "background_label", -1)),
+            iou_threshold=float(getattr(self.params, "match_iou_threshold", 0.5)),
+            min_purity=float(getattr(self.params, "match_min_purity", 0.5)),
+            min_efficiency=float(getattr(self.params, "match_min_efficiency", 0.5)),
+        )
+        rows = []
+        for batch_idx in range(labels.size(0)):
+            pred_signal = None
+            if classes is not None:
+                pred_signal = classes[batch_idx] != 0
+            rows.append(event_track_metrics(
+                labels[batch_idx].detach().cpu().numpy(),
+                assignments[batch_idx].detach().cpu().numpy(),
+                valid_mask=mask[batch_idx].detach().cpu().numpy(),
+                pred_signal_mask=(
+                    pred_signal.detach().cpu().numpy() if pred_signal is not None else None
+                ),
+                config=config,
+            ))
+        return rows
 
     def inference(self, checkpoint_path, pretrain=True, logfile=None, save_csv=False, csv_output_path=None):
         """Initialize model and load weights for inference"""
@@ -481,14 +521,19 @@ class DownstreamTrainer():
         self.down_model = MambaAttentionHead(
             input_dim=self.params.embed_dim,
             embed_dim=self.params.embed_dim,
-            num_layers=0,
-            num_embedder_layers=self.params.num_embedder_layers,
-            d_state=64,
-            d_conv=4,
-            expand=2,
+            num_layers=int(getattr(self.params, "num_adapter_layers", 0)),
+            num_embedder_layers=int(getattr(self.params, "num_embedder_layers", 0)),
+            d_state=int(getattr(self.params, "adapter_d_state", getattr(self.params, "d_state", 64))),
+            d_conv=int(getattr(self.params, "adapter_d_conv", getattr(self.params, "d_conv", 4))),
+            expand=int(getattr(self.params, "adapter_expand", getattr(self.params, "expand", 2))),
             num_feature_layers=self.params.num_layers_backbone,
             num_output_dim=self.params.embed_dim,
-            num_prototypes=self.params.max_gt_classes,
+            num_prototypes=int(getattr(self.params, "num_prototypes", self.params.max_gt_classes)),
+            num_heads=int(getattr(self.params, "num_heads_decoder", 4)),
+            ffn_dim=int(getattr(self.params, "ffn_dim", 512)),
+            num_self_attn_layers=int(getattr(self.params, "num_self_attn_layers", 2)),
+            softmax_mask=bool(getattr(self.params, "softmax_mask", False)),
+            do_masked_attn=bool(getattr(self.params, "do_masked_attn", True)),
             embed_method=getattr(self.params, "embed_method", "add"),
             pe_method=getattr(self.params, "pe_method", "nerf"),
             dropout=getattr(self.params, "downstream_dropout", 0.0),
@@ -498,16 +543,19 @@ class DownstreamTrainer():
         print(f"Total parameters in down_model: {total_params}")
         self.down_optimizer = optim.AdamW(self.down_model.parameters(), 
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
-                                         weight_decay=0.0001) 
+                                         weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001))) 
         
-        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=1.0)
+        self.grad_clip_value = float(getattr(self.params, "grad_clip_value", 1.0))
+        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=self.grad_clip_value)
 
 
+        scheduler_steps = int(getattr(self.params, "scheduler_first_cycle_steps", getattr(self.params, "first_cycle_steps", 200)))
+        warmup_steps = min(int(getattr(self.params, "warmup_steps", 20)), max(0, scheduler_steps - 1))
         self.down_scheduler = CosineAnnealingWarmupRestarts(self.down_optimizer,
-                                          first_cycle_steps=200,
+                                          first_cycle_steps=scheduler_steps,
                                           max_lr=self.params.max_lr,
                                           min_lr=self.params.min_lr,
-                                          warmup_steps=20)
+                                          warmup_steps=warmup_steps)
 
         self.matcher = PointHungarianMatcher(
             cost_class=1,
@@ -551,7 +599,8 @@ class DownstreamTrainer():
             #for i, (grouped, label, knearest) in enumerate(tqdm(self.train_data_loader)):
                 #reg = 0
                 #validate for 500 samples
-                if i > 20000:
+                max_eval_batches = getattr(self.params, "max_eval_batches", 20001)
+                if max_eval_batches is not None and i >= int(max_eval_batches):
                     break
                 b, c = grouped.size(0), grouped.size(-1)
                 labels = label.to(self.device)
@@ -560,6 +609,7 @@ class DownstreamTrainer():
                 # One-hot encode the labels using the inverse mapping
                 #one_hot_labels = F.one_hot(inverse_indices, num_classes=n_gt_classes).float().to(self.device) # B X N X C_gt
                 targets, inverse_valid_list = self._build_track_targets(labels, mask)
+                self._last_labels_for_metrics = labels
 
                 with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
                     if pretrain:
@@ -648,11 +698,14 @@ class DownstreamTrainer():
                     no_object_class=0
                 )
 
-                avg_ARI += self._batch_adjusted_rand(
+                metric_rows = self._batch_event_metrics(
                     inverse_valid_list,
                     inference_result["assignments"],
                     mask,
+                    classes=inference_result["classes"],
                 )
+                metric_summary = summarize_event_metrics(metric_rows)
+                avg_ARI += float(metric_summary.get("ari_signal") or 0.0)
                 # Compute loss and get matching indices
                 loss = losses["loss_matched_ce"] * self.loss_matched_ce_weight + losses["loss_unmatched_ce"] * self.loss_unmatched_ce_weight + losses["loss_dice"] * self.loss_dice_weight + losses["loss_focal"] * self.loss_focal_weight
                 avg_loss += loss
@@ -705,7 +758,14 @@ class DownstreamTrainer():
         return segmentation_result, seg_target, point_feature, reg_target
 
 
-    def train(self, pretrain = True, train_from_checkpoint = False, checkpoint_path = None):
+    def train(
+        self,
+        pretrain=True,
+        train_from_checkpoint=False,
+        checkpoint_path=None,
+        optuna_trial=None,
+        metrics_callback=None,
+    ):
         ###%%%%%%%
         # Debugging
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
@@ -746,14 +806,19 @@ class DownstreamTrainer():
         self.down_model = MambaAttentionHead(
             input_dim=self.params.embed_dim,
             embed_dim=self.params.embed_dim,
-            num_layers=0,
-            num_embedder_layers=self.params.num_embedder_layers,
-            d_state=64,
-            d_conv=4,
-            expand=2,
+            num_layers=int(getattr(self.params, "num_adapter_layers", 0)),
+            num_embedder_layers=int(getattr(self.params, "num_embedder_layers", 0)),
+            d_state=int(getattr(self.params, "adapter_d_state", getattr(self.params, "d_state", 64))),
+            d_conv=int(getattr(self.params, "adapter_d_conv", getattr(self.params, "d_conv", 4))),
+            expand=int(getattr(self.params, "adapter_expand", getattr(self.params, "expand", 2))),
             num_feature_layers=self.params.num_layers_backbone,
             num_output_dim=self.params.embed_dim,
-            num_prototypes=self.params.max_gt_classes,
+            num_prototypes=int(getattr(self.params, "num_prototypes", self.params.max_gt_classes)),
+            num_heads=int(getattr(self.params, "num_heads_decoder", 4)),
+            ffn_dim=int(getattr(self.params, "ffn_dim", 512)),
+            num_self_attn_layers=int(getattr(self.params, "num_self_attn_layers", 2)),
+            softmax_mask=bool(getattr(self.params, "softmax_mask", False)),
+            do_masked_attn=bool(getattr(self.params, "do_masked_attn", True)),
             embed_method=getattr(self.params, "embed_method", "add"),
             pe_method=getattr(self.params, "pe_method", "nerf"),
             dropout=getattr(self.params, "downstream_dropout", 0.0),
@@ -766,15 +831,18 @@ class DownstreamTrainer():
 
         self.down_optimizer = optim.AdamW(self.down_model.parameters(), 
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
-                                         weight_decay=0.0001) 
+                                         weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001))) 
         
-        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=1.0)
+        self.grad_clip_value = float(getattr(self.params, "grad_clip_value", 1.0))
+        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=self.grad_clip_value)
 
+        scheduler_steps = int(getattr(self.params, "scheduler_first_cycle_steps", getattr(self.params, "first_cycle_steps", self.params.max_epochs)))
+        warmup_steps = min(int(getattr(self.params, "warmup_steps", 20)), max(0, scheduler_steps - 1))
         self.down_scheduler = CosineAnnealingWarmupRestarts(self.down_optimizer,
-                                          first_cycle_steps=self.params.max_epochs,
+                                          first_cycle_steps=scheduler_steps,
                                           max_lr=self.params.max_lr,
                                           min_lr=self.params.min_lr,
-                                          warmup_steps=self.params.warmup_steps)
+                                          warmup_steps=warmup_steps)
         # Initialize matcher ------------------------------------------------------
         self.matcher = PointHungarianMatcher(
             cost_class=self.params.loss_matched_ce_weight,
@@ -804,19 +872,34 @@ class DownstreamTrainer():
             self.down_model.eval()
             print(f"✅ Model loaded from {checkpoint_path}")
 
-        log_file_path = os.path.join(self.params.checkpoint_dir, self.params.log_file_name)
+        os.makedirs(self.params.checkpoint_dir, exist_ok=True)
+        log_file_path = os.path.abspath(os.path.join(self.params.checkpoint_dir, self.params.log_file_name))
+        self.params["training_log_path"] = log_file_path
 
-        checkpoint_file_name = self.params.log_file_name.split('.')[0] + '_checkpoint.pth'
+        checkpoint_file_name = getattr(
+            self.params,
+            "checkpoint_file_name",
+            self.params.log_file_name.split('.')[0] + '_checkpoint.pth',
+        )
+        self.params["trained_checkpoint_path"] = os.path.abspath(
+            os.path.join(self.params.checkpoint_dir, checkpoint_file_name)
+        )
         
         if self.log_to_screen:
             print("Starting training loop...")
 
         # Always create log file and write header
         with open(log_file_path, "w") as f:
-            f.write("Epoch\tTrain_Loss\tVal_Loss\tARI\tARI_2\tmatched_CE\tUnmatched_CE\tDice\tFocal\tTime\n")
+            if getattr(self.params, "max_optimizer_steps", None) is None:
+                f.write("Epoch\tTrain_Loss\tVal_Loss\tARI\tARI_2\tmatched_CE\tUnmatched_CE\tDice\tFocal\tTime\n")
+            else:
+                f.write("Step\tEpoch\tTrain_Loss\tVal_Loss\tARI\tARI_2\tLR\tTime\n")
      
         self.best_loss = np.inf
         self.best_ARI = 0
+        self.best_step = None
+        self.best_epoch = None
+        self.global_step = 0
         self.down_results = {'epoch': 0, 'train': [], 'val': [], 'ARI': [], 'ARI_2': [],  'loss_matched_ce': [], 'loss_unmatched_ce': [], 'loss_dice': [], 'loss_focal': []}
         
         # early stopping
@@ -829,6 +912,16 @@ class DownstreamTrainer():
         self.stagnation_counter = 0
 
         self._load_loss_reweight_stats()
+
+        if getattr(self.params, "max_optimizer_steps", None) is not None:
+            self._train_by_optimizer_step(
+                pretrain=pretrain,
+                log_file_path=log_file_path,
+                checkpoint_file_name=checkpoint_file_name,
+                optuna_trial=optuna_trial,
+                metrics_callback=metrics_callback,
+            )
+            return
         
         for epoch in range(self.startEpoch, self.params.max_epochs):
             self.down_results['epoch'] = epoch
@@ -876,8 +969,14 @@ class DownstreamTrainer():
                 print(f"  Best Loss: {self.best_loss:.6f} | Best ARI: {self.best_ARI:.6f}")
                 print("-" * 80)
             #if (epoch_loss < self.best_loss) or (avg_ari_2 > self.best_ARI):
-            if (epoch_loss < (self.best_loss - self.min_delta)):
+            if (avg_ari_2 > self.best_ARI + self.min_delta) or (
+                abs(avg_ari_2 - self.best_ARI) <= self.min_delta
+                and epoch_loss < (self.best_loss - self.min_delta)
+            ):
                 self.best_loss = epoch_loss
+                self.best_ARI = avg_ari_2
+                self.best_epoch = epoch
+                self.best_step = self.global_step
                 self._save_checkpoint(
                     filename=checkpoint_file_name,
                     epoch=epoch,
@@ -885,14 +984,6 @@ class DownstreamTrainer():
                     loss=epoch_loss
                 )
                 self.stagnation_counter = 0
-            elif (avg_ari_2 > self.best_ARI):
-                self.best_ARI = avg_ari_2
-                self._save_checkpoint(
-                    filename=checkpoint_file_name,
-                    epoch=epoch,
-                    is_best=True,
-                    loss=epoch_loss
-                )
             elif epoch>= self.warmup_steps:
                 self.stagnation_counter += 1
                 if self.stagnation_counter >= self.patience:
@@ -900,8 +991,248 @@ class DownstreamTrainer():
                     print(f"Best validation loss: {self.best_loss:.4f}, current loss: {epoch_loss:.4f}")
                     break
             self.down_scheduler.step()
+            if metrics_callback is not None:
+                metrics_callback({
+                    "step": self.global_step,
+                    "epoch": epoch,
+                    "train/loss": float(train_epoch_loss),
+                    "val/loss": float(val_epoch_loss),
+                    "val/ari": float(avg_ari_2),
+                    "lr": float(self._current_lr()),
+                    "best/val_ari": float(self.best_ARI),
+                    "best/val_loss": float(self.best_loss),
+                    "best/step": self.best_step,
+                })
 
             
+
+    def _current_lr(self):
+        return self.down_optimizer.param_groups[0]["lr"]
+
+    def _compute_batch_loss(self, batch, pretrain=False, train=False):
+        grouped, label, _knearest, _reg = self._unpack_batch(batch)
+        b, c = grouped.size(0), grouped.size(-1)
+        labels = label.to(self.device)
+        grouped = grouped.reshape(b, -1, c).to(self.device)
+        mask = grouped[..., 0] != -100
+        targets, inverse_valid_list = self._build_track_targets(labels, mask)
+        self._last_labels_for_metrics = labels
+
+        if pretrain:
+            if train and self.use_lora:
+                _, pre_embed, _ = self.model(grouped, return_z=True)
+            else:
+                with torch.no_grad():
+                    _, pre_embed, _ = self.model(grouped, return_z=True)
+            feature = torch.stack(pre_embed)
+            pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+        else:
+            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+
+        outputs = {
+            "pred_probs": pred_dict["class_probs"],
+            "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1),
+        }
+        losses = compute_point_loss(
+            outputs=outputs,
+            targets=targets,
+            mask=mask,
+            matcher=self.matcher,
+            no_object_class=0,
+        )
+        loss = (
+            losses["loss_matched_ce"] * self.loss_matched_ce_weight
+            + losses["loss_unmatched_ce"] * self.loss_unmatched_ce_weight
+            + losses["loss_dice"] * self.loss_dice_weight
+            + losses["loss_focal"] * self.loss_focal_weight
+        )
+        for aux_dict in pred_dict.get("aux_list", []):
+            aux_outputs = {
+                "pred_probs": aux_dict["class_probs"],
+                "pred_masks": aux_dict["mask_probs"].permute(0, 2, 1),
+            }
+            losses_aux = compute_point_loss(
+                outputs=aux_outputs,
+                targets=targets,
+                mask=mask,
+                matcher=self.matcher,
+                no_object_class=0,
+            )
+            loss = loss + (
+                losses_aux["loss_matched_ce"] * self.loss_matched_ce_weight
+                + losses_aux["loss_unmatched_ce"] * self.loss_unmatched_ce_weight
+                + losses_aux["loss_dice"] * self.loss_dice_weight
+                + losses_aux["loss_focal"] * self.loss_focal_weight
+            )
+
+        inference_result = assign_points_to_masks(
+            outputs,
+            option=int(getattr(self.params, "assignment_option", 2)),
+            threshold=float(getattr(self.params, "assignment_threshold", 0.0)),
+        )
+        metric_rows = self._batch_event_metrics(
+            inverse_valid_list,
+            inference_result["assignments"],
+            mask,
+            classes=inference_result["classes"],
+        )
+        metrics = summarize_event_metrics(metric_rows)
+        return loss, losses, metrics
+
+    def _record_validation_result(
+        self,
+        val_loss,
+        val_ari,
+        checkpoint_file_name,
+        epoch,
+        step,
+        optuna_trial=None,
+    ):
+        improved = (
+            val_ari > self.best_ARI + self.min_delta
+            or (
+                abs(val_ari - self.best_ARI) <= self.min_delta
+                and val_loss < (self.best_loss - self.min_delta)
+            )
+        )
+        if improved:
+            self.best_loss = val_loss
+            self.best_ARI = val_ari
+            self.best_epoch = epoch
+            self.best_step = step
+            self._save_checkpoint(
+                filename=checkpoint_file_name,
+                epoch=epoch,
+                is_best=True,
+                loss=val_loss,
+            )
+            self.stagnation_counter = 0
+        elif step >= self.early_stopping_min_steps:
+            self.stagnation_counter += 1
+
+        if optuna_trial is not None:
+            optuna_trial.report(float(val_ari), int(step))
+            if step >= self.early_stopping_min_steps and optuna_trial.should_prune():
+                try:
+                    import optuna
+                except ImportError as exc:
+                    raise RuntimeError("Optuna pruning requested, but optuna is not installed") from exc
+                raise optuna.TrialPruned()
+
+    def _train_by_optimizer_step(
+        self,
+        pretrain,
+        log_file_path,
+        checkpoint_file_name,
+        optuna_trial=None,
+        metrics_callback=None,
+    ):
+        max_optimizer_steps = int(self.params.max_optimizer_steps)
+        val_interval_steps = int(getattr(self.params, "val_interval_steps", max_optimizer_steps))
+        if val_interval_steps < 1:
+            raise ValueError("val_interval_steps must be >= 1")
+        self.early_stopping_min_steps = int(getattr(
+            self.params,
+            "early_stopping_min_steps",
+            getattr(self.params, "early_stopping_warmup_steps", 0),
+        ))
+        max_epochs = int(getattr(self.params, "max_epochs", 10**9))
+
+        for epoch in range(self.startEpoch, max_epochs):
+            self.down_results['epoch'] = epoch
+            self.down_results['train'] = []
+            self.down_results['val'] = []
+            self.down_results['ARI'] = []
+            self.down_results['ARI_2'] = []
+            self.epoch = epoch
+            if dist.is_initialized():
+                self.train_sampler.set_epoch(epoch)
+            self.model.train() if self.use_lora else self.model.eval()
+            self.down_model.train()
+            self.starttime = time.time()
+            max_train_batches = getattr(self.params, "max_train_batches", None)
+            for i, batch in enumerate(tqdm(self.train_data_loader)):
+                if max_train_batches is not None and i >= int(max_train_batches):
+                    break
+                if self.global_step >= max_optimizer_steps:
+                    break
+
+                if self.use_lora:
+                    self.lora_optimizer.zero_grad()
+                self.down_optimizer.zero_grad()
+                loss, _losses, _metrics = self._compute_batch_loss(
+                    batch,
+                    pretrain=pretrain,
+                    train=True,
+                )
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.down_optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.down_model.parameters(),
+                    max_norm=self.grad_clip_value,
+                    norm_type=2.0,
+                )
+                self.scaler.step(self.down_optimizer)
+                if self.use_lora:
+                    self.scaler.step(self.lora_optimizer)
+                self.scaler.update()
+                self.down_scheduler.step()
+                self.global_step += 1
+                self.iters += 1
+                self.down_results['train'].append(loss.item())
+
+                should_validate = (
+                    self.global_step % val_interval_steps == 0
+                    or self.global_step >= max_optimizer_steps
+                )
+                if should_validate:
+                    val_loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
+                    val_ari = float(np.mean(self.down_results["ARI_2"])) if self.down_results["ARI_2"] else 0.0
+                    train_loss = float(np.mean(self.down_results["train"]))
+                    elapsed = time.time() - self.starttime
+                    with open(log_file_path, "a") as f:
+                        f.write(
+                            f"{self.global_step}\t{epoch}\t{train_loss:.8f}\t"
+                            f"{val_loss:.8f}\t{val_ari:.8f}\t{val_ari:.8f}\t"
+                            f"{self._current_lr():.8e}\t{elapsed:.2f}\n"
+                        )
+                    self._record_validation_result(
+                        val_loss,
+                        val_ari,
+                        checkpoint_file_name,
+                        epoch=epoch,
+                        step=self.global_step,
+                        optuna_trial=optuna_trial,
+                    )
+                    if metrics_callback is not None:
+                        metrics_callback({
+                            "step": self.global_step,
+                            "epoch": epoch,
+                            "train/loss": train_loss,
+                            "val/loss": float(val_loss),
+                            "val/ari": val_ari,
+                            "lr": float(self._current_lr()),
+                            "best/val_ari": float(self.best_ARI),
+                            "best/val_loss": float(self.best_loss),
+                            "best/step": self.best_step,
+                        })
+                    if self.stagnation_counter >= self.patience:
+                        print(
+                            "Early stopping triggered at step "
+                            f"{self.global_step} after {self.patience} validation checks without improvement."
+                        )
+                        return
+                    self.down_results['train'] = []
+                    self.down_results['val'] = []
+                    self.down_results['ARI'] = []
+                    self.down_results['ARI_2'] = []
+                    self.starttime = time.time()
+
+            if self.global_step >= max_optimizer_steps:
+                return
+
+        print(f"Reached max_epochs={max_epochs} before max_optimizer_steps={max_optimizer_steps}.")
+
 
     def downstream_end_to_end_one_epoch(self, pretrain = False):
         tr_time = 0
@@ -916,7 +1247,8 @@ class DownstreamTrainer():
         start_idx = 0
         for i, batch in enumerate(tqdm(self.train_data_loader)):
             grouped, label, knearest, _ = self._unpack_batch(batch)
-            if i> 10000:
+            max_train_batches = getattr(self.params, "max_train_batches", 10001)
+            if max_train_batches is not None and i >= int(max_train_batches):
                 break
             #only work for b ==1 now
             self.iters += 1
@@ -926,6 +1258,7 @@ class DownstreamTrainer():
             mask = grouped[..., 0] != -100 # B X N
 
             targets, _ = self._build_track_targets(labels, mask)
+            self._last_labels_for_metrics = labels
             
 
             if self.use_lora:
@@ -1005,6 +1338,7 @@ class DownstreamTrainer():
             if self.use_lora:
                 self.scaler.step(self.lora_optimizer)
             self.scaler.update()
+            self.global_step += 1
 
             self.down_results['train'].append(loss.item())
 
@@ -1019,7 +1353,8 @@ class DownstreamTrainer():
             for i, batch in enumerate(tqdm(self.val_data_loader)):
                 grouped, label, knearest, _ = self._unpack_batch(batch)
                 #validate for 500 samples
-                if i > 1000:
+                max_val_batches = getattr(self.params, "max_val_batches", 1001)
+                if max_val_batches is not None and i >= int(max_val_batches):
                     break
                 b, c = grouped.size(0), grouped.size(-1)
                 labels = label.to(self.device)
@@ -1027,6 +1362,7 @@ class DownstreamTrainer():
                 mask = grouped[..., 0] != -100  # B X N
                 # One-hot encode the labels using the inverse mapping
                 targets, inverse_valid_list = self._build_track_targets(labels, mask)
+                self._last_labels_for_metrics = labels
 
                 with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
                     if pretrain:
@@ -1106,6 +1442,10 @@ class DownstreamTrainer():
             'optimizer_state_dict': self.down_optimizer.state_dict(),
             'scheduler_state_dict': self.down_scheduler.state_dict(),
             'best_loss': self.best_loss,
+            'best_ARI': getattr(self, "best_ARI", None),
+            'best_step': getattr(self, "best_step", None),
+            'best_epoch': getattr(self, "best_epoch", None),
+            'global_step': getattr(self, "global_step", None),
             'current_loss': loss,
             'params': vars(self.params)  # Save all hyperparameters
         }
@@ -1163,6 +1503,10 @@ class DownstreamTrainer():
 
             self.startEpoch = checkpoint.get('epoch', 0) + 1
             self.best_loss = checkpoint.get('best_loss', float('inf'))
+            self.best_ARI = checkpoint.get('best_ARI', 0) or 0
+            self.best_step = checkpoint.get('best_step', None)
+            self.best_epoch = checkpoint.get('best_epoch', None)
+            self.global_step = checkpoint.get('global_step', 0) or 0
 
         # 6. Log info
         if self.log_to_screen:

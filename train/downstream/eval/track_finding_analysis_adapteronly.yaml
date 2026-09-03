@@ -1,0 +1,29 @@
+analysis:
+  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/mnt/edgexpert-a02c/ML-work/result_deep_storage}
+  campaign_name: track_finding_smoke
+  campaign_root: "{artifact_root}/campaigns/{campaign_name}"
+  run_name: adapteronly_label50
+  analysis_tag: "{campaign_name}_{run_name}"
+  model_yaml: "{campaign_root}/runs/{run_name}/config/model.yaml"
+  model_config: clas12_track_finding_adapteronly_adapteronly_label50
+  checkpoint: "{campaign_root}/runs/{run_name}/checkpoints/{run_name}_adapter_checkpoint.pth"
+  training_log: "{campaign_root}/runs/{run_name}/checkpoints/{run_name}.log"
+  output_dir: "{campaign_root}/runs/{run_name}/evaluation"
+
+  run_num: adapteronly_label50
+  batch_size: 16
+  num_workers: 0
+  max_samples: 100
+  use_pretrained_backbone: false
+  pretrained_checkpoint: null
+
+  background_label: -1
+  assignment_option: 2
+  assignment_threshold: 0.0
+  match_iou_threshold: 0.5
+  match_min_purity: 0.5
+  match_min_efficiency: 0.5
+  target_momentum_scale_to_gev: 0.001
+  momentum_bins_gev: [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
+  pt_bins_gev: [0.0, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
+  save_per_point_predictions: false

@@ -486,6 +486,8 @@ def compute_point_loss(outputs, targets, mask, matcher, no_object_class=0):
                               #dtype=torch.int64, device=device)
     loss_matched_ce = torch.tensor(0., device=device)
     loss_unmatched_ce = torch.tensor(0., device=device)
+    loss_track_reg = torch.tensor(0., device=device)
+    loss_pid_ce = torch.tensor(0., device=device)
 
     #optional perpoint noise classification loss
     #first pad the input to (B, N, 1)
@@ -517,17 +519,12 @@ def compute_point_loss(outputs, targets, mask, matcher, no_object_class=0):
                 pred_track_info = pred_track_info[valid_track]
                 target_track_info = target_track_info[valid_track]
             loss_track_reg = F.l1_loss(pred_track_info, target_track_info, reduction='sum') #(num_matched_total, num_track_features)
-        else:
-            loss_track_reg = torch.tensor(0., device=device)
-
         # Matched PID classification loss (Cross Entropy)
         if all("pid_labels" in t for t in targets):
             target_pid_labels = torch.cat([t["pid_labels"][J] for t, (_, J) in zip(targets, indices)]) #(num_matched_total,)
             pred_pid_probs = outputs["pid_probs"][src_batch_idx, src_idx]  #(num_matched_total, num_pid_classes + 1) 
             loss_pid_ce = F.nll_loss(torch.log(pred_pid_probs + 1e-6), 
                                      target_pid_labels, reduction='sum')
-        else:
-            loss_pid_ce = torch.tensor(0., device=device)
         
 
 

@@ -24,10 +24,12 @@ TARGET_COLUMNS_BY_TASK = {
     "3vtx": ("mc_vx", "mc_vy", "mc_vz"),
     "zvtx": ("mc_vz",),
     "pt_phi_eta": ("mc_entrance_pt", "mc_entrance_phi", "mc_entrance_eta"),
+    "p_phi_theta": ("mc_entrance_p", "mc_entrance_phi", "mc_entrance_theta"),
 }
 
 ANGULAR_INDICES_BY_TASK = {
     "pt_phi_eta": (1,),
+    "p_phi_theta": (1,),
 }
 
 
@@ -82,12 +84,32 @@ def _numpy_pt_phi_eta(px, py, pz, eps=1.0e-12):
     return np.stack((pt, phi, eta), axis=-1)
 
 
+def _torch_p_phi_theta(px, py, pz, eps=1.0e-12):
+    pt = torch.sqrt(px * px + py * py)
+    p = torch.sqrt(pt * pt + pz * pz)
+    phi = torch.atan2(py, px)
+    theta = torch.atan2(pt, pz)
+    theta = torch.where(p > eps, theta, torch.full_like(theta, float("nan")))
+    return torch.stack((p, phi, theta), dim=-1)
+
+
+def _numpy_p_phi_theta(px, py, pz, eps=1.0e-12):
+    pt = np.hypot(px, py)
+    p = np.sqrt(pt * pt + pz * pz)
+    phi = np.arctan2(py, px)
+    theta = np.arctan2(pt, pz)
+    theta = np.where(p > eps, theta, np.nan)
+    return np.stack((p, phi, theta), axis=-1)
+
+
 def transform_regression_target_torch(reg, task):
     task = canonical_regression_task(task)
     if task in {"mom", "3vtx", "zvtx"}:
         return reg[..., list(regression_column_indices(task))]
     if task == "pt_phi_eta":
         return _torch_pt_phi_eta(reg[..., 0], reg[..., 1], reg[..., 2])
+    if task == "p_phi_theta":
+        return _torch_p_phi_theta(reg[..., 0], reg[..., 1], reg[..., 2])
     raise ValueError(f"Unknown regression task: {task}")
 
 
@@ -98,6 +120,8 @@ def transform_regression_target_numpy(reg, task):
         return reg[..., list(regression_column_indices(task))]
     if task == "pt_phi_eta":
         return _numpy_pt_phi_eta(reg[..., 0], reg[..., 1], reg[..., 2])
+    if task == "p_phi_theta":
+        return _numpy_p_phi_theta(reg[..., 0], reg[..., 1], reg[..., 2])
     raise ValueError(f"Unknown regression task: {task}")
 
 
@@ -109,6 +133,10 @@ def target_to_cartesian_numpy(target, task):
     if task == "pt_phi_eta":
         pt, phi, eta = np.moveaxis(target, -1, 0)
         return np.stack((pt * np.cos(phi), pt * np.sin(phi), pt * np.sinh(eta)), axis=-1)
+    if task == "p_phi_theta":
+        p, phi, theta = np.moveaxis(target, -1, 0)
+        pt = p * np.sin(theta)
+        return np.stack((pt * np.cos(phi), pt * np.sin(phi), p * np.cos(theta)), axis=-1)
     raise ValueError(
         f"Task {task!r} cannot be converted to Cartesian momentum for evaluation"
     )

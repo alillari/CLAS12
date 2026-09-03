@@ -217,7 +217,8 @@ def main():
         "--task",
         help=(
             "Optional regression task to compute target-specific stats, e.g. "
-            "mom or pt_phi_eta. Omit to preserve the legacy seven-column stats file."
+            "mom, pt_phi_eta, or p_phi_theta. Omit to preserve the legacy "
+            "seven-column stats file."
         ),
     )
     parser.add_argument(

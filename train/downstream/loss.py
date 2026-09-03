@@ -572,7 +572,22 @@ def compute_point_loss(outputs, targets, mask, matcher, no_object_class=0):
     }
 
 
-def masked_regression_loss(outputs, targets, option="mse", angular_indices=(), target_std=None):
+def _project_phi_pair(values, cos_index, sin_index, eps=1.0e-12):
+    a = values[..., int(cos_index)]
+    b = values[..., int(sin_index)]
+    radius = torch.sqrt(a * a + b * b + eps)
+    return a / radius, b / radius
+
+
+def masked_regression_loss(
+    outputs,
+    targets,
+    option="mse",
+    angular_indices=(),
+    target_std=None,
+    phi_pairs=(),
+    phi_eps=1.0e-12,
+):
     pred = outputs["pred"]
     truth = targets["target"]
     option = option.lower()
@@ -589,6 +604,11 @@ def masked_regression_loss(outputs, targets, option="mse", angular_indices=(), t
         # Return a differentiable zero if a batch contains no valid targets.
         return {"loss": pred.sum() * 0.0}
 
+    phi_pair_indices = {
+        int(index)
+        for pair in phi_pairs
+        for index in pair
+    }
     residual = pred - truth
     if angular_indices:
         if target_std is None:
@@ -600,6 +620,46 @@ def masked_regression_loss(outputs, targets, option="mse", angular_indices=(), t
             wrapped = torch.atan2(torch.sin(raw_delta), torch.cos(raw_delta))
             residual = residual.clone()
             residual[..., int(index)] = wrapped / scale
+
+    component_losses = []
+    if phi_pair_indices:
+        scalar_mask = torch.ones(pred.shape[-1], dtype=torch.bool, device=pred.device)
+        scalar_mask[list(phi_pair_indices)] = False
+        if scalar_mask.any():
+            scalar_valid = valid[..., scalar_mask]
+            if scalar_valid.any():
+                scalar_residual = residual[..., scalar_mask]
+                if option == "mse":
+                    component_losses.append(scalar_residual[scalar_valid] ** 2)
+                elif option == "mae":
+                    component_losses.append(torch.abs(scalar_residual[scalar_valid]))
+                elif option == "huber":
+                    component_losses.append(
+                        torch.nn.functional.smooth_l1_loss(
+                            scalar_residual[scalar_valid],
+                            torch.zeros_like(scalar_residual[scalar_valid]),
+                            reduction="none",
+                        )
+                    )
+                else:
+                    raise ValueError(
+                        f"Unsupported regression loss {option!r}; choose one of "
+                        "['mse', 'mae', 'huber']"
+                    )
+        for cos_index, sin_index in phi_pairs:
+            pair_valid = valid[..., int(cos_index)] & valid[..., int(sin_index)]
+            if pair_valid.any():
+                pred_cos, pred_sin = _project_phi_pair(
+                    pred, cos_index, sin_index, eps=phi_eps
+                )
+                true_cos, true_sin = _project_phi_pair(
+                    truth, cos_index, sin_index, eps=phi_eps
+                )
+                cos_delta = pred_cos * true_cos + pred_sin * true_sin
+                component_losses.append((1.0 - cos_delta[pair_valid]).clamp_min(0.0))
+        if component_losses:
+            return {"loss": torch.cat([loss.reshape(-1) for loss in component_losses]).mean()}
+        return {"loss": pred.sum() * 0.0}
 
     if option == "mse":
         loss = torch.nn.functional.mse_loss(

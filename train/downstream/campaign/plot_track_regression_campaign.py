@@ -189,12 +189,19 @@ def parameter_counter():
 
 
 def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    adapter_native: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     adapter_components: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in metric_rows:
         run_id = row.get("run_name") or row.get("run_num")
         if not run_id:
             continue
         if (
+            row.get("record_type") == "ml_error"
+            and row.get("method") == "adapter"
+            and row.get("space") == "native_target"
+        ):
+            adapter_native[run_id][row["variable"]] = row
+        elif (
             row.get("record_type") == "ml_error"
             and row.get("method") == "adapter"
             and row.get("space") == "component"
@@ -204,7 +211,9 @@ def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, 
 
     count_params = parameter_counter()
     rows = []
-    for run_id, component_metrics in sorted(adapter_components.items()):
+    for run_id in sorted(set(adapter_native) | set(adapter_components)):
+        metric_rows_for_run = adapter_native.get(run_id) or adapter_components.get(run_id, {})
+        metric_space = "native_target" if run_id in adapter_native else "component"
         try:
             metadata = parse_backbone_metadata(run_id)
         except ValueError:
@@ -224,6 +233,7 @@ def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, 
             "pretrain_events": int(merged["pretrain_events"]) if merged.get("pretrain_events") is not None else None,
             "labeled_events": int(merged["labeled_events"]) if merged.get("labeled_events") is not None else None,
             "model_family": merged.get("model_family", "mamba1"),
+            "campaign_metric_space": metric_space,
         }
         row["backbone_width_label"] = (
             "adapter-only"
@@ -233,14 +243,13 @@ def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, 
         mae_values = []
         rmse_values = []
         r2_values = []
-        for component in COMPONENTS:
-            metric = component_metrics.get(component, {})
+        for variable, metric in sorted(metric_rows_for_run.items()):
             mae = finite_float(metric.get("mae"))
             rmse = finite_float(metric.get("rmse"))
             r2 = finite_float(metric.get("r2"))
-            row[f"adapter_mae_{component}"] = mae
-            row[f"adapter_rmse_{component}"] = rmse
-            row[f"adapter_r2_{component}"] = r2
+            row[f"adapter_mae_{variable}"] = mae
+            row[f"adapter_rmse_{variable}"] = rmse
+            row[f"adapter_r2_{variable}"] = r2
             if mae is not None:
                 mae_values.append(mae)
             if rmse is not None:
@@ -408,10 +417,23 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
     size_xlabel = "Backbone trainable parameters" if size_x == "backbone_n_params" else "Backbone embed dim"
     pretrain_axis_is_meaningful = pretrain_events_is_meaningful(rows)
     pretrain_facet_key = "pretrain_events" if pretrain_axis_is_meaningful else None
+    native_metric_space = any(row.get("campaign_metric_space") == "native_target" for row in rows)
+    metric_variables = sorted({
+        key.removeprefix("adapter_mae_")
+        for row in rows
+        for key, value in row.items()
+        if key.startswith("adapter_mae_")
+        and key != "adapter_mae_mean"
+        and value is not None
+    })
+    metric_mean_label = (
+        "native targets" if native_metric_space else "px, py, pz"
+    )
+    unit_label = "" if native_metric_space else " [GeV]"
 
     for metric, ylabel, better in (
-        ("mae", "MAE [GeV]", "lower"),
-        ("rmse", "RMSE [GeV]", "lower"),
+        ("mae", f"MAE{unit_label}", "lower"),
+        ("rmse", f"RMSE{unit_label}", "lower"),
         ("r2", "R2", "higher"),
     ):
         mean_key = f"adapter_{metric}_mean"
@@ -423,7 +445,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             line_key="backbone_width_label",
             facet_key=pretrain_facet_key,
             title=f"Adapter mean {ylabel} vs labeled adapter data ({better} is better)",
-            ylabel=f"Mean {ylabel} across px, py, pz",
+            ylabel=f"Mean {ylabel} across {metric_mean_label}",
             xlabel="Adapter labeled events",
         )
         plot_faceted_lines(
@@ -434,7 +456,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             line_key="labeled_events",
             facet_key=pretrain_facet_key,
             title=f"Adapter mean {ylabel} vs backbone size ({better} is better)",
-            ylabel=f"Mean {ylabel} across px, py, pz",
+            ylabel=f"Mean {ylabel} across {metric_mean_label}",
             xlabel=size_xlabel,
         )
         if pretrain_axis_is_meaningful:
@@ -446,15 +468,15 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
                 line_key="labeled_events",
                 facet_key="backbone_width_label",
                 title=f"Adapter mean {ylabel} vs backbone pretraining data ({better} is better)",
-                ylabel=f"Mean {ylabel} across px, py, pz",
+                ylabel=f"Mean {ylabel} across {metric_mean_label}",
                 xlabel="Backbone pretraining events",
             )
-        for component in COMPONENTS:
-            component_key = f"adapter_{metric}_{component}"
-            component_label = COMPONENT_LABELS[component]
+        for variable in metric_variables:
+            component_key = f"adapter_{metric}_{variable}"
+            component_label = COMPONENT_LABELS.get(variable, variable)
             plot_faceted_lines(
                 rows,
-                output_dir / f"{metric}_{component}_vs_labeled_events_by_width.png",
+                output_dir / f"{metric}_{variable}_vs_labeled_events_by_width.png",
                 x_key="labeled_events",
                 y_key=component_key,
                 line_key="backbone_width_label",
@@ -465,7 +487,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             )
             plot_faceted_lines(
                 rows,
-                output_dir / f"{metric}_{component}_vs_backbone_params_by_labeled_events.png",
+                output_dir / f"{metric}_{variable}_vs_backbone_params_by_labeled_events.png",
                 x_key=size_x,
                 y_key=component_key,
                 line_key="labeled_events",
@@ -477,7 +499,7 @@ def make_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             if pretrain_axis_is_meaningful:
                 plot_faceted_lines(
                     rows,
-                    output_dir / f"{metric}_{component}_vs_pretrain_events_by_labeled_events.png",
+                    output_dir / f"{metric}_{variable}_vs_pretrain_events_by_labeled_events.png",
                     x_key="pretrain_events",
                     y_key=component_key,
                     line_key="labeled_events",
@@ -1053,7 +1075,7 @@ def main() -> None:
         metric_rows = read_jsonl(headline_jsonl)
         rows = build_plot_rows(metric_rows, manifest_rows)
         if not rows:
-            raise RuntimeError(f"No completed adapter component ml_error rows found in {headline_jsonl}")
+            raise RuntimeError(f"No completed adapter ml_error rows found in {headline_jsonl}")
         write_csv(output_dir / "plot_data.csv", rows)
         write_csv(output_dir / "best_by_slice.csv", best_by_slice(rows))
         make_plots(rows, output_dir)

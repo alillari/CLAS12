@@ -29,7 +29,12 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from fm4npp.utils import YParams  # noqa: E402
 from model import MambaTrackRegressionHead  # noqa: E402
-from regression_utils import target_to_cartesian_numpy  # noqa: E402
+from regression_utils import (  # noqa: E402
+    project_phi_pair_numpy,
+    regression_phi_pairs,
+    regression_target_columns,
+    target_to_cartesian_numpy,
+)
 from track_regression_trainer import DownstreamTrainer  # noqa: E402
 
 
@@ -52,6 +57,18 @@ COMPONENT_LABELS = {
     "px_gev": r"px [GeV]",
     "py_gev": r"py [GeV]",
     "pz_gev": r"pz [GeV]",
+}
+NATIVE_TARGET_LABELS = {
+    "mc_entrance_px": r"native px",
+    "mc_entrance_py": r"native py",
+    "mc_entrance_pz": r"native pz",
+    "mc_entrance_pt": r"native pT",
+    "mc_entrance_p": r"native p",
+    "mc_entrance_cosphi": r"native cos(phi)",
+    "mc_entrance_sinphi": r"native sin(phi)",
+    "mc_entrance_eta": r"native eta",
+    "mc_entrance_theta": r"native theta",
+    "phi_direction": r"native phi direction",
 }
 ML_METRIC_LABELS = {
     "mae": "MAE",
@@ -285,12 +302,12 @@ def vector_kinematics(vector):
 def target_definition(regression_task):
     if regression_task == "pt_phi_eta":
         return (
-            "Derived cylindrical (pT, phi, eta) from MC::True Cartesian "
+            "Derived cylindrical (pT, cos(phi), sin(phi), eta) from MC::True Cartesian "
             "momentum at innermost matched CVT hit"
         )
     if regression_task == "p_phi_theta":
         return (
-            "Derived spherical-like (p, phi, theta) from MC::True Cartesian "
+            "Derived spherical-like (p, cos(phi), sin(phi), theta) from MC::True Cartesian "
             "momentum at innermost matched CVT hit"
         )
     return "MC::True momentum at innermost matched CVT hit"
@@ -964,7 +981,103 @@ def ml_variable_arrays(truth, prediction):
     return truth_components, prediction_components, truth_kinematics, prediction_kinematics
 
 
-def calculate_ml_metrics(truth, predictions):
+def native_target_unit(column):
+    if column in {
+        "mc_entrance_px",
+        "mc_entrance_py",
+        "mc_entrance_pz",
+        "mc_entrance_pt",
+        "mc_entrance_p",
+    }:
+        return "GeV"
+    if column == "mc_entrance_theta":
+        return "rad"
+    return ""
+
+
+def native_target_variable(column):
+    if column in {
+        "mc_entrance_px",
+        "mc_entrance_py",
+        "mc_entrance_pz",
+        "mc_entrance_pt",
+        "mc_entrance_p",
+    }:
+        return column.replace("mc_entrance_", "") + "_gev"
+    return column.replace("mc_entrance_", "")
+
+
+def scale_native_targets(native, columns, target_scale):
+    scaled = np.asarray(native, dtype=float).copy()
+    for index, column in enumerate(columns):
+        if column in {
+            "mc_entrance_px",
+            "mc_entrance_py",
+            "mc_entrance_pz",
+            "mc_entrance_pt",
+            "mc_entrance_p",
+        }:
+            scaled[:, index] *= target_scale
+    return scaled
+
+
+def append_native_target_metrics(rows, nested, task, columns, truth_native, adapter_native, target_scale):
+    if truth_native is None or adapter_native is None:
+        return
+    columns = list(columns)
+    truth_native = scale_native_targets(truth_native, columns, target_scale)
+    adapter_native = scale_native_targets(adapter_native, columns, target_scale)
+    native_nested = nested.setdefault("adapter", {}).setdefault("native_target", {})
+    phi_pairs = [tuple(pair) for pair in regression_phi_pairs(task)]
+    phi_indices = {index for pair in phi_pairs for index in pair}
+    for index, column in enumerate(columns):
+        if index in phi_indices:
+            continue
+        variable = native_target_variable(column)
+        errors = adapter_native[:, index] - truth_native[:, index]
+        metrics = scalar_error_metrics(errors)
+        rows.append({
+            "method": "adapter",
+            "space": "native_target",
+            "variable": variable,
+            "label": NATIVE_TARGET_LABELS.get(column, variable),
+            "unit": native_target_unit(column),
+            **metrics,
+        })
+        native_nested[variable] = metrics
+    for cos_index, sin_index in phi_pairs:
+        pred_cos, pred_sin = project_phi_pair_numpy(
+            adapter_native[:, cos_index],
+            adapter_native[:, sin_index],
+        )
+        true_cos, true_sin = project_phi_pair_numpy(
+            truth_native[:, cos_index],
+            truth_native[:, sin_index],
+        )
+        cos_delta = pred_cos * true_cos + pred_sin * true_sin
+        errors = 1.0 - np.clip(cos_delta, -1.0, 1.0)
+        metrics = scalar_error_metrics(errors)
+        metrics["bias"] = None
+        rows.append({
+            "method": "adapter",
+            "space": "native_target",
+            "variable": "phi_direction",
+            "label": NATIVE_TARGET_LABELS["phi_direction"],
+            "unit": "",
+            **metrics,
+        })
+        native_nested["phi_direction"] = metrics
+
+
+def calculate_ml_metrics(
+    truth,
+    predictions,
+    regression_task=None,
+    native_target_columns=None,
+    native_truth=None,
+    native_adapter=None,
+    target_scale=1.0,
+):
     rows = []
     nested = {}
     for method, prediction in predictions.items():
@@ -1021,6 +1134,16 @@ def calculate_ml_metrics(truth, predictions):
             **metrics_for_json,
         })
         nested[method]["vector_error_gev"] = metrics_for_json
+    if native_target_columns is not None:
+        append_native_target_metrics(
+            rows,
+            nested,
+            regression_task,
+            native_target_columns,
+            native_truth,
+            native_adapter,
+            target_scale,
+        )
     return rows, nested
 
 
@@ -1436,6 +1559,11 @@ def make_ml_plots(output_dir, truth, predictions, metric_rows, training_history)
         "ml_error_bars_kinematics.png",
         "Final evaluation errors: derived kinematics",
     )
+    make_ml_error_bar_plot(
+        plot_dir, metric_rows, "native_target",
+        "ml_error_bars_native_targets.png",
+        "Final evaluation errors: native regression targets",
+    )
     make_absolute_error_cdf_plot(plot_dir, truth, predictions)
 
 
@@ -1724,6 +1852,8 @@ def main():
     adapter_sample_mode = str(getattr(params, "adapter_sample_mode", "track_legacy"))
 
     records = []
+    native_truth_rows = []
+    native_adapter_rows = []
     cursor = 0
     with torch.no_grad():
         for batch in tqdm(trainer.val_data_loader, desc="Evaluating tracks"):
@@ -1769,6 +1899,8 @@ def main():
                 pid_class = int(pid_values[0]) if len(pid_values) else -1
                 true_native = truth_native[local_index]
                 pred_native = prediction_native[local_index]
+                native_truth_rows.append(true_native.copy())
+                native_adapter_rows.append(pred_native.copy())
                 true_vector = truth[local_index] * target_scale
                 pred_vector = prediction[local_index] * target_scale
                 true_p, true_pt, true_theta, true_phi = vector_kinematics(true_vector)
@@ -1791,26 +1923,52 @@ def main():
                     "adapter_eta": pred_eta,
                 }
                 if regression_task == "pt_phi_eta":
+                    true_native_cos, true_native_sin = project_phi_pair_numpy(
+                        true_native[1], true_native[2]
+                    )
+                    pred_native_cos, pred_native_sin = project_phi_pair_numpy(
+                        pred_native[1], pred_native[2]
+                    )
+                    true_native_phi = np.arctan2(true_native_sin, true_native_cos)
+                    pred_native_phi = np.arctan2(pred_native_sin, pred_native_cos)
                     record.update({
                         "true_native_pt_gev": true_native[0] * target_scale,
-                        "true_native_phi_rad": true_native[1],
-                        "true_native_phi_deg": np.degrees(true_native[1]),
-                        "true_native_eta": true_native[2],
+                        "true_native_cosphi": true_native_cos,
+                        "true_native_sinphi": true_native_sin,
+                        "true_native_phi_rad": true_native_phi,
+                        "true_native_phi_deg": np.degrees(true_native_phi),
+                        "true_native_eta": true_native[3],
                         "adapter_native_pt_gev": pred_native[0] * target_scale,
-                        "adapter_native_phi_rad": pred_native[1],
-                        "adapter_native_phi_deg": np.degrees(pred_native[1]),
-                        "adapter_native_eta": pred_native[2],
+                        "adapter_native_cosphi": pred_native_cos,
+                        "adapter_native_sinphi": pred_native_sin,
+                        "adapter_native_phi_rad": pred_native_phi,
+                        "adapter_native_phi_deg": np.degrees(pred_native_phi),
+                        "adapter_native_eta": pred_native[3],
                     })
                 elif regression_task == "p_phi_theta":
+                    true_native_cos, true_native_sin = project_phi_pair_numpy(
+                        true_native[1], true_native[2]
+                    )
+                    pred_native_cos, pred_native_sin = project_phi_pair_numpy(
+                        pred_native[1], pred_native[2]
+                    )
+                    true_native_phi = np.arctan2(true_native_sin, true_native_cos)
+                    pred_native_phi = np.arctan2(pred_native_sin, pred_native_cos)
                     record.update({
                         "true_native_p_gev": true_native[0] * target_scale,
-                        "true_native_phi_rad": true_native[1],
-                        "true_native_phi_deg": np.degrees(true_native[1]),
-                        "true_native_theta_deg": np.degrees(true_native[2]),
+                        "true_native_cosphi": true_native_cos,
+                        "true_native_sinphi": true_native_sin,
+                        "true_native_phi_rad": true_native_phi,
+                        "true_native_phi_deg": np.degrees(true_native_phi),
+                        "true_native_theta_rad": true_native[3],
+                        "true_native_theta_deg": np.degrees(true_native[3]),
                         "adapter_native_p_gev": pred_native[0] * target_scale,
-                        "adapter_native_phi_rad": pred_native[1],
-                        "adapter_native_phi_deg": np.degrees(pred_native[1]),
-                        "adapter_native_theta_deg": np.degrees(pred_native[2]),
+                        "adapter_native_cosphi": pred_native_cos,
+                        "adapter_native_sinphi": pred_native_sin,
+                        "adapter_native_phi_rad": pred_native_phi,
+                        "adapter_native_phi_deg": np.degrees(pred_native_phi),
+                        "adapter_native_theta_rad": pred_native[3],
+                        "adapter_native_theta_deg": np.degrees(pred_native[3]),
                     })
                 record.update({name + "_gev": value for name, value in zip(AUX_LAYOUT, aux_row)})
                 records.append(record)
@@ -1881,7 +2039,21 @@ def main():
             for r in records
         ]),
     }
-    ml_metric_rows, ml_metric_summary = calculate_ml_metrics(truth, predictions)
+    native_target_columns = list(trainer.regression_target_stats["columns"])
+    if native_target_columns != list(regression_target_columns(regression_task)):
+        raise ValueError(
+            f"Loaded target columns {native_target_columns} do not match task "
+            f"{regression_task!r}"
+        )
+    ml_metric_rows, ml_metric_summary = calculate_ml_metrics(
+        truth,
+        predictions,
+        regression_task=regression_task,
+        native_target_columns=native_target_columns,
+        native_truth=np.asarray(native_truth_rows),
+        native_adapter=np.asarray(native_adapter_rows),
+        target_scale=target_scale,
+    )
     training_log_path = infer_training_log_path(config)
     training_history, training_summary = read_training_history(training_log_path)
     true_p, _, true_theta, _ = vector_kinematics(truth)

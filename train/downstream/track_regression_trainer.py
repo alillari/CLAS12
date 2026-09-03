@@ -508,6 +508,7 @@ class DownstreamTrainer():
                     option=self.regression_loss,
                     angular_indices=self.regression_target_stats["angular_indices"],
                     target_std=self.regression_target_stats["std"],
+                    phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
                 )
                 target_list.append(targets['target'].cpu())
                 target_valid_list.append(targets['target_valid'].cpu())
@@ -832,6 +833,7 @@ class DownstreamTrainer():
             option=self.regression_loss,
             angular_indices=self.regression_target_stats["angular_indices"],
             target_std=self.regression_target_stats["std"],
+            phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
         )
 
         loss = losses['loss']
@@ -1050,6 +1052,7 @@ class DownstreamTrainer():
                     option=self.regression_loss,
                     angular_indices=self.regression_target_stats["angular_indices"],
                     target_std=self.regression_target_stats["std"],
+                    phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
                 )
 
                

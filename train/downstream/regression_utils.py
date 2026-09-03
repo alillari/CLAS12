@@ -23,13 +23,28 @@ TARGET_COLUMNS_BY_TASK = {
     "mom": ("mc_entrance_px", "mc_entrance_py", "mc_entrance_pz"),
     "3vtx": ("mc_vx", "mc_vy", "mc_vz"),
     "zvtx": ("mc_vz",),
-    "pt_phi_eta": ("mc_entrance_pt", "mc_entrance_phi", "mc_entrance_eta"),
-    "p_phi_theta": ("mc_entrance_p", "mc_entrance_phi", "mc_entrance_theta"),
+    "pt_phi_eta": (
+        "mc_entrance_pt",
+        "mc_entrance_cosphi",
+        "mc_entrance_sinphi",
+        "mc_entrance_eta",
+    ),
+    "p_phi_theta": (
+        "mc_entrance_p",
+        "mc_entrance_cosphi",
+        "mc_entrance_sinphi",
+        "mc_entrance_theta",
+    ),
 }
 
-ANGULAR_INDICES_BY_TASK = {
-    "pt_phi_eta": (1,),
-    "p_phi_theta": (1,),
+UNSTANDARDIZED_COLUMNS_BY_TASK = {
+    "pt_phi_eta": ("mc_entrance_cosphi", "mc_entrance_sinphi"),
+    "p_phi_theta": ("mc_entrance_cosphi", "mc_entrance_sinphi"),
+}
+
+PHI_PAIR_INDICES_BY_TASK = {
+    "pt_phi_eta": ((1, 2),),
+    "p_phi_theta": ((1, 2),),
 }
 
 
@@ -67,39 +82,55 @@ def regression_output_dim(task):
 
 
 def regression_angular_indices(task):
-    return ANGULAR_INDICES_BY_TASK.get(canonical_regression_task(task), ())
+    return ()
+
+
+def regression_unstandardized_columns(task):
+    return UNSTANDARDIZED_COLUMNS_BY_TASK.get(canonical_regression_task(task), ())
+
+
+def regression_phi_pairs(task):
+    return PHI_PAIR_INDICES_BY_TASK.get(canonical_regression_task(task), ())
 
 
 def _torch_pt_phi_eta(px, py, pz, eps=1.0e-12):
     pt = torch.sqrt(px * px + py * py)
     phi = torch.atan2(py, px)
+    cosphi = torch.cos(phi)
+    sinphi = torch.sin(phi)
     eta = torch.asinh(torch.where(pt > eps, pz / pt, torch.full_like(pt, float("nan"))))
-    return torch.stack((pt, phi, eta), dim=-1)
+    return torch.stack((pt, cosphi, sinphi, eta), dim=-1)
 
 
 def _numpy_pt_phi_eta(px, py, pz, eps=1.0e-12):
     pt = np.hypot(px, py)
     phi = np.arctan2(py, px)
+    cosphi = np.cos(phi)
+    sinphi = np.sin(phi)
     eta = np.arcsinh(np.divide(pz, pt, out=np.full_like(pz, np.nan, dtype=float), where=pt > eps))
-    return np.stack((pt, phi, eta), axis=-1)
+    return np.stack((pt, cosphi, sinphi, eta), axis=-1)
 
 
 def _torch_p_phi_theta(px, py, pz, eps=1.0e-12):
     pt = torch.sqrt(px * px + py * py)
     p = torch.sqrt(pt * pt + pz * pz)
     phi = torch.atan2(py, px)
+    cosphi = torch.cos(phi)
+    sinphi = torch.sin(phi)
     theta = torch.atan2(pt, pz)
     theta = torch.where(p > eps, theta, torch.full_like(theta, float("nan")))
-    return torch.stack((p, phi, theta), dim=-1)
+    return torch.stack((p, cosphi, sinphi, theta), dim=-1)
 
 
 def _numpy_p_phi_theta(px, py, pz, eps=1.0e-12):
     pt = np.hypot(px, py)
     p = np.sqrt(pt * pt + pz * pz)
     phi = np.arctan2(py, px)
+    cosphi = np.cos(phi)
+    sinphi = np.sin(phi)
     theta = np.arctan2(pt, pz)
     theta = np.where(p > eps, theta, np.nan)
-    return np.stack((p, phi, theta), axis=-1)
+    return np.stack((p, cosphi, sinphi, theta), axis=-1)
 
 
 def transform_regression_target_torch(reg, task):
@@ -125,18 +156,25 @@ def transform_regression_target_numpy(reg, task):
     raise ValueError(f"Unknown regression task: {task}")
 
 
+def project_phi_pair_numpy(cosphi, sinphi, eps=1.0e-12):
+    radius = np.sqrt(cosphi * cosphi + sinphi * sinphi + eps)
+    return cosphi / radius, sinphi / radius
+
+
 def target_to_cartesian_numpy(target, task):
     task = canonical_regression_task(task)
     target = np.asarray(target, dtype=float)
     if task == "mom":
         return target
     if task == "pt_phi_eta":
-        pt, phi, eta = np.moveaxis(target, -1, 0)
-        return np.stack((pt * np.cos(phi), pt * np.sin(phi), pt * np.sinh(eta)), axis=-1)
+        pt, cosphi, sinphi, eta = np.moveaxis(target, -1, 0)
+        cosphi, sinphi = project_phi_pair_numpy(cosphi, sinphi)
+        return np.stack((pt * cosphi, pt * sinphi, pt * np.sinh(eta)), axis=-1)
     if task == "p_phi_theta":
-        p, phi, theta = np.moveaxis(target, -1, 0)
+        p, cosphi, sinphi, theta = np.moveaxis(target, -1, 0)
+        cosphi, sinphi = project_phi_pair_numpy(cosphi, sinphi)
         pt = p * np.sin(theta)
-        return np.stack((pt * np.cos(phi), pt * np.sin(phi), p * np.cos(theta)), axis=-1)
+        return np.stack((pt * cosphi, pt * sinphi, p * np.cos(theta)), axis=-1)
     raise ValueError(
         f"Task {task!r} cannot be converted to Cartesian momentum for evaluation"
     )
@@ -170,6 +208,16 @@ def load_regression_target_stats(path, task):
             f"expected {expected_columns}"
         )
 
+    unstandardized = set(regression_unstandardized_columns(task))
+    selected_mean = [
+        0.0 if column in unstandardized else value
+        for column, value in zip(selected_columns, selected_mean)
+    ]
+    selected_std = [
+        1.0 if column in unstandardized else value
+        for column, value in zip(selected_columns, selected_std)
+    ]
+
     return {
         "path": str(path),
         "task": canonical_regression_task(task),
@@ -177,4 +225,5 @@ def load_regression_target_stats(path, task):
         "mean": selected_mean,
         "std": selected_std,
         "angular_indices": list(regression_angular_indices(task)),
+        "phi_pairs": [list(pair) for pair in regression_phi_pairs(task)],
     }

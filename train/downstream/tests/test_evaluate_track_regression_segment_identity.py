@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from train.downstream.eval.evaluate_track_regression import (
+    adapter_to_cvt_resolution_ratio,
     attach_sample_metadata,
     aux_row_for_sample,
     resolve_charge,
@@ -102,6 +103,20 @@ class EvaluationSampleIdentityTest(unittest.TestCase):
         charges, summary = resolve_charge(records, {"charge_source": "metadata_or_positive"})
         self.assertEqual(charges.tolist(), [1])
         self.assertEqual(summary["records_missing_metadata_charge"], 1)
+
+    def test_missing_cvt_momentum_metrics_have_no_ratio(self):
+        methods = {
+            "adapter": {"momentum": {"relative_resolution_68": 0.12}},
+            "cvt": {"n": 0},
+        }
+        self.assertIsNone(adapter_to_cvt_resolution_ratio(methods))
+
+    def test_available_cvt_momentum_metrics_compute_ratio(self):
+        methods = {
+            "adapter": {"momentum": {"relative_resolution_68": 0.12}},
+            "cvt": {"momentum": {"relative_resolution_68": 0.24}},
+        }
+        self.assertEqual(adapter_to_cvt_resolution_ratio(methods), 0.5)
 
 
 if __name__ == "__main__":

@@ -448,6 +448,23 @@ def calculate_metrics(truth, prediction, tolerances):
     return result
 
 
+def relative_resolution_68(metrics, method):
+    value = metrics.get(method, {}).get("momentum", {}).get("relative_resolution_68")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
+def adapter_to_cvt_resolution_ratio(metrics):
+    adapter_resolution = relative_resolution_68(metrics, "adapter")
+    cvt_resolution = relative_resolution_68(metrics, "cvt")
+    if adapter_resolution is None or cvt_resolution is None or cvt_resolution == 0.0:
+        return None
+    return adapter_resolution / cvt_resolution
+
+
 def compact_metrics(truth, prediction):
     truth_p = np.linalg.norm(truth, axis=1)
     pred_p = np.linalg.norm(prediction, axis=1)
@@ -1233,6 +1250,8 @@ def make_direct_error_comparison_plots(plot_dir, method_results, bins, quantile)
         valid = np.isfinite(adapter_error) & np.isfinite(cvt_error)
         adapter_error = adapter_error[valid]
         cvt_error = cvt_error[valid]
+        if not len(adapter_error):
+            continue
         limit = float(np.quantile(np.concatenate([adapter_error, cvt_error]), quantile))
         if limit <= 0:
             limit = 1.0
@@ -1877,9 +1896,8 @@ def main():
         "ml_metrics": ml_metric_summary,
         "training_history": training_summary,
     }
-    adapter_resolution = summary["methods"]["adapter"]["momentum"]["relative_resolution_68"]
-    summary["adapter_to_cvt_resolution_ratio"] = (
-        adapter_resolution / summary["methods"]["cvt"]["momentum"]["relative_resolution_68"]
+    summary["adapter_to_cvt_resolution_ratio"] = adapter_to_cvt_resolution_ratio(
+        summary["methods"]
     )
     with (output_dir / "summary.json").open("w") as stream:
         json.dump(summary, stream, indent=2, allow_nan=False)

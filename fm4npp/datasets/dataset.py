@@ -336,7 +336,9 @@ class TPCBatchDataset(Dataset):
                  max_tracks=150,
                  require_reg_target=False,
                  require_pid_target=False,
-                 require_noise_target=False):
+                 require_noise_target=False,
+                 return_coatjava_seg_pred=False,
+                 require_coatjava_seg_pred=False):
 
         self.data_root = data_root
         self.split = split
@@ -361,6 +363,16 @@ class TPCBatchDataset(Dataset):
         self.memmap_noise_target, self.has_noise_target = self._open_optional_point_target(
             f'noise_target_{split}', require=require_noise_target
         )
+        self.return_coatjava_seg_pred = bool(
+            return_coatjava_seg_pred or require_coatjava_seg_pred
+        )
+        if self.return_coatjava_seg_pred:
+            self.memmap_coatjava_seg_pred, self.has_coatjava_seg_pred = self._open_optional_point_target(
+                f'coatjava_seg_pred_{split}', require=require_coatjava_seg_pred
+            )
+        else:
+            self.memmap_coatjava_seg_pred = None
+            self.has_coatjava_seg_pred = False
 
         self.memmap_mid_target, self.has_mid_target = self._open_optional_point_target(
             f'mid_target_{split}', require=False
@@ -689,6 +701,11 @@ class TPCBatchDataset(Dataset):
             else:
                 serialized_noise_target = torch.full_like(serialized_target, -100)
 
+            if self.has_coatjava_seg_pred:
+                serialized_coatjava_seg_pred = self._load_aligned_point_target(
+                    self.memmap_coatjava_seg_pred, real_idx, start_idx, r_sort_1d, sorter
+                )
+
             if self.has_mid_target:
                 mid_target = torch.from_numpy(np.copy(self.memmap_mid_target[real_idx])).unsqueeze(0)
                 if not self.train and self.chunk_training:
@@ -704,6 +721,8 @@ class TPCBatchDataset(Dataset):
             if self.return_dict:
                 serialized_pid_target = serialized_pid_target[start_idx:start_idx + self.len_chunk]
                 serialized_noise_target = serialized_noise_target[start_idx:start_idx + self.len_chunk]
+                if self.has_coatjava_seg_pred:
+                    serialized_coatjava_seg_pred = serialized_coatjava_seg_pred[start_idx:start_idx + self.len_chunk]
                 if self.has_mid_target:
                     serialized_mid_target = serialized_mid_target[start_idx:start_idx + self.len_chunk]
             if self.return_knn_target:
@@ -720,6 +739,8 @@ class TPCBatchDataset(Dataset):
             }
             if self.has_mid_target:
                 out['mid_target'] = serialized_mid_target
+            if self.has_coatjava_seg_pred:
+                out['coatjava_seg_pred'] = serialized_coatjava_seg_pred
             if self.return_knn_target:
                 out['knearest_target'] = knearest_target
             return out
@@ -798,6 +819,12 @@ class MyCollator:
         has_knn_target = 'knearest_target' in batch[0]
         if has_knn_target:
             knn_t = torch.stack([self.pad_tensor(d['knearest_target'], point_longest) for d in batch])
+        has_coatjava_seg_pred = 'coatjava_seg_pred' in batch[0]
+        if has_coatjava_seg_pred:
+            coatjava_seg_pred = torch.stack([
+                self.pad_tensor(d['coatjava_seg_pred'].unsqueeze(-1), point_longest).squeeze(-1)
+                for d in batch
+            ])
 
         out = {
             'points': grouped,
@@ -817,6 +844,8 @@ class MyCollator:
             out['mid_target'] = mid
         if has_knn_target:
             out['knearest_target'] = knn_t
+        if has_coatjava_seg_pred:
+            out['coatjava_seg_pred'] = coatjava_seg_pred
         return out
 
     def collate_tuple(self, batch):
@@ -1131,6 +1160,8 @@ def get_data_loader(params, distributed):
                                     require_reg_target=getattr(params, 'require_reg_target', False),
                                     require_pid_target=getattr(params, 'require_pid_target', False),
                                     require_noise_target=getattr(params, 'require_noise_target', False),
+                                    return_coatjava_seg_pred=getattr(params, 'return_coatjava_seg_pred', False),
+                                    require_coatjava_seg_pred=getattr(params, 'require_coatjava_seg_pred', False),
                                     **sample_mode_kwargs)
     
     test_dataset = dataset_cls(data_root = params.data_root_test, 
@@ -1162,6 +1193,16 @@ def get_data_loader(params, distributed):
                                    require_reg_target=getattr(params, 'require_reg_target', False),
                                    require_pid_target=getattr(params, 'require_pid_target', False),
                                    require_noise_target=getattr(params, 'require_noise_target', False),
+                                   return_coatjava_seg_pred=getattr(
+                                       params,
+                                       'return_coatjava_seg_pred_test',
+                                       getattr(params, 'return_coatjava_seg_pred', False),
+                                   ),
+                                   require_coatjava_seg_pred=getattr(
+                                       params,
+                                       'require_coatjava_seg_pred_test',
+                                       getattr(params, 'require_coatjava_seg_pred', False),
+                                   ),
                                    **sample_mode_kwargs)
 
     seed = getattr(params, "seed", None)
@@ -1235,6 +1276,16 @@ def get_val_loader(params, distributed):
                                    require_reg_target=getattr(params, 'require_reg_target', False),
                                    require_pid_target=getattr(params, 'require_pid_target', False),
                                    require_noise_target=getattr(params, 'require_noise_target', False),
+                                   return_coatjava_seg_pred=getattr(
+                                       params,
+                                       'return_coatjava_seg_pred_test',
+                                       getattr(params, 'return_coatjava_seg_pred', False),
+                                   ),
+                                   require_coatjava_seg_pred=getattr(
+                                       params,
+                                       'require_coatjava_seg_pred_test',
+                                       getattr(params, 'require_coatjava_seg_pred', False),
+                                   ),
                                    **sample_mode_kwargs)
 
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
@@ -1245,7 +1296,7 @@ def get_val_loader(params, distributed):
                                  num_workers=params.num_data_workers,
                                  shuffle=False,
                                  sampler=test_sampler,
-                                 drop_last=True,
+                                 drop_last=getattr(params, 'drop_last_test', True),
                                  pin_memory=True,
                                  collate_fn=my_collate_fn)
 

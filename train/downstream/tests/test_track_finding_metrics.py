@@ -1,9 +1,13 @@
 import unittest
 
 import numpy as np
+import torch
+
+from fm4npp.datasets.dataset import MyCollator
 
 from train.downstream.track_finding_metrics import (
     MatchConfig,
+    compare_metric_summaries,
     event_track_metrics,
     summarize_event_metrics,
     track_momentum_by_label,
@@ -11,6 +15,26 @@ from train.downstream.track_finding_metrics import (
 
 
 class TrackFindingMetricsTest(unittest.TestCase):
+    @staticmethod
+    def _dict_sample(n_points, coatjava_labels):
+        return {
+            "points": torch.zeros(n_points, 3),
+            "target": torch.zeros(n_points, dtype=torch.long),
+            "knearest_points": torch.zeros(n_points, 3),
+            "reg_target": torch.zeros(n_points, 7),
+            "pid_target": torch.zeros(n_points, dtype=torch.long),
+            "noise_target": torch.zeros(n_points, dtype=torch.long),
+            "coatjava_seg_pred": torch.as_tensor(coatjava_labels, dtype=torch.long),
+        }
+
+    def test_collator_preserves_and_pads_coatjava_sidecar(self):
+        batch = MyCollator()([
+            self._dict_sample(2, [0, -1]),
+            self._dict_sample(3, [1, 1, -1]),
+        ])
+        self.assertEqual(tuple(batch["coatjava_seg_pred"].shape), (2, 3))
+        self.assertEqual(batch["coatjava_seg_pred"][0].tolist(), [0, -1, -100])
+
     def test_background_label_is_excluded_from_primary_ari(self):
         truth = np.array([1, 1, 2, 2, -1, -1])
         pred = np.array([7, 7, 8, 8, 9, 9])
@@ -64,7 +88,15 @@ class TrackFindingMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(values[2]["pt_gev"], 2.0)
         self.assertNotIn(-1, values)
 
+    def test_comparison_is_candidate_minus_baseline(self):
+        deltas = compare_metric_summaries(
+            {"ari_signal": 0.8, "fake_rate": 0.1},
+            {"ari_signal": 0.7, "fake_rate": 0.2},
+        )
+        self.assertAlmostEqual(deltas["ari_signal"], 0.1)
+        self.assertAlmostEqual(deltas["fake_rate"], -0.1)
+        self.assertIsNone(deltas["track_efficiency_global"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

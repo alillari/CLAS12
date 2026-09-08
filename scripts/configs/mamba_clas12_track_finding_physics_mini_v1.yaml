@@ -1,13 +1,18 @@
-# CLAS12 CVT downstream track-finding / AdapterOnly configuration.
-# Intended for train_track_finding.py.
+# CLAS12 CVT event-level track-finding physics mini-campaign.
+#
+# This is a two-run pilot base: one AdapterOnly row and one selected pretrained
+# backbone row. The manifest renderer replaces width/depth/check, paths, batch
+# size, and labeled-event count from each row while preserving this training
+# budget and the truth/background semantics below.
 
 default: &default
   data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
   data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
   data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
-  stat_dir: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/stats/
+  # Required by the shared loader but unused for position-only, non-voxelized input.
+  stat_dir: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
   artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/mnt/edgexpert-a02c/ML-work/result_deep_storage}
-  downstream_dir: "{artifact_root}/downstream_log/clas12_track_finding_adapteronly"
+  downstream_dir: "{artifact_root}/downstream_log/clas12_track_finding_physics_mini_v1"
   checkpoint_dir: "{downstream_dir}/checkpoints"
 
   data_version: clas12_cvt
@@ -18,11 +23,14 @@ default: &default
   valid_batch_size: 32
   local_valid_batch_size: 32
   limit_data: true
-  limit_size: 50000
+  limit_size: 100000
   n_data_idx: 1000000
   n_eval_steps: 200
   num_data_workers: 4
   log_to_screen: true
+  seed: 1337
+  deterministic: false
+  use_amp: true
 
   nleave: 10000000000.0
   order: REP
@@ -31,14 +39,15 @@ default: &default
   chunk_training: false
   low_thr: 1
   high_thr: 512
-  max_gt_classes: 150
-  num_prototypes: 150
-  max_tracks: 150
+
+  # The canonical generator has at most a few truth tracks per event. Sixteen
+  # queries leave ample capacity for splits/fakes without the 150-query burden
+  # inherited from the original TPC configuration.
+  max_gt_classes: 16
+  num_prototypes: 16
+  max_tracks: 16
   background_label: -1
 
-  # CLAS12 point tensors are 3-column [eta, phi, r]; the old TPC voxelizer
-  # assumes a leading energy column, so CLAS12 ordering is selected via
-  # serialization instead.
   embed_method: pos_only
   pe_method: nerf
   voxelize: false
@@ -58,34 +67,41 @@ default: &default
   ablate_loss_scale: false
   save_checkpoint: true
 
-  max_epochs: 300
+  # About 6.4 passes over 100k events at batch size 32. Validation is frequent
+  # enough to diagnose learning without scanning the full holdout every time.
+  max_epochs: 100
+  max_optimizer_steps: 20000
+  val_interval_steps: 500
+  max_train_batches: null
+  max_val_batches: 250
+  first_cycle_steps: 20000
+  scheduler_first_cycle_steps: 20000
+  warmup_steps: 500
   max_lr: 0.0003
   min_lr: 0.00001
-  first_cycle_steps: 3000
-  scheduler_first_cycle_steps: 3000
-  warmup_steps: 300
-  max_optimizer_steps: None
-  val_interval_steps: 500
-  max_train_batches: None
-  max_val_batches: 200
-  early_stopping_min_steps: 1000
-  early_stopping_patience: 15
+  early_stopping_min_steps: 3000
+  early_stopping_patience: 20
   early_stopping_min_delta: 0.0001
   early_stopping_warmup_steps: 60
   adapter_weight_decay: 0.0001
-  grad_clip_value: 0.1
-  total_steps: 30000
+  grad_clip_value: 1.0
+  total_steps: 20000
 
+  # AdapterOnly uses these dimensions directly. Pretrained manifest rows replace
+  # embed_dim and depth with values parsed from the selected checkpoint name.
   base_dim: 128
   embed_dim: 128
   group_size: 8
   init_std: 0.025
-  model_version: clas12_track_finding_adapteronly
+  model_version: clas12_track_finding_physics_mini_v1
   num_layers_backbone: 6
   d_state: 16
   d_conv: 4
   expand: 2
-  klen: 3
+  # The campaign-3 backbone was pretrained with klen=1. Track finding consumes
+  # hidden features rather than the pretraining output head, but matching this
+  # value keeps the checkpoint state shape-compatible.
+  klen: 1
   dropout: 0.1
   downstream_dropout: 0.1
   mambaversion: mamba1
@@ -96,6 +112,7 @@ default: &default
   num_self_attn_layers: 2
   do_masked_attn: true
   softmax_mask: false
+
   assignment_option: 2
   assignment_threshold: 0.0
   match_iou_threshold: 0.5

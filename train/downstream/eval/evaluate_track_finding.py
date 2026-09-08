@@ -29,6 +29,7 @@ from loss import assign_points_to_masks  # noqa: E402
 from trackinghead import MambaAttentionHead  # noqa: E402
 from track_finding_metrics import (  # noqa: E402
     MatchConfig,
+    compare_metric_summaries,
     event_track_metrics,
     finite_or_none,
     summarize_event_metrics,
@@ -195,6 +196,62 @@ def bin_track_rows(
     return rows
 
 
+def evaluate_event_method(
+    method: str,
+    event_id: int,
+    batch_index: int,
+    sample_index: int,
+    truth: np.ndarray,
+    pred: np.ndarray,
+    pred_signal: np.ndarray,
+    valid: np.ndarray,
+    reg: np.ndarray | None,
+    match_config: MatchConfig,
+    momentum_scale: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    result = event_track_metrics(
+        truth,
+        pred,
+        valid_mask=valid,
+        pred_signal_mask=pred_signal,
+        config=match_config,
+    )
+    event_row = {
+        key: value for key, value in result.items() if key != "matches"
+    }
+    event_row.update({
+        "method": method,
+        "event_id": event_id,
+        "batch_index": batch_index,
+        "sample_index": sample_index,
+    })
+    match_rows = [
+        {"method": method, "event_id": event_id, **match}
+        for match in result["matches"]
+    ]
+
+    momentum = event_momentum_summary(truth, reg, momentum_scale)
+    matches_by_truth = {int(match["true_id"]): match for match in result["matches"]}
+    truth_track_rows = []
+    for true_id, true_info in momentum.items():
+        match = matches_by_truth.get(int(true_id))
+        truth_track_rows.append({
+            "method": method,
+            "event_id": event_id,
+            "true_id": int(true_id),
+            "p_gev": finite_or_none(true_info.get("p_gev")),
+            "pt_gev": finite_or_none(true_info.get("pt_gev")),
+            "matched": match is not None,
+            "match_iou": finite_or_none(match.get("iou") if match else None),
+            "match_purity": finite_or_none(match.get("purity") if match else None),
+            "match_efficiency": finite_or_none(match.get("efficiency") if match else None),
+            "event_ari_signal": finite_or_none(result.get("ari_signal")),
+            "event_track_efficiency": finite_or_none(result.get("track_efficiency")),
+            "event_track_purity": finite_or_none(result.get("track_purity")),
+        })
+    return event_row, match_rows, truth_track_rows
+
+
 def main() -> None:
     args = parse_args()
     analysis_path = Path(args.analysis_config).resolve()
@@ -207,8 +264,12 @@ def main() -> None:
         analysis["max_samples"] = args.max_samples
 
     params = YParams(os.path.abspath(analysis["model_yaml"]), analysis["model_config"])
+    evaluate_coatjava = bool(analysis.get("evaluate_coatjava", True))
     params.limit_data = True
     params.limit_size = int(analysis.get("max_samples", 10000))
+    params.limit_test_data = True
+    params.limit_test_size = int(analysis.get("max_samples", 10000))
+    params.drop_last_test = False
     params.batch_size = int(analysis.get("batch_size", getattr(params, "batch_size", 1)))
     params.valid_batch_size = params.batch_size
     params.local_batch_size = params.batch_size
@@ -217,6 +278,8 @@ def main() -> None:
     params.return_dict = True
     params.return_reg_test = True
     params.adapter_sample_mode = "track_legacy"
+    params.return_coatjava_seg_pred_test = evaluate_coatjava
+    params.require_coatjava_seg_pred_test = evaluate_coatjava
     params.pretrained_ckpt = (
         analysis.get("pretrained_checkpoint")
         if bool(analysis.get("use_pretrained_backbone", False))
@@ -250,11 +313,17 @@ def main() -> None:
         momentum_scale = float(analysis.get("target_momentum_scale_to_gev", 0.001))
         save_points = bool(analysis.get("save_per_point_predictions", False)) or args.save_per_point_predictions
 
+        event_offset = 0
         with torch.no_grad():
             for batch_index, batch in enumerate(tqdm(trainer.val_data_loader)):
                 if batch_index >= int(analysis.get("max_samples", 10000)):
                     break
                 grouped, labels, _knearest, reg = trainer._unpack_batch(batch)
+                coatjava_batch = batch.get("coatjava_seg_pred") if isinstance(batch, dict) else None
+                if evaluate_coatjava and coatjava_batch is None:
+                    raise RuntimeError(
+                        "evaluate_coatjava=true requires a collated coatjava_seg_pred sidecar"
+                    )
                 grouped = grouped.to(trainer.device)
                 labels_device = labels.to(trainer.device)
                 b, c = grouped.size(0), grouped.size(-1)
@@ -283,56 +352,75 @@ def main() -> None:
                     reg_np = None
                     if reg is not None:
                         reg_np = reg[sample_index].detach().cpu().numpy()
-                    event_id = batch_index * b + sample_index
-                    row = event_track_metrics(
-                        truth,
-                        pred,
-                        valid_mask=valid,
-                        pred_signal_mask=pred_signal,
-                        config=match_config,
-                    )
-                    row.update({"event_id": event_id, "batch_index": batch_index, "sample_index": sample_index})
-                    event_rows.append({key: val for key, val in row.items() if key != "matches"})
-                    for match in row["matches"]:
-                        track_rows.append({"event_id": event_id, **match})
+                    event_id = event_offset + sample_index
+                    method_predictions = {"adapter": (pred, pred_signal)}
+                    if evaluate_coatjava:
+                        coatjava_pred = coatjava_batch[sample_index].detach().cpu().numpy()
+                        coatjava_background = int(analysis.get("coatjava_background_label", -1))
+                        method_predictions["coatjava"] = (
+                            coatjava_pred,
+                            (coatjava_pred != coatjava_background) & valid,
+                        )
 
-                    momentum = event_momentum_summary(truth, reg_np, momentum_scale)
-                    matches_by_truth = {int(match["true_id"]): match for match in row["matches"]}
-                    for true_id, true_info in momentum.items():
-                        match = matches_by_truth.get(int(true_id))
-                        per_track_metric_rows.append({
-                            "event_id": event_id,
-                            "true_id": int(true_id),
-                            "p_gev": finite_or_none(true_info.get("p_gev")),
-                            "pt_gev": finite_or_none(true_info.get("pt_gev")),
-                            "matched": match is not None,
-                            "match_iou": finite_or_none(match.get("iou") if match else None),
-                            "match_purity": finite_or_none(match.get("purity") if match else None),
-                            "match_efficiency": finite_or_none(match.get("efficiency") if match else None),
-                            "event_ari_signal": finite_or_none(row.get("ari_signal")),
-                            "event_track_efficiency": finite_or_none(row.get("track_efficiency")),
-                            "event_track_purity": finite_or_none(row.get("track_purity")),
-                        })
+                    for method, (method_pred, method_pred_signal) in method_predictions.items():
+                        event_row, method_matches, method_truth_tracks = evaluate_event_method(
+                            method=method,
+                            event_id=event_id,
+                            batch_index=batch_index,
+                            sample_index=sample_index,
+                            truth=truth,
+                            pred=method_pred,
+                            pred_signal=method_pred_signal,
+                            valid=valid,
+                            reg=reg_np,
+                            match_config=match_config,
+                            momentum_scale=momentum_scale,
+                        )
+                        event_rows.append(event_row)
+                        track_rows.extend(method_matches)
+                        per_track_metric_rows.extend(method_truth_tracks)
 
                     if save_points:
                         coords = grouped[sample_index].detach().cpu().numpy()
-                        for point_idx in np.where(valid)[0]:
-                            point_rows.append({
-                                "event_id": event_id,
-                                "point_idx": int(point_idx),
-                                "truth_label": int(truth[point_idx]),
-                                "pred_label": int(pred[point_idx]),
-                                "pred_signal": bool(pred_signal[point_idx]),
-                                "eta": float(coords[point_idx, 0]),
-                                "phi": float(coords[point_idx, 1]) if coords.shape[1] > 1 else None,
-                                "r": float(coords[point_idx, 2]) if coords.shape[1] > 2 else None,
-                            })
+                        for method, (method_pred, method_pred_signal) in method_predictions.items():
+                            for point_idx in np.where(valid)[0]:
+                                point_rows.append({
+                                    "method": method,
+                                    "event_id": event_id,
+                                    "point_idx": int(point_idx),
+                                    "truth_label": int(truth[point_idx]),
+                                    "pred_label": int(method_pred[point_idx]),
+                                    "pred_signal": bool(method_pred_signal[point_idx]),
+                                    "eta": float(coords[point_idx, 0]),
+                                    "phi": float(coords[point_idx, 1]) if coords.shape[1] > 1 else None,
+                                    "r": float(coords[point_idx, 2]) if coords.shape[1] > 2 else None,
+                                })
+                event_offset += b
 
-        global_summary = summarize_event_metrics(event_rows)
+        methods = sorted({row["method"] for row in event_rows})
+        method_summaries = {
+            method: summarize_event_metrics([
+                {key: value for key, value in row.items() if key != "method"}
+                for row in event_rows if row["method"] == method
+            ])
+            for method in methods
+        }
+        global_summary = method_summaries["adapter"]
+        coatjava_summary = method_summaries.get("coatjava")
+        metric_deltas = (
+            compare_metric_summaries(global_summary, coatjava_summary)
+            if coatjava_summary is not None else {}
+        )
         p_bins = [float(x) for x in analysis.get("momentum_bins_gev", [])]
         pt_bins = [float(x) for x in analysis.get("pt_bins_gev", p_bins)]
-        binned_rows = bin_track_rows(per_track_metric_rows, p_bins, "p_gev")
-        binned_rows.extend(bin_track_rows(per_track_metric_rows, pt_bins, "pt_gev"))
+        binned_rows = []
+        for method in methods:
+            method_track_rows = [row for row in per_track_metric_rows if row["method"] == method]
+            method_bins = bin_track_rows(method_track_rows, p_bins, "p_gev")
+            method_bins.extend(bin_track_rows(method_track_rows, pt_bins, "pt_gev"))
+            for row in method_bins:
+                row["method"] = method
+            binned_rows.extend(method_bins)
 
         summary = {
             "run_name": analysis.get("run_name"),
@@ -347,6 +435,10 @@ def main() -> None:
             "match_min_purity": match_config.min_purity,
             "match_min_efficiency": match_config.min_efficiency,
             "metrics": global_summary,
+            "baselines": ({"coatjava": coatjava_summary} if coatjava_summary is not None else {}),
+            "comparisons": ({"adapter_minus_coatjava": metric_deltas} if metric_deltas else {}),
+            "evaluate_coatjava": evaluate_coatjava,
+            "coatjava_background_label": int(analysis.get("coatjava_background_label", -1)),
             "momentum_binned_metrics_available": bool(per_track_metric_rows),
         }
         write_json(output_dir / "summary.json", summary)
@@ -354,12 +446,13 @@ def main() -> None:
         write_csv(
             output_dir / "per_track_matches.csv",
             track_rows,
-            fields=["event_id", "pred_id", "true_id", "iou", "purity", "efficiency"],
+            fields=["method", "event_id", "pred_id", "true_id", "iou", "purity", "efficiency"],
         )
         write_csv(
             output_dir / "per_truth_track_metrics.csv",
             per_track_metric_rows,
             fields=[
+                "method",
                 "event_id",
                 "true_id",
                 "p_gev",
@@ -379,15 +472,26 @@ def main() -> None:
 
         headline_path = output_dir / "campaign_headline_metrics.jsonl"
         with headline_path.open("w") as stream:
-            for key, value in global_summary.items():
-                if isinstance(value, (int, float)) or value is None:
-                    stream.write(json.dumps(json_safe({
-                        "run_name": analysis.get("run_name"),
-                        "record_type": "track_finding_metric",
-                        "metric": key,
-                        "value": value,
-                        "use_pretrained_backbone": bool(analysis.get("use_pretrained_backbone", False)),
-                    }), allow_nan=False) + "\n")
+            for method, method_summary in method_summaries.items():
+                for key, value in method_summary.items():
+                    if isinstance(value, (int, float)) or value is None:
+                        stream.write(json.dumps(json_safe({
+                            "run_name": analysis.get("run_name"),
+                            "record_type": "track_finding_metric",
+                            "method": method,
+                            "metric": key,
+                            "value": value,
+                            "use_pretrained_backbone": bool(analysis.get("use_pretrained_backbone", False)),
+                        }), allow_nan=False) + "\n")
+            for key, value in metric_deltas.items():
+                stream.write(json.dumps(json_safe({
+                    "run_name": analysis.get("run_name"),
+                    "record_type": "track_finding_comparison",
+                    "method": "adapter_minus_coatjava",
+                    "metric": key,
+                    "value": value,
+                    "use_pretrained_backbone": bool(analysis.get("use_pretrained_backbone", False)),
+                }), allow_nan=False) + "\n")
         print(f"Wrote track-finding evaluation to {output_dir}")
     finally:
         trainer.cleanup()

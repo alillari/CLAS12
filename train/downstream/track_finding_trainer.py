@@ -1542,7 +1542,11 @@ class DownstreamTrainer():
     
             
     def restore_checkpoint(self, checkpoint_path, load_optimizer_state=True):
-        checkpoint = torch.load(checkpoint_path, map_location='cuda:{}'.format(self.device), weights_only=False)
+        if isinstance(self.device, int):
+            device_str = f'cuda:{self.device}' if torch.cuda.is_available() else 'cpu'
+        else:
+            device_str = str(self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}
         #try:
             #self.model.load_state_dict(checkpoint['model_state'])

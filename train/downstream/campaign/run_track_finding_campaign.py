@@ -90,6 +90,8 @@ def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     analysis = dict(data["analysis"])
     analysis.update({
         "artifact_root": str(Path(manifest["artifact_root"]).resolve()),
+        "campaign_name": manifest["campaign_name"],
+        "campaign_root": str(Path(manifest["campaign_dir"]).resolve()),
         "run_name": run["run_id"],
         "analysis_tag": f"{manifest['campaign_name']}_{run['run_id']}",
         "model_yaml": str(Path(run["model_yaml"]).resolve()),
@@ -141,28 +143,41 @@ def eval_command(run: dict[str, Any]) -> list[str]:
 def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_fraction: float = 0.8) -> dict[str, Any]:
     features = RaggedMmap(str(data_root / "features_pretrain"))
     seg = RaggedMmap(str(data_root / "seg_target_pretrain"))
-    n = min(len(features), len(seg), int(max_events))
+    coatjava = RaggedMmap(str(data_root / "coatjava_seg_pred_pretrain"))
+    n = min(len(features), len(seg), len(coatjava), int(max_events))
     rows = []
     for idx in range(n):
         labels = np.asarray(seg[idx])
+        coatjava_labels = np.asarray(coatjava[idx])
         signal = labels[labels != -1]
         rows.append({
             "n_points": int(len(labels)),
             "n_signal_tracks": int(len(np.unique(signal))) if signal.size else 0,
             "background_fraction": float(np.mean(labels == -1)) if labels.size else 0.0,
             "length_match": int(features[idx].shape[0]) == int(labels.shape[0]),
+            "coatjava_length_match": int(features[idx].shape[0]) == int(coatjava_labels.shape[0]),
         })
     multitrack_fraction = float(np.mean([row["n_signal_tracks"] > 1 for row in rows])) if rows else 0.0
     summary = {
         "data_root": str(data_root),
+        "feature_events": len(features),
+        "seg_target_events": len(seg),
+        "coatjava_seg_pred_events": len(coatjava),
         "sampled_events": n,
         "multitrack_fraction": multitrack_fraction,
         "mean_points": float(np.mean([row["n_points"] for row in rows])) if rows else None,
         "mean_signal_tracks": float(np.mean([row["n_signal_tracks"] for row in rows])) if rows else None,
         "mean_background_fraction": float(np.mean([row["background_fraction"] for row in rows])) if rows else None,
         "all_lengths_match": all(row["length_match"] for row in rows),
-        "passed": bool(rows) and all(row["length_match"] for row in rows) and multitrack_fraction >= min_multitrack_fraction,
+        "all_coatjava_lengths_match": all(row["coatjava_length_match"] for row in rows),
     }
+    summary["passed"] = (
+        bool(rows)
+        and len(features) == len(seg) == len(coatjava)
+        and summary["all_lengths_match"]
+        and summary["all_coatjava_lengths_match"]
+        and multitrack_fraction >= min_multitrack_fraction
+    )
     if not summary["passed"]:
         raise ValueError(f"Track-finding preflight failed: {summary}")
     return summary
@@ -194,9 +209,14 @@ def collate_summary(manifest: dict[str, Any]) -> None:
                 "summary_found": summary.exists(),
             }
             if summary.exists():
-                metrics = read_json(summary).get("metrics", {})
+                summary_data = read_json(summary)
+                metrics = summary_data.get("metrics", {})
+                coatjava_metrics = summary_data.get("baselines", {}).get("coatjava", {})
+                deltas = summary_data.get("comparisons", {}).get("adapter_minus_coatjava", {})
                 for key in ("ari_signal", "track_efficiency_global", "track_purity_global", "fake_rate", "background_rejection"):
                     table_row[key] = metrics.get(key)
+                    table_row[f"coatjava_{key}"] = coatjava_metrics.get(key)
+                    table_row[f"adapter_minus_coatjava_{key}"] = deltas.get(key)
             table_rows.append(table_row)
     fields = sorted({key for row in table_rows for key in row})
     with (summary_dir / "run_table.csv").open("w", newline="") as stream:

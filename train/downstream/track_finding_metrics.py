@@ -18,6 +18,24 @@ class MatchConfig:
     min_efficiency: float = 0.5
 
 
+COMPARISON_METRICS = (
+    "ari_signal",
+    "ari_with_background",
+    "track_efficiency_global",
+    "track_purity_global",
+    "matched_iou_mean",
+    "matched_purity_mean",
+    "matched_efficiency_mean",
+    "fake_rate",
+    "miss_rate",
+    "split_rate",
+    "merge_rate",
+    "background_rejection",
+    "background_contamination",
+    "signal_loss_to_background",
+)
+
+
 def _safe_div(num: float, den: float) -> float | None:
     return float(num / den) if den else None
 
@@ -31,6 +49,23 @@ def finite_or_none(value: float | int | None) -> float | int | None:
         return None
     value = float(value)
     return value if np.isfinite(value) else None
+
+
+def compare_metric_summaries(
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+    metric_names: tuple[str, ...] = COMPARISON_METRICS,
+) -> dict[str, float | None]:
+    """Return candidate-minus-baseline deltas for shared headline metrics."""
+    deltas: dict[str, float | None] = {}
+    for name in metric_names:
+        candidate_value = candidate.get(name)
+        baseline_value = baseline.get(name)
+        if candidate_value is None or baseline_value is None:
+            deltas[name] = None
+        else:
+            deltas[name] = finite_or_none(float(candidate_value) - float(baseline_value))
+    return deltas
 
 
 def event_track_metrics(

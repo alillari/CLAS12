@@ -27,6 +27,12 @@ DEFAULT_ANALYSIS_YAML = "train/downstream/eval/track_finding_analysis_adapteronl
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint-root", default=str(DEFAULT_CHECKPOINT_ROOT))
+    parser.add_argument(
+        "--checkpoint-run",
+        action="append",
+        default=[],
+        help="Include only this pretrained run directory name. Can be repeated.",
+    )
     parser.add_argument("--campaign-name", default=DEFAULT_CAMPAIGN_NAME)
     parser.add_argument("--artifact-root", default=str(DEFAULT_ARTIFACT_ROOT))
     parser.add_argument("--base-model-yaml", default=DEFAULT_MODEL_YAML)
@@ -185,7 +191,18 @@ def main() -> None:
             runs.append(row)
 
     if checkpoint_root.is_dir():
-        for source_dir in sorted(path for path in checkpoint_root.iterdir() if path.is_dir()):
+        source_dirs = sorted(path for path in checkpoint_root.iterdir() if path.is_dir())
+        if args.checkpoint_run:
+            requested = set(args.checkpoint_run)
+            available = {path.name for path in source_dirs}
+            missing = sorted(requested - available)
+            if missing:
+                raise FileNotFoundError(
+                    "Requested pretrained run(s) not found under "
+                    f"{checkpoint_root}: {', '.join(missing)}"
+                )
+            source_dirs = [path for path in source_dirs if path.name in requested]
+        for source_dir in source_dirs:
             checkpoint = discover_checkpoint(source_dir)
             for eventnumber in eventnumbers:
                 row = pretrained_row(

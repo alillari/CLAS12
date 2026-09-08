@@ -425,6 +425,8 @@ Campaign outputs are written outside the repo:
         delta_theta_fits.csv
         campaign_headline_metrics.jsonl
         plots/
+          delta_p_over_p_fits/
+          delta_theta_fits/
   summary/
     campaign_headline_metrics.jsonl
     run_table.csv
@@ -617,6 +619,12 @@ with a `fit_status`.
 Polar-angle resolution plots use the same fit machinery and true-momentum bins
 for `theta_reco - theta_true`. The fitted mean and sigma are shown in degrees
 and recorded in `delta_theta_fits.csv`.
+
+Every run also writes one histogram-and-fit diagnostic per method and momentum
+bin beneath `evaluation/plots/delta_p_over_p_fits/` and
+`evaluation/plots/delta_theta_fits/`. These include skipped and failed fits as
+well as successful ones; campaign-level summary plots continue to consume the
+CSV fit values without changing their selection or aggregation.
 
 The default delta-p/p binning is limited to the region with useful
 coverage:

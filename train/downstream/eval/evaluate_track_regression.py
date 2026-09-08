@@ -526,18 +526,24 @@ def gaussian(x, amplitude, mean, sigma):
     return amplitude * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
 
 
-def fit_gaussian_residuals(values, histogram_bins, fit_quantile, min_populated_bins):
+def trim_gaussian_fit_values(values, fit_quantile):
     values = np.asarray(values, dtype=float)
     values = values[np.isfinite(values)]
-    if not len(values):
-        return None, None, None, None, "empty"
-
     tail = 0.5 * (1.0 - float(fit_quantile))
     if 0.0 < tail < 0.5 and len(values) > 2:
         low, high = np.quantile(values, [tail, 1.0 - tail])
         fit_values = values[(values >= low) & (values <= high)]
+        fit_limits = (float(low), float(high))
     else:
         fit_values = values
+        fit_limits = None
+    return values, fit_values, fit_limits
+
+
+def fit_gaussian_residuals(values, histogram_bins, fit_quantile, min_populated_bins):
+    values, fit_values, _ = trim_gaussian_fit_values(values, fit_quantile)
+    if not len(values):
+        return None, None, None, None, "empty"
     if len(fit_values) < 3:
         return None, None, None, None, "too_few_after_trim"
 
@@ -681,6 +687,191 @@ def calculate_delta_theta_fit_rows(truth, predictions, bins, config):
         config_prefix="delta_theta",
         residual_fn=delta_theta_residual_deg,
     )
+
+
+def diagnostic_number(value):
+    return f"{float(value):g}".replace("-", "m").replace(".", "p")
+
+
+def format_fit_value(value, error=None, scale=1.0):
+    if value is None:
+        return "not available"
+    value = float(value) * float(scale)
+    if error is None:
+        return f"{value:.6g}"
+    return f"{value:.6g} +/- {float(error) * float(scale):.3g}"
+
+
+def make_binned_residual_fit_diagnostic_plots(
+    output_dir,
+    truth,
+    predictions,
+    bins,
+    config,
+    rows,
+    *,
+    config_prefix,
+    residual_fn,
+    residual_label,
+    display_scale=1.0,
+):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plot_dir = Path(output_dir) / "plots" / f"{config_prefix}_fits"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    for stale_plot in plot_dir.glob("*.png"):
+        stale_plot.unlink()
+    true_p, _, _, _ = vector_kinematics(truth)
+    edges = np.asarray(bins, dtype=float)
+    histogram_bins = int(config[f"{config_prefix}_histogram_bins"])
+    fit_quantile = float(config[f"{config_prefix}_fit_quantile"])
+    rows_by_bin_method = {
+        (float(row["bin_low_gev"]), float(row["bin_high_gev"]), row["method"]): row
+        for row in rows
+    }
+
+    for index in range(len(edges) - 1):
+        low = float(edges[index])
+        high = float(edges[index + 1])
+        selection = (true_p >= low) & (true_p < high) & (true_p > 1e-12)
+        for method in PHYSICS_PLOT_METHODS:
+            residual_values, finite = residual_fn(truth, predictions[method])
+            residual = residual_values[selection & finite]
+            finite_values, fit_values, fit_limits = trim_gaussian_fit_values(
+                residual, fit_quantile
+            )
+            row = rows_by_bin_method[(low, high, method)]
+
+            fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.8), constrained_layout=True)
+            full_ax, fit_ax = axes
+            if len(finite_values):
+                full_ax.hist(
+                    display_scale * finite_values,
+                    bins=histogram_bins,
+                    histtype="stepfilled",
+                    color="tab:blue",
+                    alpha=0.55,
+                    log=True,
+                )
+                if fit_limits is not None:
+                    for limit in fit_limits:
+                        full_ax.axvline(
+                            display_scale * limit,
+                            color="tab:red",
+                            linestyle="--",
+                            linewidth=1.2,
+                        )
+            else:
+                full_ax.text(
+                    0.5, 0.5, "No finite residuals", ha="center", va="center",
+                    transform=full_ax.transAxes,
+                )
+            full_ax.set(
+                title="All finite residuals (log counts)",
+                xlabel=residual_label,
+                ylabel="Entries",
+            )
+            full_ax.grid(alpha=0.2)
+
+            counts = edges_hist = centers = populated = None
+            if len(fit_values) and np.ptp(fit_values) > 0:
+                counts, edges_hist = np.histogram(fit_values, bins=histogram_bins)
+                centers = 0.5 * (edges_hist[:-1] + edges_hist[1:])
+                populated = counts > 0
+                fit_ax.bar(
+                    display_scale * centers,
+                    counts,
+                    width=np.diff(edges_hist) * display_scale,
+                    color="0.82",
+                    edgecolor="0.35",
+                    linewidth=0.7,
+                    label="Trimmed histogram",
+                )
+                fit_ax.scatter(
+                    display_scale * centers[populated],
+                    counts[populated],
+                    s=18,
+                    color="black",
+                    zorder=3,
+                    label="Bins used by curve_fit",
+                )
+            elif len(fit_values):
+                fit_ax.axvline(
+                    display_scale * float(fit_values[0]),
+                    color="0.35",
+                    linewidth=1.5,
+                    label="Zero-width residual",
+                )
+            else:
+                fit_ax.text(
+                    0.5, 0.5, "No values in fit window", ha="center", va="center",
+                    transform=fit_ax.transAxes,
+                )
+
+            fit_mean = row.get("fit_mean")
+            fit_sigma = row.get("fit_sigma")
+            if (
+                row.get("fit_status") == "ok"
+                and fit_mean is not None
+                and fit_sigma is not None
+                and float(fit_sigma) > 0
+                and counts is not None
+                and np.any(populated)
+            ):
+                mean = float(fit_mean)
+                sigma = float(fit_sigma)
+                unit_gaussian = gaussian(centers[populated], 1.0, mean, sigma)
+                denominator = float(np.dot(unit_gaussian, unit_gaussian))
+                amplitude = (
+                    float(np.dot(unit_gaussian, counts[populated])) / denominator
+                    if denominator > 0 else 0.0
+                )
+                curve_x = np.linspace(edges_hist[0], edges_hist[-1], 600)
+                fit_ax.plot(
+                    display_scale * curve_x,
+                    gaussian(curve_x, amplitude, mean, sigma),
+                    color="tab:red",
+                    linewidth=2.0,
+                    label="Gaussian fit",
+                )
+
+            annotation = "\n".join((
+                f"status: {row['fit_status']}",
+                f"N total / fit: {len(finite_values)} / {len(fit_values)}",
+                f"mean: {format_fit_value(fit_mean, row.get('fit_mean_error'), display_scale)}",
+                f"sigma: {format_fit_value(fit_sigma, row.get('fit_sigma_error'), display_scale)}",
+                f"fit quantile: {fit_quantile:g}",
+            ))
+            fit_ax.text(
+                0.98,
+                0.97,
+                annotation,
+                ha="right",
+                va="top",
+                transform=fit_ax.transAxes,
+                fontsize=9,
+                bbox={"facecolor": "white", "edgecolor": "0.7", "alpha": 0.9},
+            )
+            fit_ax.set(
+                title="Gaussian fit window",
+                xlabel=residual_label,
+                ylabel="Entries",
+            )
+            fit_ax.grid(alpha=0.2)
+            handles, labels = fit_ax.get_legend_handles_labels()
+            if handles:
+                fit_ax.legend(handles, labels, loc="upper left", fontsize=8)
+
+            fig.suptitle(f"{method}: {low:g} <= true p < {high:g} GeV", fontsize=13)
+            filename = (
+                f"{method}_bin_{index:02d}_{diagnostic_number(low)}_"
+                f"{diagnostic_number(high)}_gev.png"
+            )
+            fig.savefig(plot_dir / filename, dpi=160)
+            plt.close(fig)
 
 
 def write_csv(path, rows):
@@ -2130,6 +2321,29 @@ def main():
         truth, predictions, delta_theta_bins, config
     )
     write_csv(output_dir / "delta_theta_fits.csv", delta_theta_rows)
+    make_binned_residual_fit_diagnostic_plots(
+        output_dir,
+        truth,
+        predictions,
+        delta_p_over_p_bins,
+        config,
+        delta_p_over_p_rows,
+        config_prefix="delta_p_over_p",
+        residual_fn=delta_p_over_p_residual,
+        residual_label=r"$\Delta p/p$ [%]",
+        display_scale=100.0,
+    )
+    make_binned_residual_fit_diagnostic_plots(
+        output_dir,
+        truth,
+        predictions,
+        delta_theta_bins,
+        config,
+        delta_theta_rows,
+        config_prefix="delta_theta",
+        residual_fn=delta_theta_residual_deg,
+        residual_label=r"$\theta_{reco} - \theta_{true}$ [deg]",
+    )
     make_plots(
         output_dir, truth, predictions, true_p, true_theta,
         momentum_bins, theta_bins, config,

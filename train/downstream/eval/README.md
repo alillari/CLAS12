@@ -99,6 +99,13 @@ the annotated percentage reports how often that occurs.
   `delta_theta_sigma_vs_true_p.png` fit `theta_reco - theta_true` in the same
   style of true-momentum bins and display the mean/sigma in degrees.
 
+`plots/delta_p_over_p_fits/` and `plots/delta_theta_fits/` retain one diagnostic
+PNG for every fitted method and true-momentum bin. Each image shows the full
+finite-residual distribution on a log-count scale, the quantile boundaries,
+the exact trimmed histogram supplied to `curve_fit`, its Gaussian overlay, and
+the saved fit status, sample counts, mean, sigma, and covariance errors. Sparse
+or failed fits are also written so missing summary points remain auditable.
+
 The current CLAS12 dataset stores MC entrance momentum in MeV and auxiliary
 reconstruction momentum in GeV. Those conversions are explicit in the YAML.
 CUDA is required by the installed Mamba/causal-convolution forward kernels.

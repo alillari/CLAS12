@@ -14,6 +14,8 @@ sys.path.insert(0, str(CAMPAIGN_DIR))
 from evaluate_track_regression import (  # noqa: E402
     calculate_delta_p_over_p_fit_rows,
     calculate_delta_theta_fit_rows,
+    delta_theta_residual_deg,
+    make_binned_residual_fit_diagnostic_plots,
 )
 from plot_track_regression_campaign import make_theta_resolution_plots  # noqa: E402
 
@@ -130,6 +132,43 @@ class DeltaThetaResolutionTest(unittest.TestCase):
         self.assertEqual(list(rows[0]), expected_fields)
         adapter = next(row for row in rows if row["method"] == "adapter")
         self.assertAlmostEqual(adapter["fit_mean"], 0.1)
+
+    def test_per_bin_fit_diagnostics_include_valid_and_skipped_fits(self):
+        rng = np.random.default_rng(2468)
+        true_p = np.full(60, 1.0)
+        true_theta = np.linspace(45.0, 75.0, len(true_p))
+        residual = rng.normal(loc=0.2, scale=0.4, size=len(true_p))
+        truth = vector_from_p_theta(true_p, true_theta)
+        adapter = vector_from_p_theta(true_p, true_theta + residual)
+        cvt = adapter.copy()
+        cvt[4:] = np.nan
+        predictions = {"adapter": adapter, "cvt": cvt}
+        config = {
+            "delta_theta_min_bin_entries": 10,
+            "delta_theta_histogram_bins": 12,
+            "delta_theta_min_populated_histogram_bins": 3,
+            "delta_theta_fit_quantile": 0.98,
+        }
+        rows = calculate_delta_theta_fit_rows(
+            truth, predictions, [0.5, 1.5], config
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            make_binned_residual_fit_diagnostic_plots(
+                output_dir,
+                truth,
+                predictions,
+                [0.5, 1.5],
+                config,
+                rows,
+                config_prefix="delta_theta",
+                residual_fn=delta_theta_residual_deg,
+                residual_label="delta theta [deg]",
+            )
+            plots = sorted((output_dir / "plots" / "delta_theta_fits").glob("*.png"))
+            self.assertEqual(len(plots), 2)
+            self.assertTrue(all(path.stat().st_size > 0 for path in plots))
 
     def test_campaign_theta_plot_smoke(self):
         rows = []

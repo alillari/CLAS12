@@ -64,6 +64,8 @@ def selected_runs(manifest: dict, only: list[str] | None, limit: int | None) -> 
 
 def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     params = load_base_model_config(Path(run.get("base_model_yaml", manifest["base_model_yaml"])), run.get("base_model_config", "clas12_track_finding_adapteronly"))
+    for key in ("preflight_max_events", "min_multitrack_fraction"):
+        params.pop(key, None)
     params.update({
         "artifact_root": str(Path(manifest["artifact_root"]).resolve()),
         "downstream_dir": str(Path(run["run_dir"]).resolve()),
@@ -219,7 +221,14 @@ def main() -> None:
         return
 
     first_params = load_base_model_config(Path(manifest["base_model_yaml"]), "clas12_track_finding_adapteronly")
-    preflight = preflight_dataset(Path(first_params["data_root"]).resolve())
+    first_params.update(manifest.get("training_overrides", {}))
+    if runs:
+        first_params.update(runs[0].get("training_overrides", {}))
+    preflight = preflight_dataset(
+        Path(first_params["data_root"]).resolve(),
+        max_events=int(first_params.get("preflight_max_events", 10000)),
+        min_multitrack_fraction=float(first_params.get("min_multitrack_fraction", 0.8)),
+    )
     summary_dir = Path(manifest["campaign_dir"]).resolve() / "summary"
     summary_dir.mkdir(parents=True, exist_ok=True)
     with (summary_dir / "data_preflight.csv").open("w", newline="") as stream:

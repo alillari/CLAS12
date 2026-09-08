@@ -74,6 +74,11 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
         "embed_dim": int(run["embed_dim"]),
         "num_layers_backbone": int(run["num_layers_backbone"]),
         "model_version": run["model_config"],
+        "batch_size": int(run["train_batch_size"]),
+        "local_batch_size": int(run["train_batch_size"]),
+        "valid_batch_size": int(run["train_batch_size"]),
+        "local_valid_batch_size": int(run["train_batch_size"]),
+        "limit_size": int(run["eventnumber"]),
     })
     params.update(manifest.get("training_overrides", {}))
     params.update(run.get("training_overrides", {}))
@@ -93,6 +98,7 @@ def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
         "training_log": str(Path(run["training_log"]).resolve()),
         "output_dir": str(Path(run["evaluation_dir"]).resolve()),
         "run_num": run["run_id"],
+        "batch_size": int(run["train_batch_size"]),
         "max_samples": int(run["max_samples"]),
         "use_pretrained_backbone": bool(run.get("use_pretrained_backbone", True)),
         "pretrained_checkpoint": (

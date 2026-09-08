@@ -385,6 +385,9 @@ def update_status(path: Path, run_id: str, status: str, **extra: Any) -> None:
     data = load_status(path)
     data.setdefault("runs", {})
     record = dict(data["runs"].get(run_id, {}))
+    if status != "failed":
+        for key in ("stage", "reason", "returncode"):
+            record.pop(key, None)
     record.update(extra)
     record["status"] = status
     record["updated_at"] = utc_now()

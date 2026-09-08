@@ -104,14 +104,19 @@ def _write_json(path: str, payload: dict[str, Any]) -> None:
 
 def resolve_params(config: TrackFindingExperimentConfig) -> YParams:
     params = YParams(os.path.abspath(config.yaml_config), config.config)
-    params.continue_from_best = True
-    params.batch_size = int(config.train_batch_size)
-    params.limit_data = True
-    params.limit_size = int(config.eventnumber)
-    params.valid_batch_size = int(getattr(params, "valid_batch_size", params.batch_size))
-    params.return_dict = True
-    params.return_reg_test = True
-    params.adapter_sample_mode = "track_legacy"
+    batch_size = int(config.train_batch_size)
+    params.update_params({
+        "continue_from_best": True,
+        "batch_size": batch_size,
+        "local_batch_size": batch_size,
+        "valid_batch_size": batch_size,
+        "local_valid_batch_size": batch_size,
+        "limit_data": True,
+        "limit_size": int(config.eventnumber),
+        "return_dict": True,
+        "return_reg_test": True,
+        "adapter_sample_mode": "track_legacy",
+    })
 
     if config.checkpoint_dir is not None:
         params.checkpoint_dir = os.path.abspath(config.checkpoint_dir)
@@ -209,4 +214,3 @@ def train_experiment(
         trainer.cleanup()
         torch.cuda.empty_cache()
         gc.collect()
-

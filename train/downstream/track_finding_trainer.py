@@ -1088,8 +1088,10 @@ class DownstreamTrainer():
         step,
         optuna_trial=None,
     ):
-        improved = (
-            val_ari > self.best_ARI + self.min_delta
+        has_finite_validation = np.isfinite(val_loss) and np.isfinite(val_ari)
+        improved = has_finite_validation and (
+            self.best_step is None
+            or val_ari > self.best_ARI + self.min_delta
             or (
                 abs(val_ari - self.best_ARI) <= self.min_delta
                 and val_loss < (self.best_loss - self.min_delta)

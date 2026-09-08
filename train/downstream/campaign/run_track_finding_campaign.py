@@ -37,17 +37,21 @@ TRAIN_DONE_STATUSES = {"train_done", "running_eval", "eval_done"}
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--cuda-device", default="0")
-    parser.add_argument("--only", action="append")
-    parser.add_argument("--limit", type=int)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--force-train", action="store_true")
-    parser.add_argument("--force-eval", action="store_true")
-    parser.add_argument("--skip-eval", action="store_true")
-    parser.add_argument("--collate-only", action="store_true")
-    parser.add_argument("--status", action="store_true")
-    parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--manifest", required=True, help="Path to campaign manifest.yaml")
+    parser.add_argument(
+        "--cuda-device",
+        default="0",
+        help="CUDA device exposed to each subprocess via CUDA_VISIBLE_DEVICES.",
+    )
+    parser.add_argument("--only", action="append", help="Run only this run_id. Can be repeated.")
+    parser.add_argument("--limit", type=int, help="Maximum number of selected runs to process.")
+    parser.add_argument("--dry-run", action="store_true", help="Render configs and print the planned commands without running jobs.")
+    parser.add_argument("--force-train", action="store_true", help="Train even if the adapter checkpoint/status already exists.")
+    parser.add_argument("--force-eval", action="store_true", help="Evaluate even if evaluation outputs/status already exist.")
+    parser.add_argument("--skip-eval", action="store_true", help="Train selected runs but do not evaluate.")
+    parser.add_argument("--collate-only", action="store_true", help="Only rebuild campaign summary files from existing evaluations.")
+    parser.add_argument("--status", action="store_true", help="Print campaign progress from status.yaml and expected outputs.")
+    parser.add_argument("--preflight-only", action="store_true", help="Validate and summarize the event dataset, then exit.")
     return parser.parse_args()
 
 
@@ -60,6 +64,19 @@ def selected_runs(manifest: dict, only: list[str] | None, limit: int | None) -> 
         if missing:
             raise KeyError(f"Run id(s) not found in manifest: {', '.join(sorted(missing))}")
     return runs[:limit] if limit is not None else runs
+
+
+def validate_run_inputs(run: dict[str, Any]) -> None:
+    if not run.get("use_pretrained_backbone", True):
+        return
+    checkpoint = Path(run["pretrained_checkpoint"])
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Pretrained checkpoint does not exist: {checkpoint}")
+
+
+def ensure_run_dirs(run: dict[str, Any]) -> None:
+    for key in ("config_dir", "train_dir", "checkpoint_dir", "evaluation_dir"):
+        Path(run[key]).mkdir(parents=True, exist_ok=True)
 
 
 def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
@@ -225,12 +242,167 @@ def collate_summary(manifest: dict[str, Any]) -> None:
         writer.writerows(table_rows)
 
 
-def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
-    status_data = load_status(status_path)
-    counts = Counter(run_current_status(status_data, run) for run in runs)
+def print_dry_run(manifest: dict[str, Any], runs: list[dict[str, Any]]) -> None:
     print(f"Campaign: {manifest['campaign_name']}")
     print(f"Campaign directory: {manifest['campaign_dir']}")
-    print("Counts: " + ", ".join(f"{key}={counts[key]}" for key in sorted(counts)))
+    print(f"Selected runs: {len(runs)}")
+    for run in runs:
+        validate_run_inputs(run)
+        print(f"\n[{run['run_id']}]")
+        print(f"model_yaml: {run['model_yaml']}")
+        print(f"analysis_yaml: {run['analysis_yaml']}")
+        print(f"train_log: {run['train_stdout']}")
+        print(f"eval_log: {run['eval_stdout']}")
+        print(format_command(train_command(run, manifest)))
+        print(format_command(eval_command(run)))
+
+
+def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
+    status_data = load_status(status_path)
+    rows = []
+    counts = Counter()
+    for run in runs:
+        status = run_current_status(status_data, run)
+        adapter_checkpoint = Path(run["adapter_checkpoint"])
+        summary = Path(run["evaluation_dir"]) / "summary.json"
+        train_log = Path(run["train_stdout"])
+        eval_log = Path(run["eval_stdout"])
+        counts[status] += 1
+        rows.append({
+            "run_id": run["run_id"],
+            "status": status,
+            "labeled_events": run.get("labeled_events", run.get("eventnumber")),
+            "adapter": "yes" if adapter_checkpoint.is_file() else "no",
+            "eval": "yes" if summary.is_file() else "no",
+            "log": str(eval_log if status == "running_eval" else train_log),
+        })
+
+    print(f"Campaign: {manifest['campaign_name']}")
+    print(f"Campaign directory: {manifest['campaign_dir']}")
+    print(f"Status file: {status_path}")
+    print(f"Runs: {len(rows)}")
+    if counts:
+        print("Counts: " + ", ".join(f"{key}={counts[key]}" for key in sorted(counts)))
+    print()
+    header = ("status", "labeled", "adapter", "eval", "run_id")
+    print(f"{header[0]:<15} {header[1]:>8} {header[2]:>7} {header[3]:>5} {header[4]}")
+    for row in rows:
+        print(
+            f"{row['status']:<15} {str(row['labeled_events']):>8} "
+            f"{row['adapter']:>7} {row['eval']:>5} {row['run_id']}"
+        )
+    active = [row for row in rows if row["status"] in {"running_train", "running_eval"}]
+    if active:
+        print("\nActive logs:")
+        for row in active:
+            print(f"{row['run_id']}: {row['log']}")
+
+
+def train_if_needed(
+    args: argparse.Namespace,
+    manifest: dict[str, Any],
+    status_path: Path,
+    status_data: dict[str, Any],
+    run: dict[str, Any],
+) -> None:
+    current_status = run_current_status(status_data, run)
+    checkpoint = Path(run["adapter_checkpoint"])
+    if not args.force_train and current_status in TRAIN_DONE_STATUSES and checkpoint.is_file():
+        print(f"[{run['run_id']}] training already complete; skipping")
+        return
+
+    command = train_command(run, manifest)
+    log_path = Path(run["train_stdout"])
+    print(f"[{run['run_id']}] training")
+    print(f"  log: {log_path}")
+    print(f"  command: {format_command(command)}")
+    update_status(status_path, run["run_id"], "running_train", log=str(log_path.resolve()))
+    code = run_logged_command(command, log_path, command_env(args.cuda_device, manifest))
+    if code != 0:
+        update_status(
+            status_path,
+            run["run_id"],
+            "failed",
+            stage="train",
+            returncode=code,
+            log=str(log_path.resolve()),
+        )
+        raise RuntimeError(
+            f"Training failed for {run['run_id']} with exit code {code}. See {log_path}"
+        )
+    if not checkpoint.is_file():
+        update_status(
+            status_path,
+            run["run_id"],
+            "failed",
+            stage="train",
+            reason="missing_adapter_checkpoint",
+            log=str(log_path.resolve()),
+        )
+        raise FileNotFoundError(f"Training finished but adapter checkpoint was not created: {checkpoint}")
+    update_status(
+        status_path,
+        run["run_id"],
+        "train_done",
+        adapter_checkpoint=str(checkpoint.resolve()),
+        train_log=str(log_path.resolve()),
+    )
+    print(f"[{run['run_id']}] training complete")
+    print(f"  checkpoint: {checkpoint}")
+
+
+def eval_if_needed(
+    args: argparse.Namespace,
+    manifest: dict[str, Any],
+    status_path: Path,
+    run: dict[str, Any],
+) -> None:
+    if args.skip_eval:
+        return
+    current_status = run_current_status(load_status(status_path), run)
+    summary = Path(run["evaluation_dir"]) / "summary.json"
+    if not args.force_eval and current_status in DONE_STATUSES and summary.is_file():
+        print(f"[{run['run_id']}] evaluation already complete; skipping")
+        return
+
+    command = eval_command(run)
+    log_path = Path(run["eval_stdout"])
+    print(f"[{run['run_id']}] evaluating")
+    print(f"  log: {log_path}")
+    print(f"  command: {format_command(command)}")
+    update_status(status_path, run["run_id"], "running_eval", log=str(log_path.resolve()))
+    code = run_logged_command(command, log_path, command_env(args.cuda_device, manifest))
+    if code != 0:
+        update_status(
+            status_path,
+            run["run_id"],
+            "failed",
+            stage="eval",
+            returncode=code,
+            log=str(log_path.resolve()),
+        )
+        raise RuntimeError(
+            f"Evaluation failed for {run['run_id']} with exit code {code}. See {log_path}"
+        )
+    if not summary.is_file():
+        update_status(
+            status_path,
+            run["run_id"],
+            "failed",
+            stage="eval",
+            reason="missing_summary_json",
+            log=str(log_path.resolve()),
+        )
+        raise FileNotFoundError(f"Evaluation finished but summary.json was not created: {summary}")
+    update_status(
+        status_path,
+        run["run_id"],
+        "eval_done",
+        evaluation_dir=str(Path(run["evaluation_dir"]).resolve()),
+        eval_log=str(log_path.resolve()),
+    )
+    print(f"[{run['run_id']}] evaluation complete")
+    print(f"  summary: {summary}")
 
 
 def main() -> None:
@@ -241,6 +413,7 @@ def main() -> None:
 
     if args.collate_only:
         collate_summary(manifest)
+        print(f"Wrote summary files under {Path(manifest['campaign_dir']) / 'summary'}")
         return
     if args.status:
         print_status(manifest, runs, status_path)
@@ -262,54 +435,32 @@ def main() -> None:
         writer.writeheader()
         writer.writerow(preflight)
     if args.preflight_only:
-        print(preflight)
+        print("Dataset preflight passed:")
+        for key in sorted(preflight):
+            print(f"  {key}: {preflight[key]}")
         return
 
     if args.dry_run:
         for run in runs:
             render_model_yaml(manifest, run)
             render_analysis_yaml(manifest, run)
-            print(f"\n[{run['run_id']}]")
-            print(format_command(train_command(run, manifest)))
-            print(format_command(eval_command(run)))
+        print_dry_run(manifest, runs)
         return
 
     status_data = load_status(status_path)
     for run in runs:
-        for key in ("config_dir", "train_dir", "checkpoint_dir", "evaluation_dir"):
-            Path(run[key]).mkdir(parents=True, exist_ok=True)
+        validate_run_inputs(run)
+        ensure_run_dirs(run)
         render_model_yaml(manifest, run)
         render_analysis_yaml(manifest, run)
-        checkpoint = Path(run["adapter_checkpoint"])
-        if not args.force_train and run_current_status(status_data, run) in TRAIN_DONE_STATUSES and checkpoint.exists():
-            print(f"[{run['run_id']}] training already complete; skipping")
-        else:
-            update_status(status_path, run["run_id"], "running_train")
-            code = run_logged_command(train_command(run, manifest), Path(run["train_stdout"]), command_env(args.cuda_device, manifest))
-            if code != 0:
-                update_status(status_path, run["run_id"], "failed", stage="train", returncode=code)
-                raise RuntimeError(f"Training failed for {run['run_id']}; see {run['train_stdout']}")
-            if not checkpoint.exists():
-                update_status(status_path, run["run_id"], "failed", stage="train", reason="missing_adapter_checkpoint")
-                raise FileNotFoundError(f"Training finished without checkpoint: {checkpoint}")
-            update_status(status_path, run["run_id"], "train_done")
+        train_if_needed(args, manifest, status_path, status_data, run)
         status_data = load_status(status_path)
-        if args.skip_eval:
-            continue
-        summary = Path(run["evaluation_dir"]) / "summary.json"
-        if not args.force_eval and run_current_status(status_data, run) in DONE_STATUSES and summary.exists():
-            print(f"[{run['run_id']}] evaluation already complete; skipping")
-            continue
-        update_status(status_path, run["run_id"], "running_eval")
-        code = run_logged_command(eval_command(run), Path(run["eval_stdout"]), command_env(args.cuda_device, manifest))
-        if code != 0:
-            update_status(status_path, run["run_id"], "failed", stage="eval", returncode=code)
-            raise RuntimeError(f"Evaluation failed for {run['run_id']}; see {run['eval_stdout']}")
-        update_status(status_path, run["run_id"], "eval_done")
+        eval_if_needed(args, manifest, status_path, run)
         status_data = load_status(status_path)
 
     if not args.skip_eval:
         collate_summary(manifest)
+        print(f"Wrote summary files under {Path(manifest['campaign_dir']) / 'summary'}")
 
 
 if __name__ == "__main__":

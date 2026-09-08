@@ -16,7 +16,9 @@ analysis:
   run_num: adapteronly_label50000
   batch_size: 128
   num_workers: 0
-  max_samples: 10000
+  # Routine final evaluation sample count. Smoke runs can override this with
+  # --max-samples without changing the campaign default.
+  max_samples: 500000
   use_pretrained_backbone: false
   pretrained_checkpoint: null
   include_sample_metadata: true

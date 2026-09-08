@@ -296,8 +296,13 @@ python train/downstream/campaign/build_track_regression_manifest.py \
   --max-epochs 300 \
   --early-stopping-patience 20 \
   --early-stopping-warmup-steps 50 \
-  --max-samples 10000
+  --max-samples 500000
 ```
+
+`500000` is also the default when `--max-samples` is omitted. The evaluator
+uses this value for both the test-view cap and the number of predictions, so it
+does not inherit the usually smaller training `limit_size`. The final partial
+batch is retained. Use a smaller explicit value for smoke or exploratory runs.
 
 Any additional model YAML key can be overridden:
 

@@ -2012,6 +2012,12 @@ def main():
     params["batch_size"] = int(config["batch_size"])
     params["valid_batch_size"] = int(config["batch_size"])
     params["num_data_workers"] = int(config["num_workers"])
+    # Build only the requested evaluation view instead of inheriting the
+    # training limit_size (typically 50k) or indexing the entire hold-out set.
+    # Keep the final partial batch so max_samples is reached exactly.
+    params["limit_test_data"] = True
+    params["limit_test_size"] = int(config["max_samples"])
+    params["drop_last_test"] = False
     params["num_embedder_layers"] = 0
     params["pretrained_ckpt"] = (
         str(resolve_path(config.get("pretrained_checkpoint"), config["analysis_config"].parent))

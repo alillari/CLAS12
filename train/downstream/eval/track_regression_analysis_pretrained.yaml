@@ -17,7 +17,9 @@ analysis:
   run_num: scale_w128_d12_n39553933
   batch_size: 128
   num_workers: 0
-  max_samples: 10000
+  # Routine final evaluation sample count. Smoke runs can override this with
+  # --max-samples without changing the campaign default.
+  max_samples: 500000
   use_pretrained_backbone: true
   pretrained_checkpoint: "{pretrain_root}/{run_name}/ckpt_best.tar"
   include_sample_metadata: true

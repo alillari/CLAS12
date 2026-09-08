@@ -26,7 +26,7 @@ DEFAULT_ADAPTER_ONLY_MODEL_YAML = Path("scripts/configs/mamba_clas12_track_regre
 DEFAULT_BASE_ANALYSIS_YAML = Path("train/downstream/eval/track_regression_analysis_adapteronly.yaml")
 DEFAULT_EVENTNUMBER = 50000
 DEFAULT_TRAIN_BATCH_SIZE = 32
-DEFAULT_MAX_SAMPLES = 10000
+DEFAULT_MAX_SAMPLES = 500000
 DEFAULT_MODEL_FAMILY = "mamba1"
 
 RUN_NAME_RE = re.compile(

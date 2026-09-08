@@ -1197,7 +1197,7 @@ def get_data_loader(params, distributed):
                             num_workers=params.num_data_workers,
                             shuffle=False,
                             sampler=test_sampler,
-                            drop_last=True,
+                            drop_last=getattr(params, 'drop_last_test', True),
                             pin_memory=True,
                             collate_fn = my_collate_fn,
                             generator=generator,

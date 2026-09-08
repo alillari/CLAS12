@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--only", action="append", help="Run only this run_id. Can be repeated.")
     parser.add_argument("--limit", type=int, help="Maximum number of selected runs to process.")
-    parser.add_argument("--dry-run", action="store_true", help="Render configs and print the planned commands without running jobs.")
+    parser.add_argument("--dry-run", action="store_true", help="Print planned commands without writing configs or running jobs.")
     parser.add_argument("--force-train", action="store_true", help="Train even if the adapter checkpoint/status already exists.")
     parser.add_argument("--force-eval", action="store_true", help="Evaluate even if evaluation outputs/status already exist.")
     parser.add_argument("--skip-eval", action="store_true", help="Train selected runs but do not evaluate.")
@@ -242,6 +242,31 @@ def collate_summary(manifest: dict[str, Any]) -> None:
         writer.writerows(table_rows)
 
 
+def last_validation_metrics(training_log: Path) -> dict[str, str]:
+    """Return the newest validation row from the trainer's tab-separated log."""
+    if not training_log.is_file():
+        return {}
+    try:
+        with training_log.open(newline="") as stream:
+            rows = csv.DictReader(stream, delimiter="\t")
+            latest = None
+            for row in rows:
+                if row.get("Step"):
+                    latest = row
+    except (OSError, csv.Error):
+        return {}
+    return latest or {}
+
+
+def format_metric(value: str | None) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):.4f}"
+    except ValueError:
+        return value
+
+
 def print_dry_run(manifest: dict[str, Any], runs: list[dict[str, Any]]) -> None:
     print(f"Campaign: {manifest['campaign_name']}")
     print(f"Campaign directory: {manifest['campaign_dir']}")
@@ -252,6 +277,7 @@ def print_dry_run(manifest: dict[str, Any], runs: list[dict[str, Any]]) -> None:
         print(f"model_yaml: {run['model_yaml']}")
         print(f"analysis_yaml: {run['analysis_yaml']}")
         print(f"train_log: {run['train_stdout']}")
+        print(f"metrics_log: {run['training_log']}")
         print(f"eval_log: {run['eval_stdout']}")
         print(format_command(train_command(run, manifest)))
         print(format_command(eval_command(run)))
@@ -266,15 +292,21 @@ def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
         adapter_checkpoint = Path(run["adapter_checkpoint"])
         summary = Path(run["evaluation_dir"]) / "summary.json"
         train_log = Path(run["train_stdout"])
+        metrics_log = Path(run["training_log"])
         eval_log = Path(run["eval_stdout"])
+        progress = last_validation_metrics(metrics_log)
         counts[status] += 1
         rows.append({
             "run_id": run["run_id"],
             "status": status,
             "labeled_events": run.get("labeled_events", run.get("eventnumber")),
+            "step": progress.get("Step", "-"),
+            "val_loss": format_metric(progress.get("Val_Loss")),
+            "ari": format_metric(progress.get("ARI")),
             "adapter": "yes" if adapter_checkpoint.is_file() else "no",
             "eval": "yes" if summary.is_file() else "no",
             "log": str(eval_log if status == "running_eval" else train_log),
+            "metrics_log": str(metrics_log),
         })
 
     print(f"Campaign: {manifest['campaign_name']}")
@@ -284,11 +316,15 @@ def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
     if counts:
         print("Counts: " + ", ".join(f"{key}={counts[key]}" for key in sorted(counts)))
     print()
-    header = ("status", "labeled", "adapter", "eval", "run_id")
-    print(f"{header[0]:<15} {header[1]:>8} {header[2]:>7} {header[3]:>5} {header[4]}")
+    header = ("status", "labeled", "step", "val_loss", "ari", "adapter", "eval", "run_id")
+    print(
+        f"{header[0]:<15} {header[1]:>8} {header[2]:>8} {header[3]:>9} "
+        f"{header[4]:>7} {header[5]:>7} {header[6]:>5} {header[7]}"
+    )
     for row in rows:
         print(
             f"{row['status']:<15} {str(row['labeled_events']):>8} "
+            f"{row['step']:>8} {row['val_loss']:>9} {row['ari']:>7} "
             f"{row['adapter']:>7} {row['eval']:>5} {row['run_id']}"
         )
     active = [row for row in rows if row["status"] in {"running_train", "running_eval"}]
@@ -296,6 +332,9 @@ def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
         print("\nActive logs:")
         for row in active:
             print(f"{row['run_id']}: {row['log']}")
+            if row["status"] == "running_train":
+                print(f"  metrics: {row['metrics_log']}")
+        print("Progress values are the latest completed validation point.")
 
 
 def train_if_needed(
@@ -307,8 +346,17 @@ def train_if_needed(
 ) -> None:
     current_status = run_current_status(status_data, run)
     checkpoint = Path(run["adapter_checkpoint"])
+    status_record = status_data.get("runs", {}).get(run["run_id"], {})
     if not args.force_train and current_status in TRAIN_DONE_STATUSES and checkpoint.is_file():
         print(f"[{run['run_id']}] training already complete; skipping")
+        return
+    if (
+        not args.force_train
+        and current_status == "failed"
+        and status_record.get("stage") == "eval"
+        and checkpoint.is_file()
+    ):
+        print(f"[{run['run_id']}] prior evaluation failed; preserving existing training checkpoint")
         return
 
     command = train_command(run, manifest)
@@ -419,6 +467,10 @@ def main() -> None:
         print_status(manifest, runs, status_path)
         return
 
+    if args.dry_run:
+        print_dry_run(manifest, runs)
+        return
+
     first_params = load_base_model_config(Path(manifest["base_model_yaml"]), "clas12_track_finding_adapteronly")
     first_params.update(manifest.get("training_overrides", {}))
     if runs:
@@ -438,13 +490,6 @@ def main() -> None:
         print("Dataset preflight passed:")
         for key in sorted(preflight):
             print(f"  {key}: {preflight[key]}")
-        return
-
-    if args.dry_run:
-        for run in runs:
-            render_model_yaml(manifest, run)
-            render_analysis_yaml(manifest, run)
-        print_dry_run(manifest, runs)
         return
 
     status_data = load_status(status_path)

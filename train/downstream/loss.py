@@ -727,6 +727,7 @@ def assign_points_to_masks(outputs, no_object_class=0, option=1, threshold=0.0):
     
     all_assignments = []
     all_classes = []
+    all_scores = []
 
     for b in range(B):
         pred_probs = outputs["pred_probs"][b]  # (N_pred, C)
@@ -766,10 +767,12 @@ def assign_points_to_masks(outputs, no_object_class=0, option=1, threshold=0.0):
 
         all_assignments.append(assignments)
         all_classes.append(class_labels)
+        all_scores.append(max_scores)
 
     return {
         "assignments": torch.stack(all_assignments),  # (B, N_points)
-        "classes": torch.stack(all_classes)           # (B, N_points)
+        "classes": torch.stack(all_classes),          # (B, N_points)
+        "scores": torch.stack(all_scores),            # (B, N_points), before thresholding
     }
 
 

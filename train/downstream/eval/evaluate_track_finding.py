@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -118,6 +119,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", help="Override output directory.")
     parser.add_argument("--max-samples", type=int, help="Override maximum evaluated events.")
     parser.add_argument("--save-per-point-predictions", action="store_true")
+    parser.add_argument(
+        "--assignment-thresholds",
+        type=float,
+        nargs="+",
+        help=(
+            "Run an inference-only assignment-threshold sweep. Requires --output-dir "
+            "and must include 0.0 as the reference operating point."
+        ),
+    )
+    parser.add_argument(
+        "--calibration-modulus",
+        type=int,
+        default=10,
+        help="Hash partition denominator; one remainder is held for threshold selection.",
+    )
+    parser.add_argument(
+        "--calibration-remainder",
+        type=int,
+        default=0,
+        help="Hash remainder assigned to the calibration partition.",
+    )
+    parser.add_argument(
+        "--min-efficiency-retention",
+        type=float,
+        default=0.99,
+        help="Minimum calibration global-efficiency retention relative to threshold 0.0.",
+    )
     return parser.parse_args()
 
 
@@ -252,6 +280,303 @@ def evaluate_event_method(
     return event_row, match_rows, truth_track_rows
 
 
+EVENT_MEAN_METRICS = (
+    "ari_signal",
+    "ari_with_background",
+    "track_efficiency",
+    "track_purity",
+    "matched_iou_mean",
+    "matched_purity_mean",
+    "matched_efficiency_mean",
+    "fake_rate",
+    "miss_rate",
+    "split_rate",
+    "merge_rate",
+    "background_rejection",
+    "background_contamination",
+    "signal_loss_to_background",
+)
+EVENT_COUNT_METRICS = (
+    "n_points",
+    "n_signal_points",
+    "n_background_points",
+    "n_true_tracks",
+    "n_pred_tracks",
+    "n_matched_tracks",
+)
+
+
+class EventMetricAccumulator:
+    """Streaming equivalent of ``summarize_event_metrics`` for threshold sweeps."""
+
+    def __init__(self) -> None:
+        self.n_events = 0
+        self.counts = {key: 0 for key in EVENT_COUNT_METRICS}
+        self.sums = {key: 0.0 for key in EVENT_MEAN_METRICS}
+        self.observations = {key: 0 for key in EVENT_MEAN_METRICS}
+
+    def add(self, row: dict[str, Any]) -> None:
+        self.n_events += 1
+        for key in EVENT_COUNT_METRICS:
+            self.counts[key] += int(row.get(key, 0))
+        for key in EVENT_MEAN_METRICS:
+            value = row.get(key)
+            if value is not None:
+                self.sums[key] += float(value)
+                self.observations[key] += 1
+
+    def summary(self) -> dict[str, Any]:
+        out = {"n_events": self.n_events, **self.counts}
+        for key in EVENT_MEAN_METRICS:
+            n = self.observations[key]
+            out[key] = finite_or_none(self.sums[key] / n) if n else None
+        out["track_efficiency_global"] = (
+            self.counts["n_matched_tracks"] / self.counts["n_true_tracks"]
+            if self.counts["n_true_tracks"] else None
+        )
+        out["track_purity_global"] = (
+            self.counts["n_matched_tracks"] / self.counts["n_pred_tracks"]
+            if self.counts["n_pred_tracks"] else None
+        )
+        return out
+
+
+def threshold_partition(event_id: int, modulus: int, calibration_remainder: int) -> str:
+    digest = hashlib.blake2b(str(int(event_id)).encode(), digest_size=8).digest()
+    bucket = int.from_bytes(digest, byteorder="little") % int(modulus)
+    return "calibration" if bucket == int(calibration_remainder) else "heldout"
+
+
+def normalize_thresholds(values: list[float]) -> list[float]:
+    thresholds = sorted({float(value) for value in values})
+    if not thresholds or thresholds[0] < 0.0:
+        raise ValueError("assignment thresholds must be non-negative")
+    if 0.0 not in thresholds:
+        raise ValueError("assignment threshold sweep must include 0.0 as the reference point")
+    return thresholds
+
+
+def select_threshold(
+    summaries: dict[float, dict[str, Any]],
+    min_efficiency_retention: float,
+) -> tuple[float, float]:
+    baseline = summaries[0.0].get("track_efficiency_global")
+    if baseline is None:
+        raise ValueError("threshold-zero calibration result has no global track efficiency")
+    efficiency_floor = float(baseline) * float(min_efficiency_retention)
+    eligible = [
+        threshold for threshold, summary in summaries.items()
+        if summary.get("ari_with_background") is not None
+        and summary.get("track_efficiency_global") is not None
+        and float(summary["track_efficiency_global"]) >= efficiency_floor
+    ]
+    if not eligible:
+        raise ValueError("no threshold retained the requested calibration track efficiency")
+    selected = max(
+        eligible,
+        key=lambda threshold: (
+            float(summaries[threshold]["ari_with_background"]),
+            -float(threshold),
+        ),
+    )
+    return selected, efficiency_floor
+
+
+def apply_assignment_threshold(inferred: dict[str, torch.Tensor], threshold: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply a new threshold to one already-computed assignment result."""
+    scores = inferred["scores"]
+    keep = scores > float(threshold)
+    assignments = torch.where(keep, inferred["assignments"], torch.full_like(inferred["assignments"], -1))
+    classes = torch.where(keep, inferred["classes"], torch.zeros_like(inferred["classes"]))
+    return assignments, classes
+
+
+def run_threshold_sweep(
+    *,
+    args: argparse.Namespace,
+    analysis: dict[str, Any],
+    trainer: DownstreamTrainer,
+    output_dir: Path,
+    match_config: MatchConfig,
+    assignment_option: int,
+    evaluate_coatjava: bool,
+) -> None:
+    if not args.output_dir:
+        raise ValueError("--assignment-thresholds requires an explicit --output-dir")
+    if args.save_per_point_predictions:
+        raise ValueError("--save-per-point-predictions is not supported for a threshold sweep")
+    if args.calibration_modulus < 2:
+        raise ValueError("--calibration-modulus must be at least 2")
+    if not 0 <= args.calibration_remainder < args.calibration_modulus:
+        raise ValueError("--calibration-remainder must be in [0, calibration_modulus)")
+    if not 0.0 < args.min_efficiency_retention <= 1.0:
+        raise ValueError("--min-efficiency-retention must be in (0, 1]")
+
+    thresholds = normalize_thresholds(args.assignment_thresholds)
+    partitions = ("calibration", "heldout")
+    adapter_accumulators = {
+        threshold: {partition: EventMetricAccumulator() for partition in partitions}
+        for threshold in thresholds
+    }
+    coatjava_accumulators = {
+        partition: EventMetricAccumulator() for partition in partitions
+    }
+    max_samples = int(analysis.get("max_samples", 10000))
+    event_offset = 0
+
+    with torch.no_grad():
+        for batch in tqdm(trainer.val_data_loader, desc="threshold sweep"):
+            if event_offset >= max_samples:
+                break
+            grouped, labels, _knearest, _reg = trainer._unpack_batch(batch)
+            coatjava_batch = batch.get("coatjava_seg_pred") if isinstance(batch, dict) else None
+            if evaluate_coatjava and coatjava_batch is None:
+                raise RuntimeError(
+                    "evaluate_coatjava=true requires a collated coatjava_seg_pred sidecar"
+                )
+            grouped = grouped.to(trainer.device)
+            labels_device = labels.to(trainer.device)
+            batch_size, channels = grouped.size(0), grouped.size(-1)
+            grouped = grouped.reshape(batch_size, -1, channels)
+            valid_mask = grouped[..., 0] != -100
+            if bool(analysis.get("use_pretrained_backbone", False)):
+                _, pre_embed, _ = trainer.model(grouped, return_z=True)
+                feature = torch.stack(pre_embed)
+                pred_dict = trainer.down_model(
+                    grouped, feature, pretrain=True, padding_mask=valid_mask
+                )
+            else:
+                pred_dict = trainer.down_model(grouped, feature=None, padding_mask=valid_mask)
+            outputs = {
+                "pred_probs": pred_dict["class_probs"],
+                "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1),
+            }
+            inferred = assign_points_to_masks(outputs, option=assignment_option, threshold=0.0)
+            thresholded = {
+                threshold: apply_assignment_threshold(inferred, threshold)
+                for threshold in thresholds
+            }
+
+            for sample_index in range(batch_size):
+                event_id = event_offset + sample_index
+                if event_id >= max_samples:
+                    break
+                partition = threshold_partition(
+                    event_id,
+                    args.calibration_modulus,
+                    args.calibration_remainder,
+                )
+                valid = valid_mask[sample_index].detach().cpu().numpy().astype(bool)
+                truth = labels_device[sample_index].detach().cpu().numpy()
+                for threshold, (assignments, classes) in thresholded.items():
+                    result = event_track_metrics(
+                        truth,
+                        assignments[sample_index].detach().cpu().numpy(),
+                        valid_mask=valid,
+                        pred_signal_mask=(classes[sample_index] != 0).detach().cpu().numpy(),
+                        config=match_config,
+                    )
+                    adapter_accumulators[threshold][partition].add(result)
+                if evaluate_coatjava:
+                    coatjava_pred = coatjava_batch[sample_index].detach().cpu().numpy()
+                    coatjava_background = int(analysis.get("coatjava_background_label", -1))
+                    coatjava_result = event_track_metrics(
+                        truth,
+                        coatjava_pred,
+                        valid_mask=valid,
+                        pred_signal_mask=(coatjava_pred != coatjava_background) & valid,
+                        config=match_config,
+                    )
+                    coatjava_accumulators[partition].add(coatjava_result)
+            event_offset += batch_size
+
+    adapter_summaries = {
+        threshold: {
+            partition: accumulator.summary()
+            for partition, accumulator in partition_map.items()
+        }
+        for threshold, partition_map in adapter_accumulators.items()
+    }
+    coatjava_summaries = {
+        partition: accumulator.summary()
+        for partition, accumulator in coatjava_accumulators.items()
+    }
+    calibration_summaries = {
+        threshold: partition_map["calibration"]
+        for threshold, partition_map in adapter_summaries.items()
+    }
+    selected_threshold, efficiency_floor = select_threshold(
+        calibration_summaries,
+        args.min_efficiency_retention,
+    )
+
+    rows = []
+    for threshold in thresholds:
+        for partition in partitions:
+            adapter_summary = adapter_summaries[threshold][partition]
+            coatjava_summary = coatjava_summaries.get(partition) if evaluate_coatjava else None
+            comparison = (
+                compare_metric_summaries(adapter_summary, coatjava_summary)
+                if coatjava_summary is not None else {}
+            )
+            row = {
+                "threshold": threshold,
+                "partition": partition,
+                "selected": threshold == selected_threshold,
+                "method": "adapter",
+                **adapter_summary,
+            }
+            row.update({f"adapter_minus_coatjava_{key}": value for key, value in comparison.items()})
+            rows.append(row)
+            if coatjava_summary is not None:
+                rows.append({
+                    "threshold": threshold,
+                    "partition": partition,
+                    "selected": threshold == selected_threshold,
+                    "method": "coatjava",
+                    **coatjava_summary,
+                })
+
+    selected_adapter = adapter_summaries[selected_threshold]["heldout"]
+    selected_coatjava = coatjava_summaries.get("heldout") if evaluate_coatjava else None
+    selected_comparison = (
+        compare_metric_summaries(selected_adapter, selected_coatjava)
+        if selected_coatjava is not None else {}
+    )
+    provenance = {
+        "run_name": analysis.get("run_name"),
+        "analysis_tag": analysis.get("analysis_tag"),
+        "checkpoint": str(Path(analysis["checkpoint"]).resolve()),
+        "max_samples": max_samples,
+        "assignment_option": assignment_option,
+        "thresholds": thresholds,
+        "calibration_modulus": args.calibration_modulus,
+        "calibration_remainder": args.calibration_remainder,
+        "selection_metric": "ari_with_background",
+        "min_efficiency_retention": args.min_efficiency_retention,
+        "calibration_efficiency_floor": efficiency_floor,
+        "selected_threshold": selected_threshold,
+        "evaluate_coatjava": evaluate_coatjava,
+    }
+    write_csv(output_dir / "threshold_metrics.csv", rows)
+    write_json(output_dir / "threshold_sweep.json", {
+        **provenance,
+        "adapter": adapter_summaries,
+        "coatjava": coatjava_summaries if evaluate_coatjava else None,
+    })
+    write_json(output_dir / "selected_heldout_summary.json", {
+        **provenance,
+        "partition": "heldout",
+        "metrics": selected_adapter,
+        "baselines": ({"coatjava": selected_coatjava} if selected_coatjava is not None else {}),
+        "comparisons": (
+            {"adapter_minus_coatjava": selected_comparison}
+            if selected_comparison else {}
+        ),
+    })
+    print(f"Wrote threshold-sweep outputs to {output_dir}")
+
+
 def main() -> None:
     args = parse_args()
     analysis_path = Path(args.analysis_config).resolve()
@@ -312,6 +637,18 @@ def main() -> None:
         assignment_threshold = float(analysis.get("assignment_threshold", getattr(params, "assignment_threshold", 0.0)))
         momentum_scale = float(analysis.get("target_momentum_scale_to_gev", 0.001))
         save_points = bool(analysis.get("save_per_point_predictions", False)) or args.save_per_point_predictions
+
+        if args.assignment_thresholds is not None:
+            run_threshold_sweep(
+                args=args,
+                analysis=analysis,
+                trainer=trainer,
+                output_dir=output_dir,
+                match_config=match_config,
+                assignment_option=assignment_option,
+                evaluate_coatjava=evaluate_coatjava,
+            )
+            return
 
         event_offset = 0
         with torch.no_grad():

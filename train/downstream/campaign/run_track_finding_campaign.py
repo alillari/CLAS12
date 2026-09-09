@@ -50,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-eval", action="store_true", help="Evaluate even if evaluation outputs/status already exist.")
     parser.add_argument("--skip-eval", action="store_true", help="Train selected runs but do not evaluate.")
     parser.add_argument("--collate-only", action="store_true", help="Only rebuild campaign summary files from existing evaluations.")
+    parser.add_argument("--collate-evaluation-suffix", help="Read each run's sibling evaluation directory with this suffix.")
+    parser.add_argument("--summary-name", default="summary", help="Campaign child directory for collated outputs.")
     parser.add_argument("--status", action="store_true", help="Print campaign progress from status.yaml and expected outputs.")
     parser.add_argument("--preflight-only", action="store_true", help="Validate and summarize the event dataset, then exit.")
     return parser.parse_args()
@@ -200,14 +202,22 @@ def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_f
     return summary
 
 
-def collate_summary(manifest: dict[str, Any]) -> None:
+def collate_summary(
+    manifest: dict[str, Any],
+    evaluation_suffix: str | None = None,
+    summary_name: str = "summary",
+) -> None:
     base_dir = Path(manifest["campaign_dir"]).resolve()
-    summary_dir = base_dir / "summary"
+    summary_dir = base_dir / str(summary_name)
     summary_dir.mkdir(parents=True, exist_ok=True)
     table_rows = []
     with (summary_dir / "campaign_headline_metrics.jsonl").open("w") as headline_stream:
         for run in manifest.get("runs", []):
             evaluation_dir = Path(run["evaluation_dir"])
+            if evaluation_suffix:
+                evaluation_dir = evaluation_dir.with_name(
+                    f"{evaluation_dir.name}_{evaluation_suffix}"
+                )
             headline = evaluation_dir / "campaign_headline_metrics.jsonl"
             summary = evaluation_dir / "summary.json"
             if headline.exists():
@@ -230,10 +240,18 @@ def collate_summary(manifest: dict[str, Any]) -> None:
                 metrics = summary_data.get("metrics", {})
                 coatjava_metrics = summary_data.get("baselines", {}).get("coatjava", {})
                 deltas = summary_data.get("comparisons", {}).get("adapter_minus_coatjava", {})
+                native_metrics = summary_data.get("native_metrics", {})
+                native_coatjava_metrics = summary_data.get("native_baselines", {}).get("coatjava", {})
+                native_deltas = summary_data.get("native_comparisons", {}).get("adapter_minus_coatjava", {})
+                table_row["metric_view"] = summary_data.get("metric_view", "canonical")
+                table_row["noise_attribution_mode"] = summary_data.get("noise_attribution_mode")
                 for key in ("ari_signal", "track_efficiency_global", "track_purity_global", "fake_rate", "background_rejection"):
                     table_row[key] = metrics.get(key)
                     table_row[f"coatjava_{key}"] = coatjava_metrics.get(key)
                     table_row[f"adapter_minus_coatjava_{key}"] = deltas.get(key)
+                    table_row[f"native_{key}"] = native_metrics.get(key)
+                    table_row[f"native_coatjava_{key}"] = native_coatjava_metrics.get(key)
+                    table_row[f"native_adapter_minus_coatjava_{key}"] = native_deltas.get(key)
             table_rows.append(table_row)
     fields = sorted({key for row in table_rows for key in row})
     with (summary_dir / "run_table.csv").open("w", newline="") as stream:
@@ -478,8 +496,12 @@ def main() -> None:
     status_path = Path(manifest["campaign_dir"]).resolve() / "status.yaml"
 
     if args.collate_only:
-        collate_summary(manifest)
-        print(f"Wrote summary files under {Path(manifest['campaign_dir']) / 'summary'}")
+        collate_summary(
+            manifest,
+            evaluation_suffix=args.collate_evaluation_suffix,
+            summary_name=args.summary_name,
+        )
+        print(f"Wrote summary files under {Path(manifest['campaign_dir']) / args.summary_name}")
         return
     if args.status:
         print_status(manifest, runs, status_path)

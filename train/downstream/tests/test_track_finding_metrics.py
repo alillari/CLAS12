@@ -8,6 +8,9 @@ from fm4npp.datasets.dataset import MyCollator
 from train.downstream.loss import PointHungarianMatcher, compute_point_loss
 from train.downstream.track_finding_metrics import (
     MatchConfig,
+    NOISE_ATTRIBUTION_NATIVE,
+    NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
+    canonicalize_noise_query,
     compare_metric_summaries,
     event_track_metrics,
     summarize_event_metrics,
@@ -127,12 +130,95 @@ class TrackFindingMetricsTest(unittest.TestCase):
         self.assertEqual(validation_ari_metric("inclusive"), "ari_with_background")
         self.assertEqual(validation_ari_metric("signal"), "ari_signal")
         self.assertAlmostEqual(row[validation_ari_metric("inclusive")], 1.0)
-        # The binary decoder cannot identify query 7 as noise, so signal-only
-        # scoring sees it as an extra predicted track. This is why the
-        # reproduction checkpoint selector uses inclusive ARI.
-        self.assertAlmostEqual(row[validation_ari_metric("signal")], 0.0)
+        # A distinct noise query outside the true signal support must not
+        # penalize the one-track signal-ARI edge case.
+        self.assertAlmostEqual(row[validation_ari_metric("signal")], 1.0)
         with self.assertRaises(ValueError):
             validation_ari_metric("unknown")
+
+    def test_qualified_noise_query_is_canonicalized_without_hiding_signal(self):
+        truth = np.array([-1, -1, 0, 0, 1, 1])
+        pred = np.array([9, 9, 3, 3, 4, 4])
+        signal = np.ones_like(truth, dtype=bool)
+        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
+            truth,
+            pred,
+            pred_signal_mask=signal,
+            mode=NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
+        )
+        self.assertTrue(attribution["noise_match_qualified"])
+        self.assertEqual(attribution["noise_pred_id"], 9)
+        self.assertEqual(canonical_pred.tolist(), [-1, -1, 3, 3, 4, 4])
+        self.assertEqual(canonical_signal.tolist(), [False, False, True, True, True, True])
+        native = event_track_metrics(truth, pred, pred_signal_mask=signal)
+        canonical = event_track_metrics(
+            truth, canonical_pred, pred_signal_mask=canonical_signal,
+        )
+        self.assertEqual(native["n_pred_tracks"], 3)
+        self.assertEqual(canonical["n_pred_tracks"], 2)
+        self.assertEqual(canonical["n_matched_tracks"], 2)
+        self.assertNotIn(9, {match["pred_id"] for match in canonical["matches"]})
+        self.assertAlmostEqual(canonical["background_rejection"], 1.0)
+        self.assertAlmostEqual(canonical["signal_loss_to_background"], 0.0)
+
+    def test_noise_query_signal_leakage_becomes_signal_loss(self):
+        truth = np.array([-1, -1, 0, 0])
+        pred = np.array([8, 8, 8, 7])
+        signal = np.ones_like(truth, dtype=bool)
+        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
+            truth,
+            pred,
+            pred_signal_mask=signal,
+            mode=NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
+        )
+        self.assertTrue(attribution["noise_match_qualified"])
+        canonical = event_track_metrics(
+            truth, canonical_pred, pred_signal_mask=canonical_signal,
+        )
+        self.assertAlmostEqual(canonical["signal_loss_to_background"], 0.5)
+        self.assertAlmostEqual(canonical["background_rejection"], 1.0)
+
+    def test_ambiguous_noise_candidate_is_not_reclassified(self):
+        truth = np.array([-1, -1, 0, 0, 0])
+        pred = np.array([5, 5, 5, 5, 5])
+        signal = np.ones_like(truth, dtype=bool)
+        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
+            truth,
+            pred,
+            pred_signal_mask=signal,
+            mode=NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
+        )
+        self.assertFalse(attribution["noise_match_qualified"])
+        self.assertEqual(attribution["noise_attribution_status"], "no_joint_noise_candidate")
+        self.assertEqual(canonical_pred.tolist(), pred.tolist())
+        self.assertEqual(canonical_signal.tolist(), signal.tolist())
+
+    def test_joint_noise_candidate_below_threshold_is_rejected(self):
+        truth = np.array([-1, -1] + [0] * 10)
+        pred = np.array([5, 5] + [5] * 3 + [6] * 7)
+        signal = np.ones_like(truth, dtype=bool)
+        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
+            truth,
+            pred,
+            pred_signal_mask=signal,
+            mode=NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
+        )
+        self.assertEqual(attribution["noise_pred_id"], 5)
+        self.assertFalse(attribution["noise_match_qualified"])
+        self.assertEqual(attribution["noise_attribution_status"], "rejected_threshold")
+        self.assertEqual(canonical_pred.tolist(), pred.tolist())
+        self.assertEqual(canonical_signal.tolist(), signal.tolist())
+
+    def test_native_noise_attribution_leaves_prediction_untouched(self):
+        truth = np.array([-1, -1, 0, 0])
+        pred = np.array([6, 6, 2, 2])
+        signal = np.ones_like(truth, dtype=bool)
+        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
+            truth, pred, pred_signal_mask=signal, mode=NOISE_ATTRIBUTION_NATIVE,
+        )
+        self.assertEqual(canonical_pred.tolist(), pred.tolist())
+        self.assertEqual(canonical_signal.tolist(), signal.tolist())
+        self.assertEqual(attribution["noise_attribution_status"], "native")
 
     def test_matching_reports_efficiency_and_purity(self):
         truth = np.array([1, 1, 1, 2, 2, 2, -1])

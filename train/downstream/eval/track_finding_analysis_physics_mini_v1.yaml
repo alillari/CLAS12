@@ -22,6 +22,9 @@ analysis:
   background_label: -1
   assignment_option: 2
   assignment_threshold: 0.0
+  # Native leaves binary query labels untouched. The truth-assisted mode is
+  # evaluation-only and should be written to a separate output directory.
+  noise_attribution_mode: native
   match_iou_threshold: 0.5
   match_min_purity: 0.5
   match_min_efficiency: 0.5

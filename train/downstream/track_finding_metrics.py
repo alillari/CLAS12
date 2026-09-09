@@ -18,6 +18,14 @@ class MatchConfig:
     min_efficiency: float = 0.5
 
 
+NOISE_ATTRIBUTION_NATIVE = "native"
+NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED = "truth_joint_hungarian_qualified"
+VALID_NOISE_ATTRIBUTION_MODES = frozenset({
+    NOISE_ATTRIBUTION_NATIVE,
+    NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
+})
+
+
 COMPARISON_METRICS = (
     "ari_signal",
     "ari_with_background",
@@ -49,6 +57,144 @@ def finite_or_none(value: float | int | None) -> float | int | None:
         return None
     value = float(value)
     return value if np.isfinite(value) else None
+
+
+def _instance_overlap(
+    truth_mask: np.ndarray,
+    pred_mask: np.ndarray,
+) -> tuple[float, float, float]:
+    intersection = int((truth_mask & pred_mask).sum())
+    union = int((truth_mask | pred_mask).sum())
+    return (
+        _safe_div(intersection, union) or 0.0,
+        _safe_div(intersection, int(pred_mask.sum())) or 0.0,
+        _safe_div(intersection, int(truth_mask.sum())) or 0.0,
+    )
+
+
+def canonicalize_noise_query(
+    truth_labels: np.ndarray,
+    pred_labels: np.ndarray,
+    *,
+    valid_mask: np.ndarray | None = None,
+    pred_signal_mask: np.ndarray | None = None,
+    config: MatchConfig | None = None,
+    mode: str = NOISE_ATTRIBUTION_NATIVE,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Truth-assist one aggregate noise query for evaluation only.
+
+    A qualified noise query is selected by a *joint* Hungarian assignment over
+    physical truth instances and raw ``background_label``.  It is subsequently
+    mapped to predicted background.  The returned record makes the oracle
+    nature and any rejected ambiguity explicit.
+    """
+    if mode not in VALID_NOISE_ATTRIBUTION_MODES:
+        raise ValueError(
+            f"Unknown noise_attribution_mode {mode!r}; expected one of "
+            f"{sorted(VALID_NOISE_ATTRIBUTION_MODES)}"
+        )
+    config = config or MatchConfig()
+    truth = np.asarray(truth_labels).reshape(-1)
+    pred = np.asarray(pred_labels).reshape(-1)
+    if truth.shape != pred.shape:
+        raise ValueError(f"truth/pred shape mismatch: {truth.shape} vs {pred.shape}")
+    valid = (
+        np.ones(truth.shape, dtype=bool)
+        if valid_mask is None else np.asarray(valid_mask).reshape(-1).astype(bool)
+    )
+    if valid.shape != truth.shape:
+        raise ValueError(f"valid_mask shape mismatch: {valid.shape} vs {truth.shape}")
+    if pred_signal_mask is None:
+        pred_signal = (pred >= 0) & valid
+    else:
+        pred_signal = np.asarray(pred_signal_mask).reshape(-1).astype(bool) & (pred >= 0) & valid
+    canonical_pred = pred.copy()
+    canonical_pred[~pred_signal] = int(config.background_label)
+    canonical_signal = pred_signal.copy()
+
+    truth_noise = valid & (truth == int(config.background_label))
+    active_ids = sorted(np.unique(pred[pred_signal]).astype(int).tolist())
+    record: dict[str, Any] = {
+        "noise_attribution_mode": mode,
+        "noise_truth_present": bool(truth_noise.any()),
+        "noise_truth_points": int(truth_noise.sum()),
+        "noise_active_candidate_count": int(len(active_ids)),
+        "noise_attribution_status": "native" if mode == NOISE_ATTRIBUTION_NATIVE else None,
+        "noise_pred_id": None,
+        "noise_match_iou": None,
+        "noise_match_purity": None,
+        "noise_match_efficiency": None,
+        "noise_match_qualified": False,
+    }
+    if mode == NOISE_ATTRIBUTION_NATIVE:
+        return canonical_pred, canonical_signal, record
+    if not truth_noise.any():
+        record["noise_attribution_status"] = "no_truth_noise"
+        return canonical_pred, canonical_signal, record
+    if not active_ids:
+        record["noise_attribution_status"] = "no_active_prediction"
+        return canonical_pred, canonical_signal, record
+
+    truth_ids = sorted(np.unique(truth[valid]).astype(int).tolist())
+    pred_masks = [pred_signal & (pred == pred_id) for pred_id in active_ids]
+    truth_masks = [valid & (truth == truth_id) for truth_id in truth_ids]
+    iou = np.zeros((len(active_ids), len(truth_ids)), dtype=np.float64)
+    for pidx, pred_mask in enumerate(pred_masks):
+        for tidx, truth_mask in enumerate(truth_masks):
+            iou[pidx, tidx], _purity, _efficiency = _instance_overlap(truth_mask, pred_mask)
+    row_ind, col_ind = linear_sum_assignment(-iou)
+    noise_index = truth_ids.index(int(config.background_label))
+    noise_pairs = [(pidx, tidx) for pidx, tidx in zip(row_ind, col_ind) if tidx == noise_index]
+    if not noise_pairs:
+        record["noise_attribution_status"] = "no_joint_noise_candidate"
+        return canonical_pred, canonical_signal, record
+
+    pidx, _tidx = noise_pairs[0]
+    noise_pred_id = active_ids[pidx]
+    noise_iou, noise_purity, noise_efficiency = _instance_overlap(truth_noise, pred_masks[pidx])
+    qualified = (
+        noise_iou >= config.iou_threshold
+        and noise_purity >= config.min_purity
+        and noise_efficiency >= config.min_efficiency
+    )
+    record.update({
+        "noise_pred_id": int(noise_pred_id),
+        "noise_match_iou": float(noise_iou),
+        "noise_match_purity": float(noise_purity),
+        "noise_match_efficiency": float(noise_efficiency),
+        "noise_match_qualified": bool(qualified),
+        "noise_attribution_status": "qualified" if qualified else "rejected_threshold",
+    })
+    if qualified:
+        selected = valid & (pred == noise_pred_id) & pred_signal
+        canonical_pred[selected] = int(config.background_label)
+        canonical_signal[selected] = False
+    return canonical_pred, canonical_signal, record
+
+
+def summarize_noise_attribution(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize truth-assisted noise attribution without hiding failures."""
+    n_events = len(rows)
+    modes = sorted({str(row.get("noise_attribution_mode", "native")) for row in rows})
+    truth_noise = [row for row in rows if row.get("noise_truth_present")]
+    candidates = [row for row in truth_noise if row.get("noise_pred_id") is not None]
+    qualified = [row for row in truth_noise if row.get("noise_match_qualified")]
+    out: dict[str, Any] = {
+        "n_events": n_events,
+        "noise_attribution_mode": modes[0] if len(modes) == 1 else modes,
+        "n_events_with_truth_noise": len(truth_noise),
+        "n_events_with_joint_noise_candidate": len(candidates),
+        "n_events_with_qualified_noise_query": len(qualified),
+        "noise_query_candidate_rate": _safe_div(len(candidates), len(truth_noise)),
+        "noise_query_match_rate": _safe_div(len(qualified), len(truth_noise)),
+    }
+    if modes == [NOISE_ATTRIBUTION_NATIVE]:
+        out["noise_query_candidate_rate"] = None
+        out["noise_query_match_rate"] = None
+    for key in ("noise_match_iou", "noise_match_purity", "noise_match_efficiency"):
+        values = [float(row[key]) for row in qualified if row.get(key) is not None]
+        out[f"qualified_{key}_mean"] = _mean_or_none(values)
+    return out
 
 
 def compare_metric_summaries(
@@ -103,11 +249,14 @@ def event_track_metrics(
 
     true_ids = sorted(np.unique(truth[truth_signal]).tolist())
     pred_ids = sorted(np.unique(pred[pred_signal]).tolist())
+    pred_ids_on_truth_signal = sorted(np.unique(pred[truth_signal]).tolist())
 
     if truth_signal.sum() > 1 and len(true_ids) > 1:
         ari_signal = float(adjusted_rand_score(truth[truth_signal], pred[truth_signal]))
     elif truth_signal.sum() > 0:
-        ari_signal = 1.0 if len(pred_ids) <= 1 else 0.0
+        # A separate predicted noise instance outside the true signal support
+        # must not penalize a one-track signal event.
+        ari_signal = 1.0 if len(pred_ids_on_truth_signal) <= 1 else 0.0
     else:
         ari_signal = None
 

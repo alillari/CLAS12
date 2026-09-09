@@ -31,8 +31,11 @@ default: &default
   chunk_training: false
   low_thr: 1
   high_thr: 512
-  max_gt_classes: 150
-  num_prototypes: 150
+  # Event-level CLAS12 tracking has far fewer simultaneous signal tracks than
+  # the inherited generic TPC setting. Keep these in lockstep: each prototype
+  # is one decoder query and the historical physics mini-campaign used 16.
+  max_gt_classes: 16
+  num_prototypes: 16
   max_tracks: 150
   background_label: -1
   # Compatibility default. Reproduction campaigns opt into the historical
@@ -89,7 +92,10 @@ default: &default
   d_state: 16
   d_conv: 4
   expand: 2
-  klen: 3
+  # Backbone/dataset next-point horizon, not the number of track queries.
+  # The campaign_4 Mamba1 checkpoints have a 3-wide output head (klen=1), so
+  # this must remain one for strict pretrained-backbone compatibility.
+  klen: 1
   dropout: 0.1
   downstream_dropout: 0.1
   mambaversion: mamba1

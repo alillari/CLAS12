@@ -191,7 +191,9 @@ def train_experiment(
             "embed_dim": json_safe(getattr(params, "embed_dim", None)),
             "base_dim": json_safe(getattr(params, "base_dim", None)),
             "num_layers_backbone": json_safe(getattr(params, "num_layers_backbone", None)),
-            "num_prototypes": json_safe(getattr(params, "max_gt_classes", None)),
+            "num_prototypes": json_safe(
+                getattr(params, "num_prototypes", getattr(params, "max_gt_classes", None))
+            ),
             "mambaversion": json_safe(getattr(params, "mambaversion", None)),
             "track_target_mode": json_safe(getattr(params, "track_target_mode", "signal_only")),
             "validation_ari_mode": json_safe(getattr(params, "validation_ari_mode", "signal")),

@@ -27,6 +27,7 @@ DEFAULT_ANALYSIS_YAML = "train/downstream/eval/track_finding_analysis_adapteronl
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint-root", default=str(DEFAULT_CHECKPOINT_ROOT))
+    parser.add_argument("--checkpoint-name", help="Exact checkpoint filename to use inside every selected backbone directory.")
     parser.add_argument(
         "--checkpoint-run",
         action="append",
@@ -44,6 +45,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eventnumber", default="50000")
     parser.add_argument("--train-batch-size", type=int, default=32)
     parser.add_argument("--max-samples", type=int, default=10000)
+    parser.add_argument("--seed", type=int, help="Fixed training seed written into every rendered model config.")
+    parser.add_argument("--assignment-threshold", type=float, help="Frozen inference threshold written into training and evaluation configs.")
+    parser.add_argument("--expected-pretrained-count", type=int, help="Fail unless exactly this many pretrained backbone directories are selected.")
+    parser.add_argument("--expected-embed-dim", type=int, help="Fail if a selected pretrained backbone has a different embedding width.")
     parser.add_argument("--preflight-max-events", type=int, help="Maximum events sampled by campaign preflight.")
     parser.add_argument("--min-multitrack-fraction", type=float, help="Minimum preflight fraction of events with more than one signal track.")
     parser.add_argument("--max-epochs", type=int, help="Override downstream max_epochs.")
@@ -120,6 +125,8 @@ def parse_training_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "num_data_workers": args.num_data_workers,
         "track_target_mode": args.track_target_mode,
         "validation_ari_mode": args.validation_ari_mode,
+        "seed": args.seed,
+        "assignment_threshold": args.assignment_threshold,
     }
     overrides = {key: value for key, value in direct.items() if value is not None}
     for item in args.training_override:
@@ -214,8 +221,23 @@ def main() -> None:
                     f"{checkpoint_root}: {', '.join(missing)}"
                 )
             source_dirs = [path for path in source_dirs if path.name in requested]
+        if args.expected_pretrained_count is not None and len(source_dirs) != args.expected_pretrained_count:
+            raise ValueError(
+                f"Expected {args.expected_pretrained_count} pretrained backbones after filtering, found {len(source_dirs)}"
+            )
         for source_dir in source_dirs:
-            checkpoint = discover_checkpoint(source_dir)
+            metadata = parse_run_name(source_dir.name)
+            if args.expected_embed_dim is not None and metadata["embed_dim"] != args.expected_embed_dim:
+                raise ValueError(
+                    f"Backbone {source_dir.name} has embed_dim={metadata['embed_dim']}; "
+                    f"expected {args.expected_embed_dim}. A fixed-size adapter campaign cannot mix these."
+                )
+            checkpoint = (
+                source_dir / args.checkpoint_name
+                if args.checkpoint_name else discover_checkpoint(source_dir)
+            )
+            if not checkpoint.is_file():
+                raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint}")
             for eventnumber in eventnumbers:
                 row = pretrained_row(
                     source_dir,
@@ -247,6 +269,14 @@ def main() -> None:
             "max_samples": int(args.max_samples),
         },
         "training_overrides": training_overrides,
+        "analysis_overrides": {
+            key: value for key, value in {
+                "assignment_threshold": args.assignment_threshold,
+                # Thresholding is an inference policy: primary campaign results must never
+                # choose an oracle noise-attribution view.
+                "noise_attribution_mode": "native" if args.assignment_threshold is not None else None,
+            }.items() if value is not None
+        },
         "runs": runs,
     }
     write_yaml(manifest_path, manifest)

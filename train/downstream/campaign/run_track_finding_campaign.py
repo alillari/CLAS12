@@ -127,6 +127,8 @@ def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
             if run.get("pretrained_checkpoint") else None
         ),
     })
+    analysis.update(manifest.get("analysis_overrides", {}))
+    analysis.update(run.get("analysis_overrides", {}))
     write_yaml(Path(run["analysis_yaml"]), {"analysis": analysis})
 
 
@@ -160,43 +162,53 @@ def eval_command(run: dict[str, Any]) -> list[str]:
 
 
 def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_fraction: float = 0.8) -> dict[str, Any]:
-    features = RaggedMmap(str(data_root / "features_pretrain"))
-    seg = RaggedMmap(str(data_root / "seg_target_pretrain"))
-    coatjava = RaggedMmap(str(data_root / "coatjava_seg_pred_pretrain"))
-    n = min(len(features), len(seg), len(coatjava), int(max_events))
-    rows = []
-    for idx in range(n):
-        labels = np.asarray(seg[idx])
-        coatjava_labels = np.asarray(coatjava[idx])
-        signal = labels[labels != -1]
-        rows.append({
-            "n_points": int(len(labels)),
-            "n_signal_tracks": int(len(np.unique(signal))) if signal.size else 0,
-            "background_fraction": float(np.mean(labels == -1)) if labels.size else 0.0,
-            "length_match": int(features[idx].shape[0]) == int(labels.shape[0]),
-            "coatjava_length_match": int(features[idx].shape[0]) == int(coatjava_labels.shape[0]),
-        })
-    multitrack_fraction = float(np.mean([row["n_signal_tracks"] > 1 for row in rows])) if rows else 0.0
+    """Validate aligned event sidecars for both supervised train and test splits."""
+    split_rows: dict[str, dict[str, Any]] = {}
+    for split in ("pretrain", "test"):
+        features = RaggedMmap(str(data_root / f"features_{split}"))
+        seg = RaggedMmap(str(data_root / f"seg_target_{split}"))
+        coatjava = RaggedMmap(str(data_root / f"coatjava_seg_pred_{split}"))
+        n = min(len(features), len(seg), len(coatjava), int(max_events))
+        rows = []
+        for idx in range(n):
+            labels = np.asarray(seg[idx])
+            coatjava_labels = np.asarray(coatjava[idx])
+            signal = labels[labels != -1]
+            rows.append({
+                "n_points": int(len(labels)),
+                "n_signal_tracks": int(len(np.unique(signal))) if signal.size else 0,
+                "background_fraction": float(np.mean(labels == -1)) if labels.size else 0.0,
+                "length_match": int(features[idx].shape[0]) == int(labels.shape[0]),
+                "coatjava_length_match": int(features[idx].shape[0]) == int(coatjava_labels.shape[0]),
+            })
+        fraction = float(np.mean([row["n_signal_tracks"] > 1 for row in rows])) if rows else 0.0
+        split_rows[split] = {
+            "feature_events": len(features), "seg_target_events": len(seg),
+            "coatjava_seg_pred_events": len(coatjava), "sampled_events": n,
+            "multitrack_fraction": fraction,
+            "mean_points": float(np.mean([row["n_points"] for row in rows])) if rows else None,
+            "mean_signal_tracks": float(np.mean([row["n_signal_tracks"] for row in rows])) if rows else None,
+            "mean_background_fraction": float(np.mean([row["background_fraction"] for row in rows])) if rows else None,
+            "all_lengths_match": all(row["length_match"] for row in rows),
+            "all_coatjava_lengths_match": all(row["coatjava_length_match"] for row in rows),
+            "passed": bool(rows) and len(features) == len(seg) == len(coatjava)
+                and all(row["length_match"] and row["coatjava_length_match"] for row in rows)
+                and fraction >= min_multitrack_fraction,
+        }
+    train = split_rows["pretrain"]
     summary = {
         "data_root": str(data_root),
-        "feature_events": len(features),
-        "seg_target_events": len(seg),
-        "coatjava_seg_pred_events": len(coatjava),
-        "sampled_events": n,
-        "multitrack_fraction": multitrack_fraction,
-        "mean_points": float(np.mean([row["n_points"] for row in rows])) if rows else None,
-        "mean_signal_tracks": float(np.mean([row["n_signal_tracks"] for row in rows])) if rows else None,
-        "mean_background_fraction": float(np.mean([row["background_fraction"] for row in rows])) if rows else None,
-        "all_lengths_match": all(row["length_match"] for row in rows),
-        "all_coatjava_lengths_match": all(row["coatjava_length_match"] for row in rows),
+        "feature_events": train["feature_events"], "seg_target_events": train["seg_target_events"],
+        "coatjava_seg_pred_events": train["coatjava_seg_pred_events"], "sampled_events": train["sampled_events"],
+        "multitrack_fraction": train["multitrack_fraction"], "mean_points": train["mean_points"],
+        "mean_signal_tracks": train["mean_signal_tracks"], "mean_background_fraction": train["mean_background_fraction"],
+        "all_lengths_match": train["all_lengths_match"], "all_coatjava_lengths_match": train["all_coatjava_lengths_match"],
+        "test_feature_events": split_rows["test"]["feature_events"],
+        "test_sampled_events": split_rows["test"]["sampled_events"],
+        "test_multitrack_fraction": split_rows["test"]["multitrack_fraction"],
+        "test_passed": split_rows["test"]["passed"],
     }
-    summary["passed"] = (
-        bool(rows)
-        and len(features) == len(seg) == len(coatjava)
-        and summary["all_lengths_match"]
-        and summary["all_coatjava_lengths_match"]
-        and multitrack_fraction >= min_multitrack_fraction
-    )
+    summary["passed"] = train["passed"] and split_rows["test"]["passed"]
     if not summary["passed"]:
         raise ValueError(f"Track-finding preflight failed: {summary}")
     return summary
@@ -232,6 +244,8 @@ def collate_summary(
                 "pretrain_events": run["pretrain_events"],
                 "labeled_events": run.get("labeled_events", run.get("eventnumber")),
                 "adapter_checkpoint": run["adapter_checkpoint"],
+                "model_yaml": run["model_yaml"],
+                "model_config": run["model_config"],
                 "evaluation_dir": run["evaluation_dir"],
                 "summary_found": summary.exists(),
             }
@@ -245,7 +259,14 @@ def collate_summary(
                 native_deltas = summary_data.get("native_comparisons", {}).get("adapter_minus_coatjava", {})
                 table_row["metric_view"] = summary_data.get("metric_view", "canonical")
                 table_row["noise_attribution_mode"] = summary_data.get("noise_attribution_mode")
-                for key in ("ari_signal", "track_efficiency_global", "track_purity_global", "fake_rate", "background_rejection"):
+                table_row["assignment_threshold"] = summary_data.get("assignment_threshold")
+                table_row["track_target_mode"] = summary_data.get("track_target_mode")
+                for key in (
+                    "ari_signal", "ari_with_background", "track_efficiency_global",
+                    "track_purity_global", "fake_rate", "miss_rate", "split_rate",
+                    "merge_rate", "background_rejection", "background_contamination",
+                    "signal_loss_to_background", "matched_iou_mean",
+                ):
                     table_row[key] = metrics.get(key)
                     table_row[f"coatjava_{key}"] = coatjava_metrics.get(key)
                     table_row[f"adapter_minus_coatjava_{key}"] = deltas.get(key)

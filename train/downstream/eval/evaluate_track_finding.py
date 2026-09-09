@@ -1016,6 +1016,8 @@ def main() -> None:
             "validation_ari_mode": str(getattr(params, "validation_ari_mode", "signal")),
             "metric_view": "canonical",
             "noise_attribution_mode": noise_attribution_mode,
+            "assignment_option": assignment_option,
+            "assignment_threshold": assignment_threshold,
             "max_samples": int(analysis.get("max_samples", 10000)),
             "background_label": match_config.background_label,
             "match_iou_threshold": match_config.iou_threshold,

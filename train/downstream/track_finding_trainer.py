@@ -37,6 +37,11 @@ from trackinghead import *
 from loss import *
 from downstream_util import get_early_stopping_config
 from track_finding_metrics import MatchConfig, event_track_metrics, summarize_event_metrics
+from track_finding_targets import (
+    SIGNAL_ONLY,
+    build_track_instance_targets,
+    validation_ari_metric,
+)
 
 
 class DownstreamTrainer():
@@ -428,54 +433,18 @@ class DownstreamTrainer():
         raise ValueError(f"Unexpected track-finding batch with {len(batch)} elements")
 
     def _build_track_targets(self, labels, mask):
-        background_label = int(getattr(self.params, "background_label", -1))
-        targets = []
-        inverse_valid_list = []
-        for batch_idx in range(labels.size(0)):
-            valid = mask[batch_idx]
-            sample_labels = labels[batch_idx]
-            signal_valid = valid & (sample_labels != background_label)
-            valid_labels = sample_labels[signal_valid]
-            if valid_labels.numel() == 0:
-                targets.append({
-                    "masks": torch.zeros(
-                        0,
-                        sample_labels.size(0),
-                        device=labels.device,
-                        dtype=torch.float32,
-                    ),
-                    "labels": torch.zeros(0, dtype=torch.long, device=labels.device),
-                })
-                inverse_valid_list.append(torch.zeros(0, dtype=torch.long, device=labels.device))
-                continue
-
-            unique_labels, inverse_valid = torch.unique(
-                valid_labels,
-                sorted=True,
-                return_inverse=True,
-            )
-            n_gt_classes = unique_labels.numel()
-            valid_one_hot = F.one_hot(
-                inverse_valid,
-                num_classes=n_gt_classes,
-            ).float()
-            sample_masks = torch.zeros(
-                n_gt_classes,
-                sample_labels.size(0),
-                device=labels.device,
-                dtype=valid_one_hot.dtype,
-            )
-            sample_masks[:, signal_valid] = valid_one_hot.permute(1, 0)
-            targets.append({
-                "masks": sample_masks,
-                "labels": torch.ones(n_gt_classes, dtype=torch.long, device=labels.device),
-            })
-            inverse_valid_list.append(inverse_valid)
-        return targets, inverse_valid_list
+        return build_track_instance_targets(
+            labels,
+            mask,
+            mode=str(getattr(self.params, "track_target_mode", SIGNAL_ONLY)),
+            background_label=int(getattr(self.params, "background_label", -1)),
+        )
 
     def _batch_adjusted_rand(self, inverse_valid_list, assignments, mask):
+        mode = str(getattr(self.params, "validation_ari_mode", "signal"))
+        metric_name = validation_ari_metric(mode)
         rows = self._batch_event_metrics(inverse_valid_list, assignments, mask)
-        scores = [row["ari_signal"] for row in rows if row.get("ari_signal") is not None]
+        scores = [row[metric_name] for row in rows if row.get(metric_name) is not None]
         return float(np.mean(scores)) if scores else 0.0
 
     def _batch_event_metrics(self, inverse_valid_list, assignments, mask, classes=None):
@@ -888,12 +857,24 @@ class DownstreamTrainer():
         if self.log_to_screen:
             print("Starting training loop...")
 
+        validation_ari_mode = str(getattr(self.params, "validation_ari_mode", "signal"))
+        if validation_ari_mode not in {"signal", "inclusive"}:
+            raise ValueError("validation_ari_mode must be 'signal' or 'inclusive'")
+        validation_ari_label = f"ARI_{validation_ari_mode}_option2"
+
         # Always create log file and write header
         with open(log_file_path, "w") as f:
             if getattr(self.params, "max_optimizer_steps", None) is None:
-                f.write("Epoch\tTrain_Loss\tVal_Loss\tARI\tARI_2\tmatched_CE\tUnmatched_CE\tDice\tFocal\tTime\n")
+                f.write(
+                    "Epoch\tTrain_Loss\tVal_Loss\tARI_"
+                    f"{validation_ari_mode}_option1\t{validation_ari_label}"
+                    "\tmatched_CE\tUnmatched_CE\tDice\tFocal\tTime\n"
+                )
             else:
-                f.write("Step\tEpoch\tTrain_Loss\tVal_Loss\tARI\tARI_2\tLR\tTime\n")
+                f.write(
+                    "Step\tEpoch\tTrain_Loss\tVal_Loss\tARI_"
+                    f"{validation_ari_mode}_option1\t{validation_ari_label}\tLR\tTime\n"
+                )
      
         self.best_loss = np.inf
         self.best_ARI = 0
@@ -963,7 +944,10 @@ class DownstreamTrainer():
             if self.log_to_screen:
                 print(f"Epoch {epoch}/{self.params.max_epochs-1} | Time: {epoch_time:.2f}s")
                 print(f"  Train Loss: {train_epoch_loss:.6f} | Val Loss: {val_epoch_loss:.6f}")
-                print(f"  ARI: {avg_ari:.6f} | ARI_2: {avg_ari_2:.6f}")
+                print(
+                    f"  ARI ({validation_ari_mode}, option 1): {avg_ari:.6f} | "
+                    f"ARI ({validation_ari_mode}, option 2): {avg_ari_2:.6f}"
+                )
                 print(f"  Matched CE: {avg_matched_ce:.6f} | Unmatched CE: {avg_unmatched_ce:.6f}")
                 print(f"  Dice: {avg_dice:.6f} | Focal: {avg_focal:.6f}")
                 print(f"  Best Loss: {self.best_loss:.6f} | Best ARI: {self.best_ARI:.6f}")
@@ -1449,6 +1433,8 @@ class DownstreamTrainer():
             'best_epoch': getattr(self, "best_epoch", None),
             'global_step': getattr(self, "global_step", None),
             'current_loss': loss,
+            'track_target_mode': getattr(self.params, "track_target_mode", SIGNAL_ONLY),
+            'validation_ari_mode': getattr(self.params, "validation_ari_mode", "signal"),
             'params': vars(self.params)  # Save all hyperparameters
         }
 

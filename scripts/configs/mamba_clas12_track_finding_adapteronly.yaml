@@ -35,6 +35,10 @@ default: &default
   num_prototypes: 150
   max_tracks: 150
   background_label: -1
+  # Compatibility default. Reproduction campaigns opt into the historical
+  # unified -1 instance explicitly, while existing artifacts remain legible.
+  track_target_mode: signal_only
+  validation_ari_mode: signal
 
   # CLAS12 point tensors are 3-column [eta, phi, r]; the old TPC voxelizer
   # assumes a leading energy column, so CLAS12 ordering is selected via

@@ -193,6 +193,8 @@ def train_experiment(
             "num_layers_backbone": json_safe(getattr(params, "num_layers_backbone", None)),
             "num_prototypes": json_safe(getattr(params, "max_gt_classes", None)),
             "mambaversion": json_safe(getattr(params, "mambaversion", None)),
+            "track_target_mode": json_safe(getattr(params, "track_target_mode", "signal_only")),
+            "validation_ari_mode": json_safe(getattr(params, "validation_ari_mode", "signal")),
             "hostname": socket.gethostname(),
             "git_commit": git_commit(),
             "data_root": json_safe(getattr(params, "data_root", None)),

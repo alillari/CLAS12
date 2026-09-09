@@ -5,12 +5,19 @@ import torch
 
 from fm4npp.datasets.dataset import MyCollator
 
+from train.downstream.loss import PointHungarianMatcher, compute_point_loss
 from train.downstream.track_finding_metrics import (
     MatchConfig,
     compare_metric_summaries,
     event_track_metrics,
     summarize_event_metrics,
     track_momentum_by_label,
+)
+from train.downstream.track_finding_targets import (
+    SIGNAL_ONLY,
+    UNIFIED_NOISE_INSTANCE,
+    build_track_instance_targets,
+    validation_ari_metric,
 )
 from train.downstream.eval.evaluate_track_finding import (
     EventMetricAccumulator,
@@ -50,6 +57,82 @@ class TrackFindingMetricsTest(unittest.TestCase):
         self.assertEqual(row["n_background_points"], 2)
         self.assertAlmostEqual(row["ari_signal"], 1.0)
         self.assertLess(row["background_rejection"], 1.0)
+
+    def test_unified_noise_instance_is_an_object_target_without_padding(self):
+        labels = torch.tensor([[-1, -1, 0, 0, -100]])
+        valid = torch.tensor([[True, True, True, True, False]])
+        targets, inverse = build_track_instance_targets(
+            labels,
+            valid,
+            mode=UNIFIED_NOISE_INSTANCE,
+        )
+        self.assertEqual(targets[0]["labels"].tolist(), [1, 1])
+        self.assertEqual(targets[0]["masks"].tolist(), [
+            [1.0, 1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 1.0, 0.0],
+        ])
+        self.assertEqual(inverse[0].numel(), 4)
+
+    def test_all_noise_is_one_target_and_padding_is_never_a_target(self):
+        labels = torch.tensor([[-1, -1, -100], [-100, -100, -100]])
+        valid = torch.tensor([[True, True, False], [False, False, False]])
+        targets, _inverse = build_track_instance_targets(
+            labels,
+            valid,
+            mode=UNIFIED_NOISE_INSTANCE,
+        )
+        self.assertEqual(tuple(targets[0]["masks"].shape), (1, 3))
+        self.assertEqual(targets[0]["masks"].tolist(), [[1.0, 1.0, 0.0]])
+        self.assertEqual(tuple(targets[1]["masks"].shape), (0, 3))
+
+    def test_unified_noise_target_has_a_finite_hungarian_loss(self):
+        labels = torch.tensor([[-1, -1, 0, 0, -100]])
+        valid = torch.tensor([[True, True, True, True, False]])
+        targets, _inverse = build_track_instance_targets(
+            labels,
+            valid,
+            mode=UNIFIED_NOISE_INSTANCE,
+        )
+        outputs = {
+            "pred_probs": torch.tensor([[
+                [0.05, 0.95],
+                [0.05, 0.95],
+                [0.95, 0.05],
+            ]]),
+            "pred_masks": torch.tensor([[
+                [0.95, 0.95, 0.05, 0.05, 0.50],
+                [0.05, 0.05, 0.95, 0.95, 0.50],
+                [0.05, 0.05, 0.05, 0.05, 0.50],
+            ]]),
+        }
+        matcher = PointHungarianMatcher(cost_class=1, cost_dice=1, cost_focal=20)
+        indices = matcher(outputs, targets, valid)
+        self.assertEqual(indices[0][0].numel(), 2)
+        losses = compute_point_loss(outputs, targets, valid, matcher)
+        for value in losses.values():
+            self.assertTrue(torch.isfinite(value).all())
+
+    def test_signal_only_mode_remains_explicit_compatibility_behavior(self):
+        labels = torch.tensor([[-1, -1, 0, 0, -100]])
+        valid = torch.tensor([[True, True, True, True, False]])
+        targets, _inverse = build_track_instance_targets(labels, valid, mode=SIGNAL_ONLY)
+        self.assertEqual(targets[0]["labels"].tolist(), [1])
+        self.assertEqual(targets[0]["masks"].tolist(), [[0.0, 0.0, 1.0, 1.0, 0.0]])
+
+    def test_inclusive_validation_ari_includes_noise_but_excludes_padding(self):
+        truth = np.array([-1, -1, 0, 0, -100])
+        pred = np.array([7, 7, 4, 4, 999])
+        valid = np.array([True, True, True, True, False])
+        row = event_track_metrics(truth, pred, valid_mask=valid)
+        self.assertEqual(validation_ari_metric("inclusive"), "ari_with_background")
+        self.assertEqual(validation_ari_metric("signal"), "ari_signal")
+        self.assertAlmostEqual(row[validation_ari_metric("inclusive")], 1.0)
+        # The binary decoder cannot identify query 7 as noise, so signal-only
+        # scoring sees it as an extra predicted track. This is why the
+        # reproduction checkpoint selector uses inclusive ARI.
+        self.assertAlmostEqual(row[validation_ari_metric("signal")], 0.0)
+        with self.assertRaises(ValueError):
+            validation_ari_metric("unknown")
 
     def test_matching_reports_efficiency_and_purity(self):
         truth = np.array([1, 1, 1, 2, 2, 2, -1])

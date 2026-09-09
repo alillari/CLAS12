@@ -57,6 +57,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-train-batches", type=int, help="Maximum train batches per epoch.")
     parser.add_argument("--max-val-batches", type=int, help="Maximum validation batches per validation pass.")
     parser.add_argument("--num-data-workers", type=int, help="DataLoader worker count.")
+    parser.add_argument(
+        "--track-target-mode",
+        choices=("signal_only", "unified_noise_instance"),
+        help="Hungarian target construction; unified_noise_instance restores raw -1 as one object target.",
+    )
+    parser.add_argument(
+        "--validation-ari-mode",
+        choices=("signal", "inclusive"),
+        help="Checkpoint-selection ARI; inclusive includes valid raw -1 noise rows.",
+    )
     parser.add_argument("--training-override", action="append", default=[], metavar="KEY=VALUE", help="Additional rendered model YAML override. Can be repeated.")
     parser.add_argument("--manifest")
     parser.add_argument("--allow-empty", action="store_true")
@@ -108,6 +118,8 @@ def parse_training_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "max_train_batches": args.max_train_batches,
         "max_val_batches": args.max_val_batches,
         "num_data_workers": args.num_data_workers,
+        "track_target_mode": args.track_target_mode,
+        "validation_ari_mode": args.validation_ari_mode,
     }
     overrides = {key: value for key, value in direct.items() if value is not None}
     for item in args.training_override:

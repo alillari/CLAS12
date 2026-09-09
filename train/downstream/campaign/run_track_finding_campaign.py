@@ -255,6 +255,17 @@ def last_validation_metrics(training_log: Path) -> dict[str, str]:
                     latest = row
     except (OSError, csv.Error):
         return {}
+    if latest:
+        selected_ari_name, selected_ari = next(
+            (
+                (key, value) for key, value in latest.items()
+                if key.startswith("ARI_") and key.endswith("_option2")
+            ),
+            ("ARI_2", latest.get("ARI_2", latest.get("ARI"))),
+        )
+        if selected_ari is not None:
+            latest["selected_ari"] = selected_ari
+            latest["selected_ari_metric"] = selected_ari_name
     return latest or {}
 
 
@@ -302,7 +313,8 @@ def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
             "labeled_events": run.get("labeled_events", run.get("eventnumber")),
             "step": progress.get("Step", "-"),
             "val_loss": format_metric(progress.get("Val_Loss")),
-            "ari": format_metric(progress.get("ARI")),
+            "ari": format_metric(progress.get("selected_ari", progress.get("ARI"))),
+            "selected_ari_metric": progress.get("selected_ari_metric"),
             "adapter": "yes" if adapter_checkpoint.is_file() else "no",
             "eval": "yes" if summary.is_file() else "no",
             "log": str(eval_log if status == "running_eval" else train_log),
@@ -315,6 +327,12 @@ def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
     print(f"Runs: {len(rows)}")
     if counts:
         print("Counts: " + ", ".join(f"{key}={counts[key]}" for key in sorted(counts)))
+    selector_names = sorted({
+        row.get("selected_ari_metric")
+        for row in rows if row.get("selected_ari_metric")
+    })
+    if selector_names:
+        print("Validation selector: " + ", ".join(selector_names))
     print()
     header = ("status", "labeled", "step", "val_loss", "ari", "adapter", "eval", "run_id")
     print(

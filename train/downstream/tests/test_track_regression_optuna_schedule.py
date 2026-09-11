@@ -2,6 +2,8 @@ import sys
 import unittest
 from argparse import Namespace
 from pathlib import Path
+import json
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -10,6 +12,7 @@ from train.downstream.tuning.run_track_regression_optuna import (
     fixed_overrides,
     parse_trial_seeds,
     scheduler_first_cycle_steps,
+    validate_effective_inputs,
     validate_study_contract,
 )
 
@@ -18,6 +21,7 @@ def args_for_schedule(max_steps=30000, n_cycles=1):
     return Namespace(
         max_optimizer_steps=max_steps,
         n_cycles=n_cycles,
+        scheduler_first_cycle_steps=None,
         val_interval_steps=1000,
         early_stopping_min_steps=3000,
         early_stopping_patience=20,
@@ -47,6 +51,12 @@ class TrackRegressionOptunaScheduleTest(unittest.TestCase):
         self.assertEqual(overrides["max_optimizer_steps"], 30000)
         self.assertEqual(overrides["scheduler_first_cycle_steps"], 10000)
 
+    def test_explicit_seven_k_cycle_is_allowed(self):
+        args = args_for_schedule(n_cycles=None)
+        args.scheduler_first_cycle_steps = 7000
+        overrides = fixed_overrides(args)
+        self.assertEqual(overrides["scheduler_first_cycle_steps"], 7000)
+
     def test_trial_seeds_are_nonempty_and_deduplicated(self):
         self.assertEqual(parse_trial_seeds("11,17,11,23"), (11, 17, 23))
         with self.assertRaisesRegex(ValueError, "at least one"):
@@ -67,6 +77,34 @@ class TrackRegressionOptunaScheduleTest(unittest.TestCase):
         validate_study_contract(study, contract)
         with self.assertRaisesRegex(ValueError, "different execution contract"):
             validate_study_contract(study, {"n_cycles": 3, "trial_seeds": [11, 17, 23]})
+
+    def test_input_preflight_rejects_stats_from_different_mount(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            root.mkdir()
+            stats_path = Path(tmp) / "stats.json"
+            stats_path.write_text(json.dumps({
+                "task": "p_phi_theta",
+                "split": "pretrain",
+                "data_root": str(Path(tmp) / "other_data"),
+                "filters": {
+                    "low_thr": 1,
+                    "high_thr": 100,
+                    "adapter_sample_mode": "event_segment",
+                    "segment_target_source": "mctrue",
+                    "segment_min_clusters": 12,
+                    "segment_exact_clusters": False,
+                },
+            }))
+            params = {
+                "data_root": str(root),
+                "data_root_train": str(root),
+                "data_root_test": str(root),
+                "regression_target_stats": str(stats_path),
+                "task": "p_phi_theta",
+            }
+            with self.assertRaisesRegex(ValueError, "different data root"):
+                validate_effective_inputs(params)
 
 
 if __name__ == "__main__":

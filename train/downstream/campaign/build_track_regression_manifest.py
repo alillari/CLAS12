@@ -186,6 +186,7 @@ EXECUTION_CONTRACT_KEYS = (
     "early_stopping_patience",
     "early_stopping_min_delta",
     "max_val_batches",
+    "warmup_steps",
 )
 
 
@@ -246,18 +247,24 @@ def best_trial_recipe(args: argparse.Namespace) -> tuple[dict[str, Any], dict[st
             "Legacy studies cannot be faithfully imported; rerun tuning or set "
             "all schedule overrides explicitly."
         )
-    missing_contract = [key for key in (*EXECUTION_CONTRACT_KEYS, "n_cycles") if key not in contract]
+    missing_contract = [key for key in EXECUTION_CONTRACT_KEYS if key not in contract]
+    if "n_cycles" not in contract and "scheduler_first_cycle_steps" not in contract:
+        missing_contract.append("n_cycles or scheduler_first_cycle_steps")
     if missing_contract:
         raise ValueError(
             f"Best trial {trial.number} execution contract is missing " + ", ".join(missing_contract)
         )
-    n_cycles = int(contract["n_cycles"])
+    n_cycles = contract.get("n_cycles")
     max_steps = int(contract["max_optimizer_steps"])
-    if n_cycles <= 0 or max_steps <= 0 or max_steps % n_cycles:
+    source_cycle_steps = int(contract.get("scheduler_first_cycle_steps", 0))
+    if max_steps <= 0 or source_cycle_steps <= 0:
         raise ValueError(f"Invalid Optuna execution contract for trial {trial.number}: {contract!r}")
+    if n_cycles is not None:
+        n_cycles = int(n_cycles)
+        if n_cycles <= 0 or max_steps % n_cycles or source_cycle_steps != max_steps // n_cycles:
+            raise ValueError(f"Invalid Optuna execution contract for trial {trial.number}: {contract!r}")
     recipe.update({key: contract[key] for key in EXECUTION_CONTRACT_KEYS})
-    recipe["scheduler_first_cycle_steps"] = max_steps // n_cycles
-    recipe["warmup_steps"] = int(contract["warmup_steps"])
+    recipe["scheduler_first_cycle_steps"] = source_cycle_steps
     source = {
         "storage": args.optuna_storage,
         "study_name": args.optuna_study_name,
@@ -286,15 +293,27 @@ def main() -> None:
     manual_overrides = parse_training_overrides(args)
     training_overrides.update(manual_overrides)
     if source_optuna is not None and "scheduler_first_cycle_steps" not in manual_overrides:
-        n_cycles = int(source_optuna["execution_contract"]["n_cycles"])
+        n_cycles = source_optuna["execution_contract"].get("n_cycles")
         max_steps = int(training_overrides["max_optimizer_steps"])
-        if max_steps % n_cycles:
+        if n_cycles is not None and max_steps % int(n_cycles):
             raise ValueError(
                 "Campaign max_optimizer_steps must be divisible by the imported "
                 f"Optuna n_cycles={n_cycles}; got {max_steps}. Override "
                 "scheduler_first_cycle_steps explicitly to use a non-integral policy."
             )
-        training_overrides["scheduler_first_cycle_steps"] = max_steps // n_cycles
+        if n_cycles is not None:
+            training_overrides["scheduler_first_cycle_steps"] = max_steps // int(n_cycles)
+        else:
+            source_cycle_steps = int(
+                source_optuna["execution_contract"]["scheduler_first_cycle_steps"]
+            )
+            if source_cycle_steps > max_steps:
+                raise ValueError(
+                    "Imported Optuna scheduler_first_cycle_steps exceeds the campaign "
+                    f"max_optimizer_steps: {source_cycle_steps} > {max_steps}. Override "
+                    "scheduler_first_cycle_steps explicitly or use a compatible budget."
+                )
+            training_overrides["scheduler_first_cycle_steps"] = source_cycle_steps
     if source_optuna is not None and "warmup_fraction" in training_overrides:
         training_overrides["warmup_steps"] = max(
             1,
@@ -303,6 +322,17 @@ def main() -> None:
                 * int(training_overrides["scheduler_first_cycle_steps"])
             ),
         )
+    if "scheduler_first_cycle_steps" in training_overrides:
+        cycle_steps = int(training_overrides["scheduler_first_cycle_steps"])
+        if cycle_steps <= 0:
+            raise ValueError("scheduler_first_cycle_steps must be positive")
+        if "max_optimizer_steps" in training_overrides:
+            max_steps = int(training_overrides["max_optimizer_steps"])
+            if max_steps <= 0 or cycle_steps > max_steps:
+                raise ValueError(
+                    "scheduler_first_cycle_steps must be no larger than a positive "
+                    f"max_optimizer_steps; got {cycle_steps} and {max_steps}"
+                )
 
     if not checkpoint_root.is_dir():
         raise FileNotFoundError(f"Checkpoint root does not exist: {checkpoint_root}")

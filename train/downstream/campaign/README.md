@@ -224,12 +224,12 @@ The tuned scalar recipe and the recorded execution contract are imported:
 - `dropout`
 
 The execution contract also ports `max_optimizer_steps`, validation and
-early-stopping settings, `max_val_batches`, and the cosine schedule. The
-schedule is stored as `n_cycles`, so if an explicit campaign override changes
-the total step budget, the builder preserves the tuned cycle count and derives
-the new integral `scheduler_first_cycle_steps`. Training label count, batch
-size, data paths, and checkpoint selection remain explicit campaign choices and
-are recorded alongside the Optuna provenance.
+early-stopping settings, `max_val_batches`, warmup, and the cosine schedule.
+The schedule records either an equal-cycle `n_cycles` policy or an explicit
+`scheduler_first_cycle_steps` length (needed for a final partial cycle such as
+7,000 steps in a 20,000-step budget). Training label count, batch size, data
+paths, and checkpoint selection remain explicit campaign choices and are
+recorded alongside the Optuna provenance.
 
 Explicit `--training-override KEY=VALUE` arguments take precedence over the
 imported recipe, so you can import the best recipe and still override one value:

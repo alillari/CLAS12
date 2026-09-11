@@ -82,11 +82,13 @@ sampler `--seed` does not replace these training seeds. Use
 variance-penalizing objective is desired.
 
 `--n-cycles` controls equal cosine cycles within the full step budget. The
-launcher derives `scheduler_first_cycle_steps = max_optimizer_steps / n_cycles`
-and rejects non-integral schedules. Thus `--n-cycles 1` is one full-budget
-warmup/cosine cycle with no restart; `2` and `3` produce one and two restarts.
-Tune the learning-rate parameters jointly for each fixed cycle count rather
-than transferring a recipe tuned under a different schedule.
+launcher derives `scheduler_first_cycle_steps = max_optimizer_steps / n_cycles`.
+For schedules such as 7,000 steps in a 20,000-step budget, use
+`--scheduler-first-cycle-steps 7000`; the scheduler then has two resets and a
+final partial cycle. `--n-cycles` and `--scheduler-first-cycle-steps` are
+mutually exclusive. Tune the learning-rate parameters jointly for each fixed
+cycle length rather than transferring a recipe tuned under a different
+schedule.
 
 ## W&B Logging
 
@@ -136,14 +138,16 @@ Each trial has its own directory:
 
 ```text
 trial_000123/
-  config/
-    model.yaml
-    resolved_config.json
-  checkpoints/
-    trial_000123.log
-    trial_000123_adapter_checkpoint.pth
-  train/
-    artifacts.json
+  seed_11/
+    config/
+      model.yaml
+      resolved_config.json
+    checkpoints/
+      trial_000123_seed_11_adapter_checkpoint.pth
+    train/
+      artifacts.json
+  seed_17/ ...
+  seed_23/ ...
   trial_result.json
   wandb/                  # only when W&B is enabled
 ```

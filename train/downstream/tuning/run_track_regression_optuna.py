@@ -39,9 +39,19 @@ def parse_trial_seeds(value: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(seeds))
 
 
-def scheduler_first_cycle_steps(max_optimizer_steps: int, n_cycles: int) -> int:
+def scheduler_first_cycle_steps(
+    max_optimizer_steps: int,
+    n_cycles: int = 1,
+    explicit_cycle_steps: int | None = None,
+) -> int:
     if max_optimizer_steps <= 0:
         raise ValueError("--max-optimizer-steps must be positive")
+    if explicit_cycle_steps is not None:
+        if explicit_cycle_steps <= 0 or explicit_cycle_steps > max_optimizer_steps:
+            raise ValueError(
+                "--scheduler-first-cycle-steps must be in [1, max_optimizer_steps]"
+            )
+        return int(explicit_cycle_steps)
     if n_cycles <= 0:
         raise ValueError("--n-cycles must be positive")
     if max_optimizer_steps % n_cycles:
@@ -50,6 +60,34 @@ def scheduler_first_cycle_steps(max_optimizer_steps: int, n_cycles: int) -> int:
             f"{max_optimizer_steps} and {n_cycles}"
         )
     return max_optimizer_steps // n_cycles
+
+
+def validate_training_controls(args: argparse.Namespace) -> None:
+    """Reject combinations that would silently skip validation or training."""
+    if args.eventnumber <= 0:
+        raise ValueError("--eventnumber must be positive")
+    if args.train_batch_size <= 0:
+        raise ValueError("--train-batch-size must be positive")
+    if args.n_trials <= 0:
+        raise ValueError("--n-trials must be positive")
+    if args.max_optimizer_steps <= 0:
+        raise ValueError("--max-optimizer-steps must be positive")
+    if args.val_interval_steps <= 0:
+        raise ValueError("--val-interval-steps must be positive")
+    if args.early_stopping_min_steps < 0:
+        raise ValueError("--early-stopping-min-steps must be non-negative")
+    if args.early_stopping_min_steps > args.max_optimizer_steps:
+        raise ValueError(
+            "--early-stopping-min-steps cannot exceed --max-optimizer-steps"
+        )
+    if args.early_stopping_patience <= 0:
+        raise ValueError("--early-stopping-patience must be positive")
+    if args.max_val_batches <= 0:
+        raise ValueError("--max-val-batches must be positive")
+    if args.max_train_batches is not None and args.max_train_batches <= 0:
+        raise ValueError("--max-train-batches must be positive when provided")
+    if args.num_data_workers is not None and args.num_data_workers < 0:
+        raise ValueError("--num-data-workers must be non-negative")
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,8 +130,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-cycles",
         type=int,
-        default=1,
-        help="Equal cosine cycles within --max-optimizer-steps; 1 disables restarts.",
+        default=None,
+        help="Equal cosine cycles within the budget; use --scheduler-first-cycle-steps for an explicit length.",
+    )
+    parser.add_argument(
+        "--scheduler-first-cycle-steps",
+        type=int,
+        default=None,
+        help="Explicit first cosine-cycle length; permits a final partial cycle (e.g. 7000 in a 20000-step run).",
     )
     parser.add_argument("--val-interval-steps", type=int, default=500)
     parser.add_argument("--early-stopping-min-steps", type=int, default=1000)
@@ -169,7 +213,9 @@ def load_base_params(yaml_config: Path, config_name: str) -> dict[str, Any]:
 
 def fixed_overrides(args: argparse.Namespace) -> dict[str, Any]:
     first_cycle_steps = scheduler_first_cycle_steps(
-        int(args.max_optimizer_steps), int(args.n_cycles)
+        int(args.max_optimizer_steps),
+        int(args.n_cycles or 1),
+        getattr(args, "scheduler_first_cycle_steps", None),
     )
     overrides: dict[str, Any] = {
         "max_optimizer_steps": int(args.max_optimizer_steps),
@@ -218,26 +264,87 @@ def make_pruner(args: argparse.Namespace):
     )
 
 
-def study_contract(args: argparse.Namespace) -> dict[str, Any]:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_effective_inputs(params: dict[str, Any]) -> None:
+    """Validate mounted inputs and target-stat provenance before creating a study."""
+    for key in ("data_root", "data_root_train", "data_root_test"):
+        value = params.get(key)
+        if not value or not Path(value).is_dir():
+            raise FileNotFoundError(f"Effective {key} directory does not exist: {value}")
+
+    stats_path = Path(str(params.get("regression_target_stats", ""))).resolve()
+    if not stats_path.is_file():
+        raise FileNotFoundError(f"Effective regression_target_stats file does not exist: {stats_path}")
+    with stats_path.open() as stream:
+        stats = json.load(stream)
+
+    task = str(params.get("task", ""))
+    if str(stats.get("task", "")) != task:
+        raise ValueError(
+            f"Regression statistics task mismatch: config={task!r}, "
+            f"stats={stats.get('task')!r} ({stats_path})"
+        )
+    if str(stats.get("split", "")) != "pretrain":
+        raise ValueError(f"Regression statistics must use split='pretrain': {stats_path}")
+    stats_root = stats.get("data_root")
+    if stats_root and Path(str(stats_root)).resolve() != Path(str(params["data_root_train"])).resolve():
+        raise ValueError(
+            "Regression statistics were computed from a different data root: "
+            f"stats={stats_root!r}, training={params['data_root_train']!r}"
+        )
+    expected_filters = {
+        "low_thr": params.get("low_thr", 1),
+        "high_thr": params.get("high_thr", 100),
+        "adapter_sample_mode": params.get("adapter_sample_mode", "event_segment"),
+        "segment_target_source": params.get("segment_target_source", "mctrue"),
+        "segment_min_clusters": params.get("segment_min_clusters", 12),
+        "segment_exact_clusters": params.get("segment_exact_clusters", False),
+    }
+    actual_filters = stats.get("filters", {})
+    mismatches = {
+        key: (expected, actual_filters.get(key))
+        for key, expected in expected_filters.items()
+        if actual_filters.get(key) != expected
+    }
+    if mismatches:
+        raise ValueError(f"Regression-statistics filter mismatch: {mismatches}")
+
+
+def study_contract(
+    args: argparse.Namespace,
+    effective_params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Immutable conditions that must not be mixed within one Optuna study."""
     yaml_path = Path(args.yaml_config).resolve()
     yaml_digest = hashlib.sha256(yaml_path.read_bytes()).hexdigest()
+    effective_params = effective_params or {}
+    stats_path = Path(str(effective_params.get("regression_target_stats", ""))).resolve()
     return {
         "contract_version": 1,
         "yaml_config": str(yaml_path),
         "yaml_sha256": yaml_digest,
         "config": args.config,
-        "data_root": str(Path(args.data_root).resolve()) if args.data_root else None,
-        "data_root_test": str(Path(args.data_root_test).resolve()) if args.data_root_test else None,
-        "stat_dir": str(Path(args.stat_dir).resolve()) if args.stat_dir else None,
-        "regression_target_stats": (
-            str(Path(args.regression_target_stats).resolve())
-            if args.regression_target_stats else None
-        ),
+        "data_root": str(Path(str(effective_params["data_root"])).resolve()),
+        "data_root_test": str(Path(str(effective_params["data_root_test"])).resolve()),
+        "stat_dir": str(Path(str(effective_params["stat_dir"])).resolve()),
+        "regression_target_stats": str(stats_path),
+        "regression_target_stats_sha256": sha256_file(stats_path),
         "eventnumber": int(args.eventnumber),
         "train_batch_size": int(args.train_batch_size),
         "max_optimizer_steps": int(args.max_optimizer_steps),
-        "n_cycles": int(args.n_cycles),
+        "n_cycles": int(args.n_cycles) if args.n_cycles is not None else None,
+        "scheduler_first_cycle_steps": int(
+            scheduler_first_cycle_steps(
+                int(args.max_optimizer_steps), int(args.n_cycles or 1), args.scheduler_first_cycle_steps
+            )
+        ),
         "val_interval_steps": int(args.val_interval_steps),
         "early_stopping_min_steps": int(args.early_stopping_min_steps),
         "early_stopping_patience": int(args.early_stopping_patience),
@@ -359,7 +466,7 @@ def objective_factory(args: argparse.Namespace):
             "seed_objective": args.seed_objective,
             "execution_contract": {
                 "max_optimizer_steps": int(params["max_optimizer_steps"]),
-                "n_cycles": int(args.n_cycles),
+                "n_cycles": int(args.n_cycles) if args.n_cycles is not None else None,
                 "scheduler_first_cycle_steps": int(params["scheduler_first_cycle_steps"]),
                 "warmup_fraction": float(params["warmup_fraction"]),
                 "warmup_steps": int(params["warmup_steps"]),
@@ -451,7 +558,14 @@ def objective_factory(args: argparse.Namespace):
 def main() -> None:
     args = parse_args()
     trial_seeds = parse_trial_seeds(args.trial_seeds)
-    scheduler_first_cycle_steps(args.max_optimizer_steps, args.n_cycles)
+    validate_training_controls(args)
+    if args.n_cycles is not None and args.scheduler_first_cycle_steps is not None:
+        raise ValueError("Use only one of --n-cycles and --scheduler-first-cycle-steps")
+    scheduler_first_cycle_steps(
+        args.max_optimizer_steps,
+        int(args.n_cycles or 1),
+        args.scheduler_first_cycle_steps,
+    )
     if args.enable_pruning and len(trial_seeds) != 1:
         raise ValueError("--enable-pruning currently requires exactly one --trial-seeds value")
     if args.n_jobs != 1:
@@ -461,6 +575,11 @@ def main() -> None:
         )
     if args.cuda_device is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.cuda_device)
+
+    base_params = load_base_params(Path(args.yaml_config).resolve(), args.config)
+    effective_params = dict(base_params)
+    effective_params.update(fixed_overrides(args))
+    validate_effective_inputs(effective_params)
 
     import optuna
 
@@ -472,7 +591,7 @@ def main() -> None:
         sampler=make_sampler(args),
         pruner=make_pruner(args),
     )
-    validate_study_contract(study, study_contract(args))
+    validate_study_contract(study, study_contract(args, effective_params))
     study.optimize(
         objective_factory(args),
         n_trials=args.n_trials,

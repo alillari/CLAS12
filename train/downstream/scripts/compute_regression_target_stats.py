@@ -13,7 +13,7 @@ REPOSITORY_ROOT = ROOT.parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from fm4npp.datasets.dataset import RaggedMmap
+from fm4npp.datasets.dataset import RaggedMmap, dominant_truth_segment
 from regression_utils import (
     REGRESSION_TARGET_COLUMNS,
     regression_target_columns,
@@ -84,8 +84,9 @@ def _selected_event_segments(seg, min_clusters, exact_clusters, ignore_label=-1)
 
 
 def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, task=None,
-                  adapter_sample_mode="track_legacy", segment_target_source="mctrue",
-                  segment_min_clusters=12, segment_exact_clusters=False):
+                  adapter_sample_mode="event_segment", segment_target_source="mctrue",
+                  segment_min_clusters=12, segment_exact_clusters=False,
+                  segment_min_truth_purity=1.0):
     reg = RaggedMmap(data_root / f"reg_target_{split}")
     features = RaggedMmap(data_root / f"features_{split}")
     if len(reg) != len(features):
@@ -105,44 +106,27 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
     adapter_sample_mode = str(adapter_sample_mode)
 
     if adapter_sample_mode == "track_legacy":
-        reg_sizes = reg.ends - reg.starts
-        feature_sizes = features.ends - features.starts
-        if np.any(reg_sizes % n_raw_columns):
-            raise ValueError(f"Regression arrays do not have the expected {n_raw_columns}-column layout")
-        if np.any(feature_sizes % 3):
-            raise ValueError("Feature arrays do not have the expected xyz layout")
-
-        reg_hits = reg_sizes // n_raw_columns
-        feature_hits = feature_sizes // 3
-        if not np.array_equal(reg_hits, feature_hits):
-            raise ValueError("Regression-target and feature hit counts differ")
-
-        selected = np.flatnonzero((feature_hits >= low_thr) & (feature_hits <= high_thr))
-        if limit_size is not None:
-            selected = selected[:limit_size]
-        if selected.size == 0:
-            raise ValueError("No events passed the configured hit-count filters")
-        offsets = np.arange(n_raw_columns, dtype=np.int64)
-
-        for start in range(0, selected.size, chunk_size):
-            indices = selected[start:start + chunk_size]
-            first_values = reg.memmap[reg.starts[indices, None] + offsets]
-            values = np.asarray(first_values, dtype=np.float64)
-            if task is not None:
-                values = transform_regression_target_numpy(values, task)
-            update_running_stats(count, mean, m2, values)
-        selected_count = int(selected.size)
+        raise ValueError(
+            "track_legacy regression statistics are disabled: use the v6 event "
+            "product with adapter_sample_mode=event_segment"
+        )
     elif adapter_sample_mode == "event_segment":
         if task is None:
             raise ValueError("event_segment statistics require --task")
-        if segment_target_source not in {"mctrue", "seg_target"}:
-            raise ValueError("event_segment statistics currently support segment_target_source=mctrue/seg_target")
+        if segment_target_source not in {"mctrue", "seg_target", "coatjava"}:
+            raise ValueError("Unknown segment_target_source")
         seg = RaggedMmap(data_root / f"seg_target_{split}")
         if len(seg) != len(features):
             raise ValueError(f"seg_target has {len(seg)} events but features has {len(features)}")
+        coat = None
+        if segment_target_source == "coatjava":
+            coat = RaggedMmap(data_root / f"coatjava_seg_pred_{split}")
+            if len(coat) != len(features):
+                raise ValueError(f"coatjava_seg_pred has {len(coat)} events but features has {len(features)}")
         selected_count = 0
         for event_idx in range(len(features)):
-            labels = np.asarray(seg[event_idx])
+            truth_labels = np.asarray(seg[event_idx])
+            labels = np.asarray(coat[event_idx]) if coat is not None else truth_labels
             values = np.asarray(reg[event_idx], dtype=np.float64)
             feature_values = np.asarray(features[event_idx])
             if values.ndim != 2 or values.shape[1] != n_raw_columns:
@@ -154,8 +138,10 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
                 raise ValueError(
                     f"features event {event_idx} has shape {feature_values.shape}, expected (*, 3)"
                 )
-            if values.shape[0] != feature_values.shape[0] or labels.shape[0] != feature_values.shape[0]:
-                raise ValueError(f"features/reg_target/seg_target hit counts differ for event {event_idx}")
+            if (values.shape[0] != feature_values.shape[0]
+                    or labels.shape[0] != feature_values.shape[0]
+                    or truth_labels.shape[0] != feature_values.shape[0]):
+                raise ValueError(f"features/reg_target/segment-target hit counts differ for event {event_idx}")
             for label in _selected_event_segments(
                 labels,
                 min_clusters=int(segment_min_clusters),
@@ -165,7 +151,16 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
                 n_points = int(np.sum(mask))
                 if n_points < low_thr or n_points > high_thr:
                     continue
-                target = _finite_segment_target(values[mask], task)
+                target_values = values[mask]
+                if coat is not None:
+                    dominant = dominant_truth_segment(truth_labels[mask])
+                    if dominant is None:
+                        continue
+                    truth_label, _, purity = dominant
+                    if purity < float(segment_min_truth_purity):
+                        continue
+                    target_values = values[mask & (truth_labels == truth_label)]
+                target = _finite_segment_target(target_values, task)
                 if target is None:
                     continue
                 update_running_stats(count, mean, m2, target.reshape(1, -1))
@@ -193,6 +188,7 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
             "segment_target_source": segment_target_source,
             "segment_min_clusters": int(segment_min_clusters),
             "segment_exact_clusters": bool(segment_exact_clusters),
+            "segment_min_truth_purity": float(segment_min_truth_purity),
         },
         "selected_events": selected_count,
         "count": count.tolist(),
@@ -209,10 +205,11 @@ def main():
     parser.add_argument("--high-thr", type=int, default=100)
     parser.add_argument("--limit-size", type=int)
     parser.add_argument("--chunk-size", type=int, default=250000)
-    parser.add_argument("--adapter-sample-mode", choices=("track_legacy", "event_segment"), default="track_legacy")
+    parser.add_argument("--adapter-sample-mode", choices=("event_segment",), default="event_segment")
     parser.add_argument("--segment-target-source", default="mctrue")
     parser.add_argument("--segment-min-clusters", type=int, default=12)
     parser.add_argument("--segment-exact-clusters", action="store_true")
+    parser.add_argument("--segment-min-truth-purity", type=float, default=1.0)
     parser.add_argument(
         "--task",
         help=(
@@ -229,11 +226,14 @@ def main():
     )
     args = parser.parse_args()
     if args.output is None:
-        filename = (
-            "regression_target_stats.json"
-            if args.task is None
-            else f"regression_target_stats_{args.task}.json"
-        )
+        if args.task is None:
+            filename = "regression_target_stats.json"
+        else:
+            exact_suffix = "_exact" if args.segment_exact_clusters else ""
+            filename = (
+                f"regression_target_stats_{args.task}_event_segment_"
+                f"{args.segment_target_source}_min{args.segment_min_clusters}{exact_suffix}.json"
+            )
         args.output = args.data_root.parent / "stats" / filename
 
     stats = compute_stats(
@@ -248,6 +248,7 @@ def main():
         segment_target_source=args.segment_target_source,
         segment_min_clusters=args.segment_min_clusters,
         segment_exact_clusters=args.segment_exact_clusters,
+        segment_min_truth_purity=args.segment_min_truth_purity,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as stream:

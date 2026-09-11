@@ -68,6 +68,22 @@ class EvaluationSampleIdentityTest(unittest.TestCase):
         row = aux_row_for_sample(Dataset(), Aux(), real_index=0, segment_label=1)
         np.testing.assert_allclose(row, [2.0, 20.0])
 
+    def test_coatjava_aux_row_uses_resolved_truth_segment(self):
+        class Aux:
+            def __getitem__(self, index):
+                return np.asarray([[1.0], [20.0], [30.0]])
+
+        class Dataset:
+            memmap_seg_target = [np.asarray([0, 1, 1])]
+
+            def _segment_source_for_filtering(self):
+                return [np.asarray([7, 7, 7])]
+
+        row = aux_row_for_sample(
+            Dataset(), Aux(), real_index=0, segment_label=7, truth_segment_label=1
+        )
+        np.testing.assert_allclose(row, [20.0])
+
     def test_sample_metadata_attaches_to_duplicate_event_records(self):
         records = [
             {"real_index": 0, "segment_label": 0},

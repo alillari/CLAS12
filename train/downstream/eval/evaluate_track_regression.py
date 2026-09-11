@@ -259,7 +259,9 @@ def resolve_evaluation_sample_identity(batch, dataset, dataset_index, local_inde
     return int(sample_key), None
 
 
-def _segment_labels_for_dataset(dataset, real_index):
+def _segment_labels_for_dataset(dataset, real_index, truth=False):
+    if truth and hasattr(dataset, "memmap_seg_target"):
+        return np.asarray(dataset.memmap_seg_target[real_index])
     if hasattr(dataset, "_segment_source_for_filtering"):
         return np.asarray(dataset._segment_source_for_filtering()[real_index])
     if hasattr(dataset, "memmap_seg_target"):
@@ -267,12 +269,14 @@ def _segment_labels_for_dataset(dataset, real_index):
     return None
 
 
-def aux_row_for_sample(dataset, aux, real_index, segment_label):
+def aux_row_for_sample(dataset, aux, real_index, segment_label, truth_segment_label=None):
     aux_values = np.asarray(aux[real_index])
     if segment_label is None:
         return first_valid_row(aux_values)
 
-    segment_labels = _segment_labels_for_dataset(dataset, real_index)
+    segment_labels = _segment_labels_for_dataset(
+        dataset, real_index, truth=truth_segment_label is not None
+    )
     if segment_labels is None:
         raise ValueError(
             "Event-segment evaluation needs segment labels to select aligned aux_target rows"
@@ -282,10 +286,11 @@ def aux_row_for_sample(dataset, aux, real_index, segment_label):
             f"aux_target row {real_index} has {len(aux_values)} entries but "
             f"segment labels have {len(segment_labels)}"
         )
-    selected = aux_values[segment_labels == int(segment_label)]
+    selected_label = segment_label if truth_segment_label is None else truth_segment_label
+    selected = aux_values[segment_labels == int(selected_label)]
     if len(selected) == 0:
         raise ValueError(
-            f"No aux_target entries for event {real_index}, segment {segment_label}"
+            f"No aux_target entries for event {real_index}, truth segment {selected_label}"
         )
     return first_valid_row(selected)
 
@@ -2071,7 +2076,12 @@ def main():
             else:
                 prediction = trainer.down_model(points, feature=None, padding_mask=mask)["pred_regression"]
 
-            normalized_truth = trainer.build_regression_targets(regression, mask)["target"]
+            target_segment_mask = batch.get("target_segment_mask")
+            if target_segment_mask is not None:
+                target_segment_mask = target_segment_mask.to(trainer.device).bool()
+            normalized_truth = trainer.build_regression_targets(
+                regression, mask, target_segment_mask
+            )["target"]
             prediction_native = trainer.down_model.target_normalizer.denormalize(prediction).cpu().numpy()
             truth_native = trainer.down_model.target_normalizer.denormalize(normalized_truth).cpu().numpy()
             prediction = target_to_cartesian_numpy(prediction_native, regression_task)
@@ -2083,8 +2093,11 @@ def main():
                 real_index, segment_label = resolve_evaluation_sample_identity(
                     batch, dataset, dataset_index, local_index
                 )
+                truth_segment_label = _batch_int(
+                    batch, "truth_segment_label", local_index, default=segment_label
+                )
                 aux_row = aux_row_for_sample(
-                    dataset, aux, real_index, segment_label
+                    dataset, aux, real_index, segment_label, truth_segment_label
                 ).astype(float) * aux_scale
                 if "pid_target" in batch:
                     pid_values = np.asarray(
@@ -2108,6 +2121,7 @@ def main():
                     "real_index": real_index,
                     "source_event_index": real_index,
                     "segment_label": "" if segment_label is None else int(segment_label),
+                    "truth_segment_label": "" if truth_segment_label is None else int(truth_segment_label),
                     "adapter_sample_mode": adapter_sample_mode,
                     "n_hits": int(mask[local_index].sum().item()),
                     "pid_class": pid_class,

@@ -155,6 +155,73 @@ class EventSegmentDatasetTest(unittest.TestCase):
         self.assertEqual(out["source_event_index"].tolist(), [4, 5])
         self.assertEqual(out["segment_label"].tolist(), [2, 3])
 
+    def test_coatjava_candidate_uses_dominant_truth_target(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            features = np.asarray([[6.0, 0.0, 0.0], [7.0, 0.0, 0.0], [8.0, 0.0, 0.0]])
+            truth_seg = np.asarray([0, 1, 1], dtype=np.int64)
+            coat_seg = np.asarray([7, 7, 7], dtype=np.int64)
+            reg = np.asarray([
+                [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 4.0],
+                [10.0, 20.0, 30.0, 0.0, 0.0, 0.0, 40.0],
+                [10.0, 20.0, 30.0, 0.0, 0.0, 0.0, 40.0],
+            ])
+            write_ragged(root, "features_pretrain", [features])
+            write_ragged(root, "seg_target_pretrain", [truth_seg])
+            write_ragged(root, "coatjava_seg_pred_pretrain", [coat_seg])
+            write_ragged(root, "reg_target_pretrain", [reg])
+
+            dataset = EventSegmentTPCBatchDataset(
+                data_root=str(root), split="pretrain", train=True, return_dict=True,
+                normalize=False, serialization="radius", num_pred_points=1,
+                segment_target_source="coatjava", segment_min_clusters=3,
+                segment_min_truth_purity=0.6, require_reg_target=True,
+            )
+            self.assertEqual(len(dataset), 1)
+            sample = dataset[0]
+            self.assertEqual(sample["segment_label"], 7)
+            self.assertEqual(sample["truth_segment_label"], 1)
+            self.assertEqual(sample["truth_segment_points"], 2)
+            self.assertAlmostEqual(sample["truth_segment_purity"], 2.0 / 3.0)
+            np.testing.assert_array_equal(
+                sample["target_segment_mask"].numpy(), [False, True, True]
+            )
+
+            stats = compute_stats(
+                root, "pretrain", low_thr=1, high_thr=100, limit_size=None,
+                chunk_size=10, task="mom", adapter_sample_mode="event_segment",
+                segment_target_source="coatjava", segment_min_clusters=3,
+                segment_min_truth_purity=0.6,
+            )
+            np.testing.assert_allclose(stats["mean"], [10.0, 20.0, 30.0])
+
+    def test_coatjava_tie_or_low_purity_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_ragged(root, "features_pretrain", [np.asarray([[6., 0., 0.], [7., 0., 0.]])])
+            write_ragged(root, "seg_target_pretrain", [np.asarray([0, 1])])
+            write_ragged(root, "coatjava_seg_pred_pretrain", [np.asarray([4, 4])])
+            write_ragged(root, "reg_target_pretrain", [np.ones((2, 7), dtype=np.float32)])
+            dataset = EventSegmentTPCBatchDataset(
+                data_root=str(root), split="pretrain", train=True, return_dict=True,
+                normalize=False, serialization="radius", num_pred_points=1,
+                segment_target_source="coatjava", segment_min_clusters=2,
+                require_reg_target=True,
+            )
+            self.assertEqual(len(dataset), 0)
+
+    def test_missing_regression_target_fails_loudly_when_required(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_ragged(root, "features_pretrain", [np.asarray([[6., 0., 0.]])])
+            write_ragged(root, "seg_target_pretrain", [np.asarray([0])])
+            with self.assertRaises((FileNotFoundError, OSError)):
+                EventSegmentTPCBatchDataset(
+                    data_root=str(root), split="pretrain", train=True, return_dict=True,
+                    normalize=False, serialization="radius", num_pred_points=1,
+                    require_reg_target=True,
+                )
+
 
 def np_to_tensor(values, dtype=np.float32):
     import torch

@@ -44,7 +44,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stat-dir", help="Stats/calibration directory passed to the rendered model YAML.")
     parser.add_argument("--eventnumber", default="50000")
     parser.add_argument("--train-batch-size", type=int, default=32)
-    parser.add_argument("--max-samples", type=int, default=10000)
+    parser.add_argument(
+        "--final-evaluation-events",
+        type=int,
+        default=500000,
+        help="Events scored once after training; independent of checkpoint-selection validation.",
+    )
+    parser.add_argument(
+        "--max-samples",
+        dest="final_evaluation_events",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Deprecated alias for --final-evaluation-events.",
+    )
+    parser.add_argument(
+        "--validation-events",
+        type=int,
+        default=10000,
+        help="Fixed test-split prefix used for checkpoint selection in every run.",
+    )
     parser.add_argument("--seed", type=int, help="Fixed training seed written into every rendered model config.")
     parser.add_argument("--assignment-threshold", type=float, help="Frozen inference threshold written into training and evaluation configs.")
     parser.add_argument("--expected-pretrained-count", type=int, help="Fail unless exactly this many pretrained backbone directories are selected.")
@@ -115,6 +133,9 @@ def parse_training_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "max_epochs": args.max_epochs,
         "max_optimizer_steps": args.max_optimizer_steps,
         "val_interval_steps": args.val_interval_steps,
+        "limit_test_data": True,
+        "limit_test_size": args.validation_events,
+        "max_validation_events": args.validation_events,
         "scheduler_first_cycle_steps": args.scheduler_first_cycle_steps,
         "warmup_steps": args.warmup_steps,
         "early_stopping_min_steps": args.early_stopping_min_steps,
@@ -140,8 +161,8 @@ def parse_training_overrides(args: argparse.Namespace) -> dict[str, Any]:
     return overrides
 
 
-def adapter_row(base_dir: Path, eventnumber: int, train_batch_size: int, max_samples: int) -> dict:
-    run_id = f"adapteronly_label{eventnumber}"
+def adapter_row(base_dir: Path, eventnumber: int, train_batch_size: int, final_evaluation_events: int, validation_events: int) -> dict:
+    run_id = f"adapteronly_w128_d12_label{eventnumber}"
     row = {
         "run_id": run_id,
         "backbone_run_id": "adapteronly",
@@ -153,12 +174,13 @@ def adapter_row(base_dir: Path, eventnumber: int, train_batch_size: int, max_sam
         "model_family": "adapteronly",
         "base_dim": 128,
         "embed_dim": 128,
-        "num_layers_backbone": 6,
+        "num_layers_backbone": 12,
         "pretrain_events": 0,
         "eventnumber": int(eventnumber),
         "labeled_events": int(eventnumber),
         "train_batch_size": int(train_batch_size),
-        "max_samples": int(max_samples),
+        "final_evaluation_events": int(final_evaluation_events),
+        "validation_events": int(validation_events),
         "status": "pending",
         "model_config": f"clas12_track_finding_adapteronly_{run_id}",
     }
@@ -166,7 +188,7 @@ def adapter_row(base_dir: Path, eventnumber: int, train_batch_size: int, max_sam
     return row
 
 
-def pretrained_row(source_dir: Path, checkpoint: Path, base_dir: Path, eventnumber: int, train_batch_size: int, max_samples: int) -> dict:
+def pretrained_row(source_dir: Path, checkpoint: Path, base_dir: Path, eventnumber: int, train_batch_size: int, final_evaluation_events: int, validation_events: int) -> dict:
     metadata = parse_run_name(source_dir.name)
     run_id = f"{source_dir.name}_label{eventnumber}"
     row = {
@@ -185,7 +207,8 @@ def pretrained_row(source_dir: Path, checkpoint: Path, base_dir: Path, eventnumb
         "eventnumber": int(eventnumber),
         "labeled_events": int(eventnumber),
         "train_batch_size": int(train_batch_size),
-        "max_samples": int(max_samples),
+        "final_evaluation_events": int(final_evaluation_events),
+        "validation_events": int(validation_events),
         "status": "pending",
         "model_config": f"clas12_track_finding_pretrained_{run_id}",
     }
@@ -205,7 +228,10 @@ def main() -> None:
     runs = []
     if not args.no_adapter_only:
         for eventnumber in eventnumbers:
-            row = adapter_row(base_dir, eventnumber, args.train_batch_size, args.max_samples)
+            row = adapter_row(
+                base_dir, eventnumber, args.train_batch_size,
+                args.final_evaluation_events, args.validation_events,
+            )
             row["base_model_yaml"] = args.base_model_yaml
             runs.append(row)
 
@@ -245,7 +271,8 @@ def main() -> None:
                     base_dir,
                     eventnumber,
                     args.train_batch_size,
-                    args.max_samples,
+                    args.final_evaluation_events,
+                    args.validation_events,
                 )
                 row["base_model_yaml"] = args.base_model_yaml
                 runs.append(row)
@@ -266,7 +293,8 @@ def main() -> None:
         "defaults": {
             "eventnumbers": eventnumbers,
             "train_batch_size": int(args.train_batch_size),
-            "max_samples": int(args.max_samples),
+            "validation_events": int(args.validation_events),
+            "final_evaluation_events": int(args.final_evaluation_events),
         },
         "training_overrides": training_overrides,
         "analysis_overrides": {

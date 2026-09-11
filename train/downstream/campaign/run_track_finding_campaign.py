@@ -107,6 +107,12 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
 def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     data = read_yaml(Path(manifest["base_analysis_yaml"]))
     analysis = dict(data["analysis"])
+    final_evaluation_events = int(
+        run.get(
+            "final_evaluation_events",
+            run.get("max_samples", manifest.get("defaults", {}).get("final_evaluation_events", 500000)),
+        )
+    )
     analysis.update({
         "artifact_root": str(Path(manifest["artifact_root"]).resolve()),
         "campaign_name": manifest["campaign_name"],
@@ -120,7 +126,10 @@ def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
         "output_dir": str(Path(run["evaluation_dir"]).resolve()),
         "run_num": run["run_id"],
         "batch_size": int(run["train_batch_size"]),
-        "max_samples": int(run["max_samples"]),
+        # Keep the evaluator's historical max_samples spelling for existing
+        # analysis readers while recording the unambiguous campaign field.
+        "max_samples": final_evaluation_events,
+        "final_evaluation_events": final_evaluation_events,
         "use_pretrained_backbone": bool(run.get("use_pretrained_backbone", True)),
         "pretrained_checkpoint": (
             str(Path(run["pretrained_checkpoint"]).resolve())
@@ -243,6 +252,12 @@ def collate_summary(
                 "num_layers_backbone": run["num_layers_backbone"],
                 "pretrain_events": run["pretrain_events"],
                 "labeled_events": run.get("labeled_events", run.get("eventnumber")),
+                "validation_events": run.get(
+                    "validation_events", manifest.get("defaults", {}).get("validation_events")
+                ),
+                "final_evaluation_events": run.get(
+                    "final_evaluation_events", run.get("max_samples")
+                ),
                 "adapter_checkpoint": run["adapter_checkpoint"],
                 "model_yaml": run["model_yaml"],
                 "model_config": run["model_config"],
@@ -260,6 +275,9 @@ def collate_summary(
                 table_row["metric_view"] = summary_data.get("metric_view", "canonical")
                 table_row["noise_attribution_mode"] = summary_data.get("noise_attribution_mode")
                 table_row["assignment_threshold"] = summary_data.get("assignment_threshold")
+                table_row["final_evaluation_events"] = summary_data.get(
+                    "final_evaluation_events", summary_data.get("max_samples")
+                )
                 table_row["track_target_mode"] = summary_data.get("track_target_mode")
                 for key in (
                     "ari_signal", "ari_with_background", "track_efficiency_global",

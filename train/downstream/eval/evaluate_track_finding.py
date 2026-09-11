@@ -46,6 +46,15 @@ from track_finding_trainer import DownstreamTrainer  # noqa: E402
 ENV_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
 
 
+def final_evaluation_events(analysis: dict[str, Any]) -> int:
+    """Resolve the post-training evaluation budget with a legacy fallback."""
+    value = analysis.get("final_evaluation_events", analysis.get("max_samples", 10000))
+    value = int(value)
+    if value < 1:
+        raise ValueError("final_evaluation_events must be positive")
+    return value
+
+
 def expand_env_defaults(value: Any) -> Any:
     if isinstance(value, str):
         def repl(match: re.Match[str]) -> str:
@@ -554,7 +563,7 @@ def run_threshold_sweep(
     coatjava_accumulators = {
         partition: EventMetricAccumulator() for partition in partitions
     }
-    max_samples = int(analysis.get("max_samples", 10000))
+    max_samples = final_evaluation_events(analysis)
     event_offset = 0
 
     with torch.no_grad():
@@ -784,16 +793,17 @@ def main() -> None:
     if args.output_dir:
         analysis["output_dir"] = args.output_dir
     if args.max_samples is not None:
-        analysis["max_samples"] = args.max_samples
+        analysis["final_evaluation_events"] = args.max_samples
     if args.noise_attribution_mode is not None:
         analysis["noise_attribution_mode"] = args.noise_attribution_mode
 
     params = YParams(os.path.abspath(analysis["model_yaml"]), analysis["model_config"])
     evaluate_coatjava = bool(analysis.get("evaluate_coatjava", True))
     params.limit_data = True
-    params.limit_size = int(analysis.get("max_samples", 10000))
+    requested_final_evaluation_events = final_evaluation_events(analysis)
+    params.limit_size = requested_final_evaluation_events
     params.limit_test_data = True
-    params.limit_test_size = int(analysis.get("max_samples", 10000))
+    params.limit_test_size = requested_final_evaluation_events
     params.drop_last_test = False
     params.batch_size = int(analysis.get("batch_size", getattr(params, "batch_size", 1)))
     params.valid_batch_size = params.batch_size
@@ -858,10 +868,14 @@ def main() -> None:
             )
             return
 
+        max_samples = requested_final_evaluation_events
         event_offset = 0
         with torch.no_grad():
             for batch_index, batch in enumerate(tqdm(trainer.val_data_loader)):
-                if batch_index >= int(analysis.get("max_samples", 10000)):
+                # max_samples is an event count, not a batch count.  The
+                # dataset is also capped above, but retain this guard so the
+                # evaluator remains correct with any alternate loader.
+                if event_offset >= max_samples:
                     break
                 grouped, labels, _knearest, reg = trainer._unpack_batch(batch)
                 coatjava_batch = batch.get("coatjava_seg_pred") if isinstance(batch, dict) else None
@@ -890,6 +904,8 @@ def main() -> None:
                     threshold=assignment_threshold,
                 )
                 for sample_index in range(b):
+                    if event_offset + sample_index >= max_samples:
+                        break
                     valid = valid_mask[sample_index].detach().cpu().numpy().astype(bool)
                     truth = labels_device[sample_index].detach().cpu().numpy()
                     pred = inferred["assignments"][sample_index].detach().cpu().numpy()
@@ -1021,7 +1037,8 @@ def main() -> None:
             "noise_attribution_mode": noise_attribution_mode,
             "assignment_option": assignment_option,
             "assignment_threshold": assignment_threshold,
-            "max_samples": int(analysis.get("max_samples", 10000)),
+            "max_samples": requested_final_evaluation_events,
+            "final_evaluation_events": requested_final_evaluation_events,
             "background_label": match_config.background_label,
             "match_iou_threshold": match_config.iou_threshold,
             "match_min_purity": match_config.min_purity,

@@ -12,11 +12,12 @@ default: &default
   #   reg_target_pretrain/, reg_target_test/   <-- must be real momentum targets
   # Optional, if your dataset.py return_dict path uses them:
   #   pid_target_pretrain/, pid_target_test/
-  data_root: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_cluster_track_strict_v5_03/
-  data_root_train: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_cluster_track_strict_v5_03/
-  data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_cluster_track_strict_v5_03/
-  stat_dir: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/
-  regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats.json
+  data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
+  data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
+  data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
+  # Generate this v6 event-segment statistic explicitly before training.
+  stat_dir: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_mom_event_segment_mctrue_min12.json
   artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage/july-8th}
   downstream_dir: "{artifact_root}/downstream_log/clas12_track_regression_adapteronly"
   checkpoint_dir: "{downstream_dir}/checkpoints"
@@ -58,10 +59,12 @@ default: &default
   return_reg: true               # momentum task should receive reg_target from dataset
   return_reg_test: true
   return_knn_target: false
-  adapter_sample_mode: track_legacy   # set to event_segment for virtual per-segment adapter skims
-  segment_target_source: mctrue       # event_segment: use v6_01 seg_target labels by default
+  adapter_sample_mode: event_segment  # one MC-truth segment per regression sample
+  segment_target_source: mctrue       # authoritative v6 seg_target labels
   segment_min_clusters: 12            # event_segment: reject truth segments with fewer clusters
   segment_exact_clusters: false       # event_segment: true reproduces strict exactly-12 behavior
+  segment_min_truth_purity: 1.0       # COATJAVA candidates: require pure dominant MC truth
+  require_reg_target: true
 
   # === Compatibility flags that some trainers reference ===
   rep_aaai: false
@@ -87,29 +90,33 @@ default: &default
   grad_clip_value: 0.1
   total_steps: 30000
 
-  # === Model / adapter configuration ===
-  base_dim: 128
+  # === Backbone input / regression-head configuration ===
+  # AdapterOnly does not use the backbone forward path.  These backbone
+  # settings matter only for --usepretrain and must then match its checkpoint.
   embed_dim: 128
   group_size: 8
   init_std: 0.025
   model_version: clas12_track_regression_adapteronly
   num_layers_backbone: 6
-  d_state: 16
+  d_state: 16                 # backbone only; regression head fixes d_state=64
   d_conv: 4
   expand: 2
   klen: 3
   dropout: 0.1
-  mambaversion: mamba1
+  mambaversion: mamba1        # backbone only; regression head is always Mamba2
   task: mom
   pooling: attention
   regression_loss: mae
 
-  # These are mostly harmless for track regression; some trainer/model code may still expect them.
+  # The current trainer always builds MambaTrackRegressionHead: hidden width
+  # 256, one Mamba2 layer, d_state=64, d_conv=4, expand=2.  These head values
+  # are implementation-fixed rather than YAML-tunable.
+
+  # These are backbone/shared-trainer compatibility settings.
   num_heads_backbone: 4
   num_heads_decoder: 2
   num_heads_encoder: 2
   num_embedder_layers: 0
-  use_attention_head: true
   continue_from_best: true
 
   # Track-finding loss weights; retained only for compatibility with shared trainer utilities.
@@ -128,13 +135,13 @@ clas12_track_regression_adapteronly_pt_phi_eta:
   <<: *default
   model_version: clas12_track_regression_adapteronly_pt_phi_eta
   task: pt_phi_eta
-  regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_pt_phi_eta.json
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_pt_phi_eta_event_segment_mctrue_min12.json
 
 clas12_track_regression_adapteronly_p_phi_theta:
   <<: *default
   model_version: clas12_track_regression_adapteronly_p_phi_theta
   task: p_phi_theta
-  regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta.json
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta_event_segment_mctrue_min12.json
 
 # ---------------------------------------------------------------------------
 # Same idea, but with the CLAS12 Hilbert-band ordering enabled.

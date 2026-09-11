@@ -1,32 +1,40 @@
-# CLAS12 CVT downstream momentum-regression / AdapterOnly debug configuration
-# Intended for train_momentum_regression.py with --usepretrain omitted.
+# Legacy command-name compatibility configuration for downstream momentum
+# regression.  train_momentum_regression.py is a wrapper around
+# train_track_regression.py; this recipe therefore uses the current v6
+# event-segment regression contract.
+#
+# AdapterOnly means a raw-coordinate, from-scratch baseline: omit
+# --usepretrain.  It is not a frozen-backbone adapter run.
 
 # ---------------------------------------------------------------------------
 # Shared defaults
 # ---------------------------------------------------------------------------
 default: &default
-  # === Paths: EDIT THESE ===
+  # === v6 event-product paths ===
   # For downstream momentum regression, this directory must contain at least:
   #   features_pretrain/, features_test/
   #   seg_target_pretrain/, seg_target_test/
   #   reg_target_pretrain/, reg_target_test/   <-- must be real momentum targets
   # Optional, if your dataset.py return_dict path uses them:
   #   pid_target_pretrain/, pid_target_test/
-  data_root: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_1_raggedmmap/
-  data_root_train: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_1_raggedmmap/
-  data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/cvt_ragged_v3_1_raggedmmap/
-  stat_dir: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats
-  regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/stats/regression_target_stats.json
+  data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
+  # data_root_train is retained for compatibility; the loader currently uses
+  # data_root for the pretrain split.
+  data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
+  data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
+  stat_dir: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_mom_event_segment_mctrue_min12.json
   downstream_dir: ./downstream_log/clas12_momentum_adapteronly
   checkpoint_dir: ./downstream_log/clas12_momentum_adapteronly/checkpoints
 
   # === Data configuration ===
   data_version: clas12_cvt
   input_layout: xyz              # our CLAS12 files are raw [x,y,z], no energy column
-  serialization: radius          # safest first debug choice; switch to clas12_band_hilbert later
-  batch_size: 128                  # train_momentum_regression.py overrides this from --train_batch_size
+  serialization: clas12_band_hilbert
+  clas12_band_config: calibrated12
+  batch_size: 128                  # CLI --train_batch_size overrides this
   local_batch_size: 128
-  valid_batch_size: 128            # train_momentum_regression.py also forces this to 1
+  valid_batch_size: 128
   local_valid_batch_size: 128
   limit_data: true               # train script overrides using --eventnumber
   limit_size: 50000
@@ -56,10 +64,12 @@ default: &default
   return_reg: true               # momentum task should receive reg_target from dataset
   return_reg_test: true
   return_knn_target: false
-  adapter_sample_mode: track_legacy   # set to event_segment for virtual per-segment adapter skims
-  segment_target_source: mctrue       # event_segment: use v6_01 seg_target labels by default
+  adapter_sample_mode: event_segment  # one MC-truth segment per regression sample
+  segment_target_source: mctrue       # authoritative v6 seg_target labels
   segment_min_clusters: 12            # event_segment: reject truth segments with fewer clusters
   segment_exact_clusters: false       # event_segment: true reproduces strict exactly-12 behavior
+  segment_min_truth_purity: 1.0       # COATJAVA candidates: require pure dominant MC truth
+  require_reg_target: true
 
   # === Compatibility flags that some trainers reference ===
   rep_aaai: false
@@ -69,7 +79,7 @@ default: &default
   save_checkpoint: true
 
   # === Optimization ===
-  max_epochs: 30
+  max_epochs: 300
   max_lr: 0.0003
   min_lr: 0.00001
   first_cycle_steps: 3000
@@ -79,33 +89,39 @@ default: &default
   val_interval_steps: 500
   early_stopping_min_steps: 1000
   adapter_weight_decay: 0.0001
-  early_stopping_patience: 5
+  early_stopping_patience: 20
   early_stopping_min_delta: 0.0001
-  early_stopping_warmup_steps: 20
+  early_stopping_warmup_steps: 50
   grad_clip_value: 0.1
   total_steps: 30000
 
-  # === Model / adapter configuration ===
-  base_dim: 128
+  # === Backbone input / regression-head configuration ===
+  # For AdapterOnly, the backbone settings below are not used for the forward
+  # pass.  For --usepretrain they must match the supplied backbone checkpoint.
   embed_dim: 128
   group_size: 8
   init_std: 0.025
   model_version: clas12_momentum_adapteronly_debug
   num_layers_backbone: 6
-  d_state: 16
+  d_state: 16                 # backbone only; regression head fixes d_state=64
   d_conv: 4
   expand: 2
   klen: 3
   dropout: 0.1
-  mambaversion: mamba1
+  mambaversion: mamba1        # backbone only; regression head is always Mamba2
   task: mom
+  pooling: attention           # honored by MambaTrackRegressionHead
+  regression_loss: mae
 
-  # These are mostly harmless for momentum regression; some trainer/model code may still expect them.
+  # The current trainer always builds MambaTrackRegressionHead, with hidden
+  # width 256, one Mamba2 layer, d_state=64, d_conv=4, and expand=2.  Those
+  # head values are implementation-fixed rather than YAML-tunable.
+
+  # These are backbone/shared-trainer compatibility settings.
   num_heads_backbone: 4
   num_heads_decoder: 2
   num_heads_encoder: 2
   num_embedder_layers: 0
-  use_attention_head: true
   continue_from_best: true
 
   # Track-finding loss weights; retained only for compatibility with shared trainer utilities.

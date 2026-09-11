@@ -1344,14 +1344,44 @@ class DownstreamTrainer():
         total_samples = 0
         amp_enabled = torch.cuda.is_available() and self.use_amp
 
+        max_validation_events = getattr(self.params, "max_validation_events", None)
+        if max_validation_events is not None:
+            max_validation_events = int(max_validation_events)
+            if max_validation_events < 1:
+                raise ValueError("max_validation_events must be positive or None")
+        validated_events = 0
+
         with torch.no_grad():  # Disable gradient calculation
             for i, batch in enumerate(tqdm(self.val_data_loader)):
+                if (
+                    max_validation_events is not None
+                    and validated_events >= max_validation_events
+                ):
+                    break
                 grouped, label, knearest, _ = self._unpack_batch(batch)
-                #validate for 500 samples
                 max_val_batches = getattr(self.params, "max_val_batches", 1001)
                 if max_val_batches is not None and i >= int(max_val_batches):
                     break
                 b, c = grouped.size(0), grouped.size(-1)
+                if max_validation_events is not None:
+                    remaining = max_validation_events - validated_events
+                    if remaining < b:
+                        # All collated fields are batch-major tensors.  Slice
+                        # the final partial batch before its forward pass so
+                        # validation is an exact event count, independent of
+                        # batch size.
+                        if isinstance(batch, dict):
+                            batch = {
+                                key: (value[:remaining] if torch.is_tensor(value) and value.ndim > 0 and value.size(0) == b else value)
+                                for key, value in batch.items()
+                            }
+                        else:
+                            batch = tuple(
+                                value[:remaining] if torch.is_tensor(value) and value.ndim > 0 and value.size(0) == b else value
+                                for value in batch
+                            )
+                        grouped, label, knearest, _ = self._unpack_batch(batch)
+                        b, c = grouped.size(0), grouped.size(-1)
                 labels = label.to(self.device)
                 grouped = grouped.reshape(b, -1, c).to(self.device)  # B X N X C
                 mask = grouped[..., 0] != -100  # B X N
@@ -1387,10 +1417,28 @@ class DownstreamTrainer():
                     matcher=self.matcher,
                     no_object_class=0
                 )
-                inference_result = assign_points_to_masks(outputs, option=1)
+                # Checkpoint selection must use the same assignment policy as
+                # final evaluation.  In particular, assignment_threshold is
+                # applied *after* the query masks/classes are predicted: it
+                # turns low-confidence point assignments into background.  If
+                # validation silently used 0.0 here while evaluation reported
+                # (for example) 0.2, "best checkpoint" and reported metrics
+                # would describe different operating points.
+                assignment_threshold = float(
+                    getattr(self.params, "assignment_threshold", 0.0)
+                )
+                inference_result = assign_points_to_masks(
+                    outputs,
+                    option=1,
+                    threshold=assignment_threshold,
+                )
                 segmentation_result = inference_result["assignments"]
                 
-                infrence_result_opt2 = assign_points_to_masks(outputs, option=2)
+                infrence_result_opt2 = assign_points_to_masks(
+                    outputs,
+                    option=2,
+                    threshold=assignment_threshold,
+                )
                 segmentation_result_opt2 = infrence_result_opt2["assignments"]
                 #calculate adjust rand score between segmentation result and label
                 
@@ -1418,6 +1466,7 @@ class DownstreamTrainer():
                 self.down_results['loss_unmatched_ce'].append(losses["loss_unmatched_ce"].item())
                 self.down_results['loss_dice'].append(losses["loss_dice"].item())
                 self.down_results['loss_focal'].append(losses["loss_focal"].item())
+                validated_events += b
 
 
 

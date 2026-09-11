@@ -72,9 +72,14 @@ default: &default
   scheduler_first_cycle_steps: 3000
   warmup_steps: 300
   max_optimizer_steps: None
-  val_interval_steps: 500
+  # Training/checkpoint selection uses this fixed validation view.  Final
+  # campaign evaluation is configured independently by the analysis manifest.
+  limit_test_data: true
+  limit_test_size: 10000
+  max_validation_events: 10000
+  val_interval_steps: 1000
   max_train_batches: None
-  max_val_batches: 200
+  max_val_batches: None
   early_stopping_min_steps: 1000
   early_stopping_patience: 15
   early_stopping_min_delta: 0.0001
@@ -88,7 +93,7 @@ default: &default
   group_size: 8
   init_std: 0.025
   model_version: clas12_track_finding_adapteronly
-  num_layers_backbone: 6
+  num_layers_backbone: 12
   d_state: 16
   d_conv: 4
   expand: 2

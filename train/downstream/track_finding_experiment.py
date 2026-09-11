@@ -113,6 +113,9 @@ def resolve_params(config: TrackFindingExperimentConfig) -> YParams:
         "local_valid_batch_size": batch_size,
         "limit_data": True,
         "limit_size": int(config.eventnumber),
+        # Keep checkpoint selection independent of the labeled-data budget.
+        # The base config/manifest supplies a fixed validation event count.
+        "limit_test_data": bool(getattr(params, "limit_test_data", True)),
         "return_dict": True,
         "return_reg_test": True,
         "adapter_sample_mode": "track_legacy",
@@ -186,6 +189,8 @@ def train_experiment(
             "best_epoch": json_safe(getattr(trainer, "best_epoch", None)),
             "final_step": json_safe(getattr(trainer, "global_step", None)),
             "eventnumber": int(config.eventnumber),
+            "validation_events": json_safe(getattr(params, "max_validation_events", None)),
+            "validation_interval_steps": json_safe(getattr(params, "val_interval_steps", None)),
             "train_batch_size": int(config.train_batch_size),
             "seed": json_safe(getattr(params, "seed", None)),
             "embed_dim": json_safe(getattr(params, "embed_dim", None)),

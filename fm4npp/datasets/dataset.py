@@ -30,6 +30,20 @@ def seed_worker_from_base(base_seed, worker_id):
     torch.manual_seed(worker_seed)
 
 
+def dominant_truth_segment(labels, ignore_label=-1):
+    """Return the unique dominant non-noise truth label and its support."""
+    labels = np.asarray(labels)
+    real = labels[labels != int(ignore_label)]
+    if real.size == 0:
+        return None
+    values, counts = np.unique(real.astype(np.int64, copy=False), return_counts=True)
+    max_count = int(counts.max())
+    winners = values[counts == max_count]
+    if winners.size != 1:
+        return None
+    return int(winners[0]), max_count, float(max_count / labels.size)
+
+
 def knn_later_indices_batch(A, k, target=None, return_target=False, pad_value_target=0):
     """
     A: Tensor of shape (B, N, 3), where B = batch size, N = number of points per batch, D=3 coordinates.
@@ -348,8 +362,11 @@ class TPCBatchDataset(Dataset):
 
         # Downstream loaders often expect reg_target, but CLAS12 adapter-only may not need it.
         # Load it when present; otherwise create a zero placeholder only for return_dict/return_reg compatibility.
+        reg_target_path = os.path.join(data_root, f'reg_target_{split}')
+        if require_reg_target and not os.path.isdir(reg_target_path):
+            raise FileNotFoundError(f"Required regression target is missing: {reg_target_path}")
         try:
-            self.memmap_reg_target = RaggedMmap(os.path.join(data_root, f'reg_target_{split}'))
+            self.memmap_reg_target = RaggedMmap(reg_target_path)
             self.has_reg_target = True
         except (FileNotFoundError, OSError):
             if require_reg_target:
@@ -840,6 +857,13 @@ class MyCollator:
             out['source_event_index'] = source_event_index
         if has_segment_label:
             out['segment_label'] = segment_label
+        for key, dtype in (
+            ('truth_segment_label', torch.long),
+            ('truth_segment_points', torch.long),
+            ('truth_segment_purity', torch.float32),
+        ):
+            if key in batch[0]:
+                out[key] = torch.as_tensor([item[key] for item in batch], dtype=dtype)
         if has_mid_target:
             out['mid_target'] = mid
         if has_knn_target:
@@ -877,11 +901,13 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
                  segment_target_source='mctrue',
                  segment_min_clusters=12,
                  segment_exact_clusters=False,
+                 segment_min_truth_purity=1.0,
                  segment_ignore_label=-1,
                  **kwargs):
         self.segment_target_source = str(segment_target_source).lower()
         self.segment_min_clusters = int(segment_min_clusters)
         self.segment_exact_clusters = bool(segment_exact_clusters)
+        self.segment_min_truth_purity = float(segment_min_truth_purity)
         self.segment_ignore_label = int(segment_ignore_label)
         self.memmap_segment_source = None
         if self.segment_target_source not in {'mctrue', 'seg_target', 'coatjava'}:
@@ -890,6 +916,8 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
             )
         if self.segment_min_clusters <= 0:
             raise ValueError("segment_min_clusters must be positive")
+        if not 0.0 < self.segment_min_truth_purity <= 1.0:
+            raise ValueError("segment_min_truth_purity must be in (0, 1]")
         super().__init__(*args, **kwargs)
         if self.segment_target_source == 'coatjava':
             self.memmap_segment_source = self._open_required_segment_source('coatjava_seg_pred')
@@ -923,7 +951,26 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
             out.append((label, n_points))
         return out
 
+    def _coatjava_truth_target(self, event_idx, candidate_label):
+        """Resolve one COATJAVA candidate to its dominant MC truth segment."""
+        coat_labels = np.asarray(self.memmap_segment_source[event_idx])
+        truth_labels = np.asarray(self.memmap_seg_target[event_idx])
+        candidate_mask = coat_labels == int(candidate_label)
+        resolved = dominant_truth_segment(
+            truth_labels[candidate_mask], ignore_label=self.segment_ignore_label
+        )
+        if resolved is None:
+            return None
+        truth_label, truth_points, truth_purity = resolved
+        if truth_purity < self.segment_min_truth_purity:
+            return None
+        return truth_label, truth_points, truth_purity
+
     def filter_data(self, low_thr=-1, high_thr=10e10, max_tracks=150):
+        # ``TPCBatchDataset.__init__`` invokes this override before the optional
+        # COATJAVA sidecar is opened; defer the real virtual-sample scan below.
+        if self.segment_target_source == 'coatjava' and self.memmap_segment_source is None:
+            return
         self.idxlist = []
         self.seqlens = []
         self.tooshort = []
@@ -940,6 +987,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
         for event_idx in range(len(self.memmap_feature)):
             labels = np.asarray(segment_source[event_idx])
             for label, n_points in self._accepted_segment_labels(labels):
+                if self.segment_target_source == 'coatjava':
+                    if self._coatjava_truth_target(event_idx, label) is None:
+                        continue
                 if n_points < low_thr:
                     self.tooshort.append((event_idx, label))
                 elif n_points > high_thr:
@@ -989,17 +1039,37 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
         segment_mask_np = segment_labels == int(segment_label)
         segment_mask = torch.as_tensor(segment_mask_np, dtype=torch.bool)
 
+        if self.segment_target_source == 'coatjava':
+            resolved_truth = self._coatjava_truth_target(real_idx, segment_label)
+            if resolved_truth is None:
+                raise RuntimeError(
+                    "COATJAVA candidate passed filtering but has no valid dominant "
+                    f"truth segment: event={real_idx}, candidate={segment_label}"
+                )
+            truth_segment_label, truth_segment_points, truth_segment_purity = resolved_truth
+            truth_labels = np.asarray(self.memmap_seg_target[real_idx])
+            regression_target_mask_np = truth_labels[segment_mask_np] == truth_segment_label
+        else:
+            truth_segment_label = int(segment_label)
+            truth_segment_points = int(np.sum(segment_mask_np))
+            truth_segment_purity = 1.0
+            regression_target_mask_np = np.ones(int(np.sum(segment_mask_np)), dtype=bool)
+
         features_np = np.copy(self.memmap_feature[real_idx])[segment_mask_np]
         target_np = np.zeros(features_np.shape[0], dtype=np.int64)
         features = torch.from_numpy(features_np).float().unsqueeze(0)
         target = torch.from_numpy(target_np).unsqueeze(0)
         reg_target = self._load_optional_reg_target(real_idx, len(segment_labels), device=features.device)
         reg_target = reg_target[:, segment_mask]
+        regression_target_mask = torch.as_tensor(
+            regression_target_mask_np, dtype=torch.bool
+        ).unsqueeze(0)
 
         if not self.train and self.chunk_training:
             features = features[:, start_idx:start_idx + self.len_chunk]
             target = target[:, start_idx:start_idx + self.len_chunk]
             reg_target = reg_target[:, start_idx:start_idx + self.len_chunk]
+            regression_target_mask = regression_target_mask[:, start_idx:start_idx + self.len_chunk]
 
         model_features = self._to_model_features(features)
         norm_features = self.apply_norm(model_features) if self.normalize else model_features
@@ -1008,6 +1078,7 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
         norm_features = norm_features[:, r_sort_1d]
         norm_target = target[:, r_sort_1d]
         norm_reg_target = reg_target[:, r_sort_1d]
+        norm_regression_target_mask = regression_target_mask[:, r_sort_1d]
 
         knn_input = norm_features if self.is_position_only else norm_features[..., 1:]
         if self.return_knn_target:
@@ -1025,6 +1096,7 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
         serialized_points = norm_features[:, sorter].squeeze(0)
         serialized_target = norm_target[:, sorter].squeeze(0)
         serialized_reg_target = norm_reg_target[:, sorter].squeeze(0)
+        serialized_regression_target_mask = norm_regression_target_mask[:, sorter].squeeze(0)
         knearest_points = knearest_points[:, sorter].squeeze(0)
         if self.return_knn_target:
             knearest_target = knearest_target[:, sorter].squeeze(0)
@@ -1044,7 +1116,7 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
             else:
                 serialized_noise_target = torch.full_like(serialized_target, -100)
 
-            serialized_target_segment_mask = torch.ones_like(serialized_target, dtype=torch.bool)
+            serialized_target_segment_mask = serialized_regression_target_mask
 
             if self.has_mid_target:
                 serialized_mid_target = self._load_selected_point_target(
@@ -1076,6 +1148,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
                 'target_segment_mask': serialized_target_segment_mask,
                 'source_event_index': int(real_idx),
                 'segment_label': int(segment_label),
+                'truth_segment_label': int(truth_segment_label),
+                'truth_segment_points': int(truth_segment_points),
+                'truth_segment_purity': float(truth_segment_purity),
             }
             if self.has_mid_target:
                 out['mid_target'] = serialized_mid_target
@@ -1101,7 +1176,7 @@ ADAPTER_SAMPLE_MODE_DATASETS = {
 
 
 def resolve_adapter_sample_mode(params):
-    mode = str(getattr(params, 'adapter_sample_mode', 'track_legacy'))
+    mode = str(getattr(params, 'adapter_sample_mode', 'event_segment'))
     if mode not in ADAPTER_SAMPLE_MODE_DATASETS:
         valid = ', '.join(sorted(ADAPTER_SAMPLE_MODE_DATASETS))
         raise ValueError(f"Unknown adapter_sample_mode {mode!r}. Valid modes: {valid}")
@@ -1113,6 +1188,7 @@ def resolve_adapter_sample_mode(params):
             'segment_target_source': getattr(params, 'segment_target_source', 'mctrue'),
             'segment_min_clusters': getattr(params, 'segment_min_clusters', 12),
             'segment_exact_clusters': getattr(params, 'segment_exact_clusters', False),
+            'segment_min_truth_purity': getattr(params, 'segment_min_truth_purity', 1.0),
         }
     return mode, dataset_cls, dataset_kwargs
 

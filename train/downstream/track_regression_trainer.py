@@ -88,6 +88,13 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
         
         self.params = params
+        if getattr(params, "adapter_sample_mode", "event_segment") != "event_segment":
+            raise ValueError(
+                "track_legacy regression is disabled. Use the v6 event product with "
+                "adapter_sample_mode=event_segment."
+            )
+        # A zero-filled fallback is never meaningful for a regression target.
+        self.params["require_reg_target"] = True
         default_stats_path = os.path.join(
             params.stat_dir,
             "regression_target_stats.json",

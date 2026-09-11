@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
+import statistics
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +22,34 @@ sys.path.insert(0, str(REPO_ROOT))
 from train.downstream.tuning.track_regression_search_space import (  # noqa: E402
     suggest_adapteronly_optimizer_params,
 )
+
+
+DEFAULT_TRIAL_SEEDS = (11, 17, 23)
+
+
+def parse_trial_seeds(value: str) -> tuple[int, ...]:
+    """Parse a stable, non-empty set of training seeds."""
+    seeds: list[int] = []
+    for item in str(value).split(","):
+        item = item.strip()
+        if item:
+            seeds.append(int(item))
+    if not seeds:
+        raise ValueError("--trial-seeds must contain at least one integer")
+    return tuple(dict.fromkeys(seeds))
+
+
+def scheduler_first_cycle_steps(max_optimizer_steps: int, n_cycles: int) -> int:
+    if max_optimizer_steps <= 0:
+        raise ValueError("--max-optimizer-steps must be positive")
+    if n_cycles <= 0:
+        raise ValueError("--n-cycles must be positive")
+    if max_optimizer_steps % n_cycles:
+        raise ValueError(
+            "--max-optimizer-steps must be divisible by --n-cycles; got "
+            f"{max_optimizer_steps} and {n_cycles}"
+        )
+    return max_optimizer_steps // n_cycles
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,8 +76,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-trials", type=int, default=3)
     parser.add_argument("--n-jobs", type=int, default=1)
     parser.add_argument("--cuda-device", default="0")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=42, help="Seed for the Optuna sampler only.")
+    parser.add_argument(
+        "--trial-seeds",
+        default=",".join(str(seed) for seed in DEFAULT_TRIAL_SEEDS),
+        help="Comma-separated training seeds evaluated for every Optuna trial.",
+    )
+    parser.add_argument(
+        "--seed-objective",
+        choices=("mean", "median", "mean_plus_std"),
+        default="mean",
+        help="Aggregate per-seed validation losses into the Optuna objective.",
+    )
     parser.add_argument("--max-optimizer-steps", type=int, default=3000)
+    parser.add_argument(
+        "--n-cycles",
+        type=int,
+        default=1,
+        help="Equal cosine cycles within --max-optimizer-steps; 1 disables restarts.",
+    )
     parser.add_argument("--val-interval-steps", type=int, default=500)
     parser.add_argument("--early-stopping-min-steps", type=int, default=1000)
     parser.add_argument("--early-stopping-patience", type=int, default=8)
@@ -121,9 +168,12 @@ def load_base_params(yaml_config: Path, config_name: str) -> dict[str, Any]:
 
 
 def fixed_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    first_cycle_steps = scheduler_first_cycle_steps(
+        int(args.max_optimizer_steps), int(args.n_cycles)
+    )
     overrides: dict[str, Any] = {
         "max_optimizer_steps": int(args.max_optimizer_steps),
-        "scheduler_first_cycle_steps": int(args.max_optimizer_steps),
+        "scheduler_first_cycle_steps": first_cycle_steps,
         "val_interval_steps": int(args.val_interval_steps),
         "early_stopping_min_steps": int(args.early_stopping_min_steps),
         "early_stopping_patience": int(args.early_stopping_patience),
@@ -166,6 +216,56 @@ def make_pruner(args: argparse.Namespace):
         n_warmup_steps=args.early_stopping_min_steps,
         interval_steps=args.val_interval_steps,
     )
+
+
+def study_contract(args: argparse.Namespace) -> dict[str, Any]:
+    """Immutable conditions that must not be mixed within one Optuna study."""
+    yaml_path = Path(args.yaml_config).resolve()
+    yaml_digest = hashlib.sha256(yaml_path.read_bytes()).hexdigest()
+    return {
+        "contract_version": 1,
+        "yaml_config": str(yaml_path),
+        "yaml_sha256": yaml_digest,
+        "config": args.config,
+        "data_root": str(Path(args.data_root).resolve()) if args.data_root else None,
+        "data_root_test": str(Path(args.data_root_test).resolve()) if args.data_root_test else None,
+        "stat_dir": str(Path(args.stat_dir).resolve()) if args.stat_dir else None,
+        "regression_target_stats": (
+            str(Path(args.regression_target_stats).resolve())
+            if args.regression_target_stats else None
+        ),
+        "eventnumber": int(args.eventnumber),
+        "train_batch_size": int(args.train_batch_size),
+        "max_optimizer_steps": int(args.max_optimizer_steps),
+        "n_cycles": int(args.n_cycles),
+        "val_interval_steps": int(args.val_interval_steps),
+        "early_stopping_min_steps": int(args.early_stopping_min_steps),
+        "early_stopping_patience": int(args.early_stopping_patience),
+        "max_train_batches": args.max_train_batches,
+        "max_val_batches": int(args.max_val_batches),
+        "trial_seeds": list(parse_trial_seeds(args.trial_seeds)),
+        "seed_objective": args.seed_objective,
+    }
+
+
+def validate_study_contract(study: Any, contract: dict[str, Any]) -> None:
+    key = "track_regression_optuna_contract"
+    existing = study.user_attrs.get(key)
+    if existing is None:
+        if study.trials:
+            raise ValueError(
+                "Refusing to resume a non-empty legacy study without a recorded "
+                "execution contract. Start a new study name to avoid mixing "
+                "incomparable trials."
+            )
+        study.set_user_attr(key, contract)
+        return
+    if existing != contract:
+        raise ValueError(
+            "Refusing to resume Optuna study with a different execution contract. "
+            "Start a new study name for changed data, budget, schedule, batch, "
+            "or seed policy."
+        )
 
 
 def set_trial_attrs(trial: Any, attrs: dict[str, Any]) -> None:
@@ -223,6 +323,7 @@ def objective_factory(args: argparse.Namespace):
     study_dir = output_root / args.study_name
     base_params = load_base_params(base_yaml, args.config)
     fixed = fixed_overrides(args)
+    trial_seeds = parse_trial_seeds(args.trial_seeds)
 
     def objective(trial: Any) -> float:
         from train.downstream.track_regression_experiment import (
@@ -232,91 +333,127 @@ def objective_factory(args: argparse.Namespace):
 
         trial_name = f"trial_{trial.number:06d}"
         trial_dir = study_dir / trial_name
-        config_dir = trial_dir / "config"
-        checkpoint_dir = trial_dir / "checkpoints"
-        train_dir = trial_dir / "train"
-
         suggested = suggest_adapteronly_optimizer_params(trial)
         params = dict(base_params)
         params.update(fixed)
         params.update(suggested)
+        params["warmup_steps"] = max(
+            1,
+            int(float(params["warmup_fraction"]) * int(params["scheduler_first_cycle_steps"])),
+        )
         params.update({
             "artifact_root": str(study_dir),
             "downstream_dir": str(trial_dir),
-            "checkpoint_dir": str(checkpoint_dir),
             "model_version": f"{args.study_name}_{trial_name}",
         })
-
-        trial_config_name = f"{args.config}_{trial_name}"
-        trial_yaml = config_dir / "model.yaml"
-        resolved_config = config_dir / "resolved_config.json"
-        artifact_summary = train_dir / "artifacts.json"
-        write_yaml(trial_yaml, {trial_config_name: params})
 
         set_trial_attrs(trial, {
             "study_name": args.study_name,
             "trial_dir": str(trial_dir),
-            "checkpoint_dir": str(checkpoint_dir),
+            "checkpoint_dir": str(trial_dir),
             "hostname": socket.gethostname(),
             "git_commit": git_commit(),
             "data_root": params.get("data_root"),
             "data_root_test": params.get("data_root_test"),
+            "trial_seeds": list(trial_seeds),
+            "seed_objective": args.seed_objective,
+            "execution_contract": {
+                "max_optimizer_steps": int(params["max_optimizer_steps"]),
+                "n_cycles": int(args.n_cycles),
+                "scheduler_first_cycle_steps": int(params["scheduler_first_cycle_steps"]),
+                "warmup_fraction": float(params["warmup_fraction"]),
+                "warmup_steps": int(params["warmup_steps"]),
+                "val_interval_steps": int(params["val_interval_steps"]),
+                "early_stopping_min_steps": int(params["early_stopping_min_steps"]),
+                "early_stopping_patience": int(params["early_stopping_patience"]),
+                "early_stopping_min_delta": float(params["early_stopping_min_delta"]),
+                "max_val_batches": int(params["max_val_batches"]),
+                "train_batch_size": int(args.train_batch_size),
+                "eventnumber": int(args.eventnumber),
+            },
         })
-
-        wandb_run = init_wandb_run(args, trial, trial_name, trial_dir, params)
-
-        def log_metrics(metrics: dict[str, Any]) -> None:
-            if wandb_run is None:
-                return
-            step = metrics.get("step")
-            wandb_run.log(metrics, step=int(step) if step is not None else None)
-
-        try:
-            result = train_experiment(
-                TrackRegressionExperimentConfig(
-                    yaml_config=str(trial_yaml),
-                    config=trial_config_name,
-                    run_num=trial_name,
-                    root_dir=str(train_dir),
-                    global_log_dir=str(study_dir / "global_logs"),
-                    eventnumber=args.eventnumber,
-                    usepretrain=False,
-                    train_batch_size=args.train_batch_size,
-                    checkpoint_dir=str(checkpoint_dir),
-                    log_file_name=f"{trial_name}.log",
-                    checkpoint_file_name=f"{trial_name}_adapter_checkpoint.pth",
-                    artifact_summary=str(artifact_summary),
-                    resolved_config_path=str(resolved_config),
-                ),
-                optuna_trial=trial if args.enable_pruning else None,
-                metrics_callback=log_metrics,
+        seed_results = []
+        for training_seed in trial_seeds:
+            seed_name = f"seed_{training_seed}"
+            seed_dir = trial_dir / seed_name
+            config_dir = seed_dir / "config"
+            checkpoint_dir = seed_dir / "checkpoints"
+            train_dir = seed_dir / "train"
+            seed_params = dict(params)
+            seed_params.update({
+                "downstream_dir": str(seed_dir),
+                "checkpoint_dir": str(checkpoint_dir),
+                "seed": int(training_seed),
+            })
+            trial_config_name = f"{args.config}_{trial_name}_{seed_name}"
+            trial_yaml = config_dir / "model.yaml"
+            resolved_config = config_dir / "resolved_config.json"
+            artifact_summary = train_dir / "artifacts.json"
+            write_yaml(trial_yaml, {trial_config_name: seed_params})
+            wandb_run = init_wandb_run(
+                args, trial, f"{trial_name}_{seed_name}", seed_dir, seed_params
             )
-        except Exception:
-            finish_wandb_run(wandb_run, {"state": "failed"})
-            raise
 
-        set_trial_attrs(trial, {
-            "best_step": result.get("best_step"),
-            "best_epoch": result.get("best_epoch"),
-            "checkpoint_path": result.get("checkpoint_path"),
-            "log_file": result.get("log_file"),
-            "artifact_summary": result.get("artifact_summary"),
-        })
-        write_json(trial_dir / "trial_result.json", result)
-        finish_wandb_run(wandb_run, {
-            "state": "complete",
-            "best_val_loss": result.get("best_val_loss"),
-            "best_step": result.get("best_step"),
-            "best_epoch": result.get("best_epoch"),
-            "checkpoint_path": result.get("checkpoint_path"),
-        })
-        return float(result["best_val_loss"])
+            def log_metrics(metrics: dict[str, Any]) -> None:
+                if wandb_run is not None:
+                    step = metrics.get("step")
+                    wandb_run.log(metrics, step=int(step) if step is not None else None)
+
+            try:
+                result = train_experiment(
+                    TrackRegressionExperimentConfig(
+                        yaml_config=str(trial_yaml),
+                        config=trial_config_name,
+                        run_num=f"{trial_name}_{seed_name}",
+                        root_dir=str(train_dir),
+                        global_log_dir=str(study_dir / "global_logs"),
+                        eventnumber=args.eventnumber,
+                        usepretrain=False,
+                        train_batch_size=args.train_batch_size,
+                        checkpoint_dir=str(checkpoint_dir),
+                        log_file_name=f"{trial_name}_{seed_name}.log",
+                        checkpoint_file_name=f"{trial_name}_{seed_name}_adapter_checkpoint.pth",
+                        artifact_summary=str(artifact_summary), resolved_config_path=str(resolved_config),
+                        seed=int(training_seed),
+                    ),
+                    optuna_trial=trial if args.enable_pruning else None,
+                    metrics_callback=log_metrics,
+                )
+            except Exception:
+                finish_wandb_run(wandb_run, {"state": "failed", "seed": training_seed})
+                raise
+            result["seed"] = int(training_seed)
+            seed_results.append(result)
+            finish_wandb_run(wandb_run, {"state": "complete", "seed": training_seed, **result})
+
+        losses = [float(result["best_val_loss"]) for result in seed_results]
+        if args.seed_objective == "median":
+            objective_value = float(statistics.median(losses))
+        elif args.seed_objective == "mean_plus_std":
+            objective_value = float(statistics.mean(losses) + statistics.pstdev(losses))
+        else:
+            objective_value = float(statistics.mean(losses))
+        aggregate = {
+            "objective": objective_value,
+            "seed_objective": args.seed_objective,
+            "seed_losses": losses,
+            "seed_mean": float(statistics.mean(losses)),
+            "seed_std": float(statistics.pstdev(losses)),
+            "seed_results": seed_results,
+        }
+        set_trial_attrs(trial, {"seed_results": seed_results, **aggregate})
+        write_json(trial_dir / "trial_result.json", aggregate)
+        return objective_value
 
     return objective
 
 
 def main() -> None:
     args = parse_args()
+    trial_seeds = parse_trial_seeds(args.trial_seeds)
+    scheduler_first_cycle_steps(args.max_optimizer_steps, args.n_cycles)
+    if args.enable_pruning and len(trial_seeds) != 1:
+        raise ValueError("--enable-pruning currently requires exactly one --trial-seeds value")
     if args.n_jobs != 1:
         raise ValueError(
             "This worker supports --n-jobs 1 only. For parallel studies, run one "
@@ -335,6 +472,7 @@ def main() -> None:
         sampler=make_sampler(args),
         pruner=make_pruner(args),
     )
+    validate_study_contract(study, study_contract(args))
     study.optimize(
         objective_factory(args),
         n_trials=args.n_trials,

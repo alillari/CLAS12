@@ -159,16 +159,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def init_down_model(params, device):
+    # The trainable tracking decoder uses a fixed latent space.  input_dim is
+    # the pretrained backbone width and is bridged by input_proj.
+    adapter_embed_dim = int(getattr(params, "adapter_embed_dim", 256))
     return MambaAttentionHead(
         input_dim=params.embed_dim,
-        embed_dim=params.embed_dim,
+        embed_dim=adapter_embed_dim,
         num_layers=int(getattr(params, "num_adapter_layers", 0)),
         num_embedder_layers=int(getattr(params, "num_embedder_layers", 0)),
         d_state=int(getattr(params, "adapter_d_state", getattr(params, "d_state", 64))),
         d_conv=int(getattr(params, "adapter_d_conv", getattr(params, "d_conv", 4))),
         expand=int(getattr(params, "adapter_expand", getattr(params, "expand", 2))),
         num_feature_layers=params.num_layers_backbone,
-        num_output_dim=params.embed_dim,
+        num_output_dim=adapter_embed_dim,
         num_prototypes=int(getattr(params, "num_prototypes", params.max_gt_classes)),
         num_heads=int(getattr(params, "num_heads_decoder", 4)),
         ffn_dim=int(getattr(params, "ffn_dim", 512)),

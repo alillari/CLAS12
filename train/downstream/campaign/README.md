@@ -213,7 +213,7 @@ backbone rows. The manifest builder loads `study.best_trial` from the Optuna
 storage, records its provenance under `source_optuna`, and writes the selected
 hyperparameters into campaign-level `training_overrides`.
 
-Only the tuned recipe keys are imported:
+The tuned scalar recipe and the recorded execution contract are imported:
 
 - `max_lr`
 - `min_lr_ratio`
@@ -223,10 +223,16 @@ Only the tuned recipe keys are imported:
 - `grad_clip_value`
 - `dropout`
 
-Dataset size, batch size, paths, checkpoint selection, training budget, and the
-campaign grid still come from the campaign arguments and base configs. Explicit
-`--training-override KEY=VALUE` arguments take precedence over the imported
-Optuna recipe, so you can import the best recipe and still override one value:
+The execution contract also ports `max_optimizer_steps`, validation and
+early-stopping settings, `max_val_batches`, and the cosine schedule. The
+schedule is stored as `n_cycles`, so if an explicit campaign override changes
+the total step budget, the builder preserves the tuned cycle count and derives
+the new integral `scheduler_first_cycle_steps`. Training label count, batch
+size, data paths, and checkpoint selection remain explicit campaign choices and
+are recorded alongside the Optuna provenance.
+
+Explicit `--training-override KEY=VALUE` arguments take precedence over the
+imported recipe, so you can import the best recipe and still override one value:
 
 ```bash
 python train/downstream/campaign/build_track_regression_manifest.py \

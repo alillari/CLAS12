@@ -179,6 +179,15 @@ TUNED_OPTUNA_PARAM_KEYS = (
     "dropout",
 )
 
+EXECUTION_CONTRACT_KEYS = (
+    "max_optimizer_steps",
+    "val_interval_steps",
+    "early_stopping_min_steps",
+    "early_stopping_patience",
+    "early_stopping_min_delta",
+    "max_val_batches",
+)
+
 
 def validate_optuna_args(args: argparse.Namespace) -> None:
     provided = [args.optuna_storage, args.optuna_study_name]
@@ -230,12 +239,36 @@ def best_trial_recipe(args: argparse.Namespace) -> tuple[dict[str, Any], dict[st
 
     recipe = {key: trial.params[key] for key in TUNED_OPTUNA_PARAM_KEYS}
     recipe["min_lr"] = float(recipe["max_lr"]) * float(recipe["min_lr_ratio"])
+    contract = trial.user_attrs.get("execution_contract")
+    if not isinstance(contract, dict):
+        raise ValueError(
+            f"Best trial {trial.number} has no execution_contract provenance. "
+            "Legacy studies cannot be faithfully imported; rerun tuning or set "
+            "all schedule overrides explicitly."
+        )
+    missing_contract = [key for key in (*EXECUTION_CONTRACT_KEYS, "n_cycles") if key not in contract]
+    if missing_contract:
+        raise ValueError(
+            f"Best trial {trial.number} execution contract is missing " + ", ".join(missing_contract)
+        )
+    n_cycles = int(contract["n_cycles"])
+    max_steps = int(contract["max_optimizer_steps"])
+    if n_cycles <= 0 or max_steps <= 0 or max_steps % n_cycles:
+        raise ValueError(f"Invalid Optuna execution contract for trial {trial.number}: {contract!r}")
+    recipe.update({key: contract[key] for key in EXECUTION_CONTRACT_KEYS})
+    recipe["scheduler_first_cycle_steps"] = max_steps // n_cycles
+    recipe["warmup_steps"] = int(contract["warmup_steps"])
     source = {
         "storage": args.optuna_storage,
         "study_name": args.optuna_study_name,
         "best_trial_number": int(trial.number),
         "best_trial_value": float(trial.value),
         "params": dict(recipe),
+        "execution_contract": dict(contract),
+        "training_seeds": trial.user_attrs.get("trial_seeds"),
+        "seed_objective": trial.user_attrs.get("seed_objective"),
+        "seed_mean": trial.user_attrs.get("seed_mean"),
+        "seed_std": trial.user_attrs.get("seed_std"),
     }
     return recipe, source
 
@@ -250,7 +283,26 @@ def main() -> None:
     eventnumbers = parse_eventnumbers(args.eventnumber)
     optuna_overrides, source_optuna = best_trial_recipe(args)
     training_overrides = dict(optuna_overrides)
-    training_overrides.update(parse_training_overrides(args))
+    manual_overrides = parse_training_overrides(args)
+    training_overrides.update(manual_overrides)
+    if source_optuna is not None and "scheduler_first_cycle_steps" not in manual_overrides:
+        n_cycles = int(source_optuna["execution_contract"]["n_cycles"])
+        max_steps = int(training_overrides["max_optimizer_steps"])
+        if max_steps % n_cycles:
+            raise ValueError(
+                "Campaign max_optimizer_steps must be divisible by the imported "
+                f"Optuna n_cycles={n_cycles}; got {max_steps}. Override "
+                "scheduler_first_cycle_steps explicitly to use a non-integral policy."
+            )
+        training_overrides["scheduler_first_cycle_steps"] = max_steps // n_cycles
+    if source_optuna is not None and "warmup_fraction" in training_overrides:
+        training_overrides["warmup_steps"] = max(
+            1,
+            int(
+                float(training_overrides["warmup_fraction"])
+                * int(training_overrides["scheduler_first_cycle_steps"])
+            ),
+        )
 
     if not checkpoint_root.is_dir():
         raise FileNotFoundError(f"Checkpoint root does not exist: {checkpoint_root}")

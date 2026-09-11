@@ -73,6 +73,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eventnumber", type=int, default=50000)
     parser.add_argument("--train-batch-size", type=int, default=DEFAULT_TRAIN_BATCH_SIZE)
     parser.add_argument("--max-optimizer-steps", type=int, default=3000)
+    parser.add_argument(
+        "--n-cycles",
+        type=int,
+        default=1,
+        help="Equal cosine cycles within --max-optimizer-steps.",
+    )
     parser.add_argument("--val-interval-steps", type=int, default=500)
     parser.add_argument("--early-stopping-min-steps", type=int, default=1000)
     parser.add_argument("--early-stopping-patience", type=int, default=8)
@@ -172,7 +178,18 @@ def source_resolved_config_path(trial: Any) -> Path | None:
     if not trial_dir:
         return None
     path = Path(trial_dir) / "config" / "resolved_config.json"
-    return path if path.is_file() else None
+    if path.is_file():
+        return path
+    # New multi-seed Optuna trials store one resolved config per seed. All
+    # seeds share the recipe, so the first completed seed is authoritative.
+    seed_results = trial.user_attrs.get("seed_results") or []
+    for result in seed_results:
+        artifact_summary = result.get("artifact_summary") if isinstance(result, dict) else None
+        if artifact_summary:
+            seed_path = Path(artifact_summary).parent.parent / "config" / "resolved_config.json"
+            if seed_path.is_file():
+                return seed_path
+    return None
 
 
 def source_training_overrides(trial: Any) -> tuple[dict[str, Any], str | None]:

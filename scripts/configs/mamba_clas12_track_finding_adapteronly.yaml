@@ -99,6 +99,10 @@ default: &default
   dropout: 0.1
   downstream_dropout: 0.1
   mambaversion: mamba1
+  # Shared tracking-adapter latent space.  Pretrained backbones are bridged
+  # from their native width into this space, so width sweeps do not also turn
+  # into quadratic decoder-capacity sweeps.
+  adapter_embed_dim: 256
   num_adapter_layers: 0
   adapter_d_state: 16
   adapter_d_conv: 4

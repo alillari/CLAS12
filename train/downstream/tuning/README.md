@@ -75,9 +75,18 @@ python train/downstream/tuning/run_track_regression_optuna.py \
   --num-data-workers 24
 ```
 
-`scheduler_first_cycle_steps` is set automatically to `max_optimizer_steps` by
-the launcher, so each trial uses one warmup plus cosine cycle over the full
-trial budget.
+Each trial evaluates the comma-separated `--trial-seeds` set (default
+`11,17,23`) and reports their mean validation loss to Optuna by default. The
+sampler `--seed` does not replace these training seeds. Use
+`--seed-objective median` or `mean_plus_std` when a more robust or
+variance-penalizing objective is desired.
+
+`--n-cycles` controls equal cosine cycles within the full step budget. The
+launcher derives `scheduler_first_cycle_steps = max_optimizer_steps / n_cycles`
+and rejects non-integral schedules. Thus `--n-cycles 1` is one full-budget
+warmup/cosine cycle with no restart; `2` and `3` produce one and two restarts.
+Tune the learning-rate parameters jointly for each fixed cycle count rather
+than transferring a recipe tuned under a different schedule.
 
 ## W&B Logging
 

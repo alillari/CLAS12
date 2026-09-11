@@ -487,16 +487,22 @@ class DownstreamTrainer():
         #    num_prototypes=self.params.max_gt_classes
         #).to(self.device)
 
+        # The frozen backbone can have any representation width, but the
+        # trainable tracking decoder must remain a shared-capacity adapter.
+        # Project backbone features into this fixed latent space, matching the
+        # original FM4NPP tracking-head design, rather than widening every
+        # decoder matrix with the backbone.
+        adapter_embed_dim = int(getattr(self.params, "adapter_embed_dim", 256))
         self.down_model = MambaAttentionHead(
             input_dim=self.params.embed_dim,
-            embed_dim=self.params.embed_dim,
+            embed_dim=adapter_embed_dim,
             num_layers=int(getattr(self.params, "num_adapter_layers", 0)),
             num_embedder_layers=int(getattr(self.params, "num_embedder_layers", 0)),
             d_state=int(getattr(self.params, "adapter_d_state", getattr(self.params, "d_state", 64))),
             d_conv=int(getattr(self.params, "adapter_d_conv", getattr(self.params, "d_conv", 4))),
             expand=int(getattr(self.params, "adapter_expand", getattr(self.params, "expand", 2))),
             num_feature_layers=self.params.num_layers_backbone,
-            num_output_dim=self.params.embed_dim,
+            num_output_dim=adapter_embed_dim,
             num_prototypes=int(getattr(self.params, "num_prototypes", self.params.max_gt_classes)),
             num_heads=int(getattr(self.params, "num_heads_decoder", 4)),
             ffn_dim=int(getattr(self.params, "ffn_dim", 512)),
@@ -772,16 +778,19 @@ class DownstreamTrainer():
             print(f"✅ Mamba v2 Model Initialized (Safe Scaling for {num_layers} Layers")
                 
     
+        # Keep the training head in the same fixed latent space as inference.
+        # Only input_proj depends on the frozen backbone's feature width.
+        adapter_embed_dim = int(getattr(self.params, "adapter_embed_dim", 256))
         self.down_model = MambaAttentionHead(
             input_dim=self.params.embed_dim,
-            embed_dim=self.params.embed_dim,
+            embed_dim=adapter_embed_dim,
             num_layers=int(getattr(self.params, "num_adapter_layers", 0)),
             num_embedder_layers=int(getattr(self.params, "num_embedder_layers", 0)),
             d_state=int(getattr(self.params, "adapter_d_state", getattr(self.params, "d_state", 64))),
             d_conv=int(getattr(self.params, "adapter_d_conv", getattr(self.params, "d_conv", 4))),
             expand=int(getattr(self.params, "adapter_expand", getattr(self.params, "expand", 2))),
             num_feature_layers=self.params.num_layers_backbone,
-            num_output_dim=self.params.embed_dim,
+            num_output_dim=adapter_embed_dim,
             num_prototypes=int(getattr(self.params, "num_prototypes", self.params.max_gt_classes)),
             num_heads=int(getattr(self.params, "num_heads_decoder", 4)),
             ffn_dim=int(getattr(self.params, "ffn_dim", 512)),

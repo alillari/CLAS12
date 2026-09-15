@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -371,6 +372,104 @@ def run_logged_command(
             check=False,
         )
     return completed.returncode
+
+
+def attempt_log_path(log_path: Path, attempt: int, kind: str = "command") -> Path:
+    """Return an immutable per-attempt log path next to the legacy log path."""
+    if attempt < 1:
+        raise ValueError(f"attempt must be positive, got {attempt}")
+    suffix = f".{kind}.attempt-{attempt:03d}"
+    return log_path.with_name(f"{log_path.stem}{suffix}{log_path.suffix}")
+
+
+def next_attempt_number(log_path: Path) -> int:
+    """Find the first unused attempt number across command and preflight logs."""
+    attempt = 1
+    while (
+        attempt_log_path(log_path, attempt).exists()
+        or attempt_log_path(log_path, attempt, kind="cuda-preflight").exists()
+    ):
+        attempt += 1
+    return attempt
+
+
+def run_cuda_preflight(env: dict[str, str], log_path: Path) -> int:
+    """Check CUDA through the exact interpreter and environment used by a child.
+
+    Mamba's causal-conv extension cannot run on CPU.  Checking this before a
+    train/eval subprocess avoids an opaque first-batch ``x.is_cuda`` error.
+    """
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import os\n"
+            "import torch\n"
+            "print(f'CUDA_VISIBLE_DEVICES={os.environ.get(\"CUDA_VISIBLE_DEVICES\", \"<unset>\")}')\n"
+            "print(f'torch_version={torch.__version__}')\n"
+            "available = torch.cuda.is_available()\n"
+            "count = torch.cuda.device_count()\n"
+            "print(f'cuda_available={available} device_count={count}')\n"
+            "if not available or count < 1:\n"
+            "    raise SystemExit(2)\n"
+            "for device in range(count):\n"
+            "    properties = torch.cuda.get_device_properties(device)\n"
+            "    print(f'device={device} name={properties.name} capability={properties.major}.{properties.minor}')\n"
+        ),
+    ]
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("x") as stream:
+        stream.write(f"$ {format_command(command)}\n\n")
+        stream.flush()
+        completed = subprocess.run(
+            command,
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    return completed.returncode
+
+
+def run_with_cuda_preflight(
+    command: list[str],
+    log_path: Path,
+    env: dict[str, str],
+    *,
+    preflight_attempts: int,
+    preflight_retry_delay_seconds: float,
+) -> tuple[int | None, Path, Path, int]:
+    """Run a CUDA-only preflight, then exactly one training/evaluation command.
+
+    Each retry is limited to the CUDA preflight.  A model/data failure is never
+    retried automatically.  The legacy log path is a convenience copy of the
+    latest command attempt; immutable attempt logs retain all prior evidence.
+    """
+    if preflight_attempts < 1:
+        raise ValueError("preflight_attempts must be at least one")
+    if preflight_retry_delay_seconds < 0:
+        raise ValueError("preflight_retry_delay_seconds must be non-negative")
+
+    attempt = next_attempt_number(log_path)
+    for retry_index in range(1, preflight_attempts + 1):
+        preflight_log = attempt_log_path(log_path, attempt, kind="cuda-preflight")
+        preflight_code = run_cuda_preflight(env, preflight_log)
+        if preflight_code == 0:
+            command_log = attempt_log_path(log_path, attempt)
+            command_code = run_logged_command(command, command_log, env)
+            shutil.copyfile(command_log, log_path)
+            return command_code, command_log, preflight_log, attempt
+
+        if retry_index < preflight_attempts:
+            print(
+                f"  CUDA preflight retry {retry_index}/{preflight_attempts} failed "
+                f"(log: {preflight_log}); retrying in {preflight_retry_delay_seconds:g}s"
+            )
+            time.sleep(preflight_retry_delay_seconds)
+            attempt += 1
+
+    return None, preflight_log, preflight_log, attempt
 
 
 def load_status(path: Path) -> dict[str, Any]:

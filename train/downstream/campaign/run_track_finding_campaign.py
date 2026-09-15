@@ -25,7 +25,7 @@ from campaign_util import (
     read_json,
     read_yaml,
     run_current_status,
-    run_logged_command,
+    run_with_cuda_preflight,
     update_status,
     write_yaml,
 )
@@ -42,6 +42,18 @@ def parse_args() -> argparse.Namespace:
         "--cuda-device",
         default="0",
         help="CUDA device exposed to each subprocess via CUDA_VISIBLE_DEVICES.",
+    )
+    parser.add_argument(
+        "--cuda-preflight-attempts",
+        type=int,
+        default=3,
+        help="Number of exact-environment CUDA checks before each train/eval launch (default: 3).",
+    )
+    parser.add_argument(
+        "--cuda-preflight-retry-delay-seconds",
+        type=float,
+        default=30.0,
+        help="Delay between failed CUDA preflight checks (default: 30).",
     )
     parser.add_argument("--only", action="append", help="Run only this run_id. Can be repeated.")
     parser.add_argument("--limit", type=int, help="Maximum number of selected runs to process.")
@@ -440,7 +452,30 @@ def train_if_needed(
     print(f"  log: {log_path}")
     print(f"  command: {format_command(command)}")
     update_status(status_path, run["run_id"], "running_train", log=str(log_path.resolve()))
-    code = run_logged_command(command, log_path, command_env(args.cuda_device, manifest))
+    code, attempt_log, preflight_log, attempt = run_with_cuda_preflight(
+        command,
+        log_path,
+        command_env(args.cuda_device, manifest),
+        preflight_attempts=args.cuda_preflight_attempts,
+        preflight_retry_delay_seconds=args.cuda_preflight_retry_delay_seconds,
+    )
+    print(f"  CUDA preflight log: {preflight_log}")
+    if code is not None:
+        print(f"  immutable training attempt log: {attempt_log}")
+    if code is None:
+        update_status(
+            status_path,
+            run["run_id"],
+            "failed",
+            stage="train",
+            reason="cuda_preflight_failed",
+            cuda_preflight_log=str(preflight_log.resolve()),
+            log=str(preflight_log.resolve()),
+        )
+        raise RuntimeError(
+            f"CUDA preflight failed for {run['run_id']} after {attempt} attempt(s). "
+            f"See {preflight_log}"
+        )
     if code != 0:
         update_status(
             status_path,
@@ -448,10 +483,11 @@ def train_if_needed(
             "failed",
             stage="train",
             returncode=code,
-            log=str(log_path.resolve()),
+            log=str(attempt_log.resolve()),
+            cuda_preflight_log=str(preflight_log.resolve()),
         )
         raise RuntimeError(
-            f"Training failed for {run['run_id']} with exit code {code}. See {log_path}"
+            f"Training failed for {run['run_id']} with exit code {code}. See {attempt_log}"
         )
     if not checkpoint.is_file():
         update_status(
@@ -460,7 +496,8 @@ def train_if_needed(
             "failed",
             stage="train",
             reason="missing_adapter_checkpoint",
-            log=str(log_path.resolve()),
+            log=str(attempt_log.resolve()),
+            cuda_preflight_log=str(preflight_log.resolve()),
         )
         raise FileNotFoundError(f"Training finished but adapter checkpoint was not created: {checkpoint}")
     update_status(
@@ -468,7 +505,8 @@ def train_if_needed(
         run["run_id"],
         "train_done",
         adapter_checkpoint=str(checkpoint.resolve()),
-        train_log=str(log_path.resolve()),
+        train_log=str(attempt_log.resolve()),
+        cuda_preflight_log=str(preflight_log.resolve()),
     )
     print(f"[{run['run_id']}] training complete")
     print(f"  checkpoint: {checkpoint}")
@@ -494,7 +532,30 @@ def eval_if_needed(
     print(f"  log: {log_path}")
     print(f"  command: {format_command(command)}")
     update_status(status_path, run["run_id"], "running_eval", log=str(log_path.resolve()))
-    code = run_logged_command(command, log_path, command_env(args.cuda_device, manifest))
+    code, attempt_log, preflight_log, attempt = run_with_cuda_preflight(
+        command,
+        log_path,
+        command_env(args.cuda_device, manifest),
+        preflight_attempts=args.cuda_preflight_attempts,
+        preflight_retry_delay_seconds=args.cuda_preflight_retry_delay_seconds,
+    )
+    print(f"  CUDA preflight log: {preflight_log}")
+    if code is not None:
+        print(f"  immutable evaluation attempt log: {attempt_log}")
+    if code is None:
+        update_status(
+            status_path,
+            run["run_id"],
+            "failed",
+            stage="eval",
+            reason="cuda_preflight_failed",
+            cuda_preflight_log=str(preflight_log.resolve()),
+            log=str(preflight_log.resolve()),
+        )
+        raise RuntimeError(
+            f"CUDA preflight failed for {run['run_id']} after {attempt} attempt(s). "
+            f"See {preflight_log}"
+        )
     if code != 0:
         update_status(
             status_path,
@@ -502,10 +563,11 @@ def eval_if_needed(
             "failed",
             stage="eval",
             returncode=code,
-            log=str(log_path.resolve()),
+            log=str(attempt_log.resolve()),
+            cuda_preflight_log=str(preflight_log.resolve()),
         )
         raise RuntimeError(
-            f"Evaluation failed for {run['run_id']} with exit code {code}. See {log_path}"
+            f"Evaluation failed for {run['run_id']} with exit code {code}. See {attempt_log}"
         )
     if not summary.is_file():
         update_status(
@@ -514,7 +576,8 @@ def eval_if_needed(
             "failed",
             stage="eval",
             reason="missing_summary_json",
-            log=str(log_path.resolve()),
+            log=str(attempt_log.resolve()),
+            cuda_preflight_log=str(preflight_log.resolve()),
         )
         raise FileNotFoundError(f"Evaluation finished but summary.json was not created: {summary}")
     update_status(
@@ -522,7 +585,8 @@ def eval_if_needed(
         run["run_id"],
         "eval_done",
         evaluation_dir=str(Path(run["evaluation_dir"]).resolve()),
-        eval_log=str(log_path.resolve()),
+        eval_log=str(attempt_log.resolve()),
+        cuda_preflight_log=str(preflight_log.resolve()),
     )
     print(f"[{run['run_id']}] evaluation complete")
     print(f"  summary: {summary}")

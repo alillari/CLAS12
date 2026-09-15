@@ -458,6 +458,13 @@ def train_if_needed(
         command_env(args.cuda_device, manifest),
         preflight_attempts=args.cuda_preflight_attempts,
         preflight_retry_delay_seconds=args.cuda_preflight_retry_delay_seconds,
+        on_command_start=lambda command_log, checked_log: update_status(
+            status_path,
+            run["run_id"],
+            "running_train",
+            log=str(command_log.resolve()),
+            cuda_preflight_log=str(checked_log.resolve()),
+        ),
     )
     print(f"  CUDA preflight log: {preflight_log}")
     if code is not None:
@@ -538,6 +545,13 @@ def eval_if_needed(
         command_env(args.cuda_device, manifest),
         preflight_attempts=args.cuda_preflight_attempts,
         preflight_retry_delay_seconds=args.cuda_preflight_retry_delay_seconds,
+        on_command_start=lambda command_log, checked_log: update_status(
+            status_path,
+            run["run_id"],
+            "running_eval",
+            log=str(command_log.resolve()),
+            cuda_preflight_log=str(checked_log.resolve()),
+        ),
     )
     print(f"  CUDA preflight log: {preflight_log}")
     if code is not None:

@@ -13,7 +13,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ruamel.yaml import YAML
 
@@ -439,6 +439,7 @@ def run_with_cuda_preflight(
     *,
     preflight_attempts: int,
     preflight_retry_delay_seconds: float,
+    on_command_start: Callable[[Path, Path], None] | None = None,
 ) -> tuple[int | None, Path, Path, int]:
     """Run a CUDA-only preflight, then exactly one training/evaluation command.
 
@@ -457,6 +458,8 @@ def run_with_cuda_preflight(
         preflight_code = run_cuda_preflight(env, preflight_log)
         if preflight_code == 0:
             command_log = attempt_log_path(log_path, attempt)
+            if on_command_start is not None:
+                on_command_start(command_log, preflight_log)
             command_code = run_logged_command(command, command_log, env)
             shutil.copyfile(command_log, log_path)
             return command_code, command_log, preflight_log, attempt

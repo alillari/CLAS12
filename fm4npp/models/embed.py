@@ -107,9 +107,10 @@ class CLAS12GeometryContextEmbedder(nn.Module):
 
     ``center_embedding`` is supplied by the legacy ``EmbedderPosOnly`` branch,
     preserving its frozen random NeRF projection.  Endpoints use the same 63-D
-    NeRF convention (three inputs plus sin/cos at ten log-spaced frequencies),
-    but a shared learned projection and a symmetric sum make their contribution
-    invariant under endpoint exchange.
+    NeRF convention (three inputs plus sin/cos at ten log-spaced frequencies).
+    A shared nonlinear per-endpoint map and a symmetric sum make their
+    contribution invariant under endpoint exchange without reducing the branch
+    to a learned linear projection of the summed Fourier features.
     """
 
     token_context_width = 5
@@ -143,7 +144,15 @@ class CLAS12GeometryContextEmbedder(nn.Module):
         )
         if self.endpoint_nerf.out_dim != 63:
             raise RuntimeError(f"Expected CLAS12 NeRF width 63, got {self.endpoint_nerf.out_dim}")
-        self.endpoint_phi = nn.Linear(self.endpoint_nerf.out_dim, self.embed_dim, bias=False)
+        # Shared DeepSets element map.  The SiLU is intentional: with only
+        # linear phi and rho, rho(phi(gamma(e1)) + phi(gamma(e2))) collapses to
+        # one linear map of gamma(e1) + gamma(e2), which cannot learn a
+        # nonlinear per-endpoint geometry representation before symmetrization.
+        self.endpoint_phi = nn.Sequential(
+            nn.Linear(self.endpoint_nerf.out_dim, self.embed_dim, bias=False),
+            nn.SiLU(),
+            nn.Linear(self.embed_dim, self.embed_dim, bias=False),
+        )
         self.endpoint_rho = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
         # 0 is padding; 1..6 are BMT layers and 7..12 are BST layers.
         self.detector_layer_embedding = nn.Embedding(
@@ -152,13 +161,22 @@ class CLAS12GeometryContextEmbedder(nn.Module):
         self.pitch_projection = nn.Linear(1, self.embed_dim, bias=False)
 
         # The current frozen center projection is N(0, 1), not fan-in scaled.
-        # NeRF's 63 components have approximately 33 units of squared norm, so
-        # initialize categorical and standardized-pitch branches to a comparable
-        # component RMS.  rho=I/2 compensates the initially highly correlated
-        # two endpoint encodings.  The final /sqrt(4) keeps the summed token near
-        # the old center-only RMS before the existing RMSNorm.
+        # NeRF's 63 components have approximately 33 units of squared norm.
+        # The first phi layer consequently has RMS about sqrt(33); SiLU reduces
+        # its squared RMS by about one half, and He-scale initialization of the
+        # second phi layer restores the endpoint branch near sqrt(33). rho=I/2
+        # compensates the initially highly correlated two endpoint encodings.
+        # Categorical and standardized-pitch branches use the same comparable
+        # component RMS. The final /sqrt(4) keeps the summed token near the old
+        # center-only RMS before the existing RMSNorm.
         with torch.no_grad():
-            self.endpoint_phi.weight.normal_(mean=0.0, std=float(endpoint_projection_std))
+            self.endpoint_phi[0].weight.normal_(
+                mean=0.0, std=float(endpoint_projection_std)
+            )
+            self.endpoint_phi[2].weight.normal_(
+                mean=0.0,
+                std=float(endpoint_projection_std) * math.sqrt(2.0 / self.embed_dim),
+            )
             self.endpoint_rho.weight.copy_(torch.eye(self.embed_dim) * 0.5)
             self.detector_layer_embedding.weight.normal_(mean=0.0, std=float(scalar_branch_std))
             self.detector_layer_embedding.weight[0].zero_()

@@ -56,6 +56,16 @@ class CLAS12GeometryEmbeddingTest(unittest.TestCase):
         exchanged, _ = self.embedding(self.center, self.context, swapped, self.mask)
         torch.testing.assert_close(original, exchanged, rtol=0.0, atol=0.0)
 
+    def test_endpoint_phi_is_shared_nonlinear_map_and_receives_gradients(self):
+        self.assertIsInstance(self.embedding.endpoint_phi, torch.nn.Sequential)
+        self.assertIsInstance(self.embedding.endpoint_phi[1], torch.nn.SiLU)
+        token, _ = self.embedding(self.center, self.context, self.geometry, self.mask)
+        token[self.mask].square().mean().backward()
+        for layer_index in (0, 2):
+            gradient = self.embedding.endpoint_phi[layer_index].weight.grad
+            self.assertIsNotNone(gradient)
+            self.assertGreater(float(gradient.abs().sum()), 0.0)
+
     def test_detector_layer_pairs_are_distinct_and_padding_is_zero(self):
         mapped = self.embedding.detector_layer_index(self.context, self.mask)
         self.assertEqual(mapped[0].tolist(), [1, 6, 7])

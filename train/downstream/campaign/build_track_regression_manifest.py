@@ -54,6 +54,11 @@ def parse_args() -> argparse.Namespace:
         help="Base downstream adapter-only track-regression YAML.",
     )
     parser.add_argument(
+        "--adapter-only-model-config",
+        default="clas12_track_regression_adapteronly",
+        help="Named configuration to render from --adapter-only-model-yaml.",
+    )
+    parser.add_argument(
         "--base-analysis-yaml",
         default=str(DEFAULT_BASE_ANALYSIS_YAML),
         help="Base track-regression analysis YAML.",
@@ -107,6 +112,11 @@ def parse_args() -> argparse.Namespace:
         "--no-adapter-only",
         action="store_true",
         help="Do not add adapter-only baseline rows.",
+    )
+    parser.add_argument(
+        "--adapter-only-only",
+        action="store_true",
+        help="Build only adapter-only rows; do not inspect or add pretrained-backbone rows.",
     )
     return parser.parse_args()
 
@@ -305,6 +315,8 @@ def best_trial_recipe(args: argparse.Namespace) -> tuple[dict[str, Any], dict[st
 def main() -> None:
     args = parse_args()
     validate_optuna_args(args)
+    if args.adapter_only_only and args.no_adapter_only:
+        raise ValueError("--adapter-only-only cannot be combined with --no-adapter-only")
     checkpoint_root = Path(args.checkpoint_root).resolve()
     artifact_root = Path(args.artifact_root).resolve()
     base_dir = campaign_dir(artifact_root, args.campaign_name)
@@ -378,12 +390,14 @@ def main() -> None:
                 "for scheduler_mode=cosine_hold"
             )
 
-    if not checkpoint_root.is_dir():
-        raise FileNotFoundError(f"Checkpoint root does not exist: {checkpoint_root}")
-
-    source_dirs = sorted(path for path in checkpoint_root.iterdir() if path.is_dir())
-    if not source_dirs and not args.allow_empty:
-        raise FileNotFoundError(f"No pretrained run directories found in {checkpoint_root}")
+    if args.adapter_only_only:
+        source_dirs = []
+    else:
+        if not checkpoint_root.is_dir():
+            raise FileNotFoundError(f"Checkpoint root does not exist: {checkpoint_root}")
+        source_dirs = sorted(path for path in checkpoint_root.iterdir() if path.is_dir())
+        if not source_dirs and not args.allow_empty:
+            raise FileNotFoundError(f"No pretrained run directories found in {checkpoint_root}")
 
     runs = []
     if not args.no_adapter_only:
@@ -395,6 +409,7 @@ def main() -> None:
                 max_samples=args.max_samples,
             )
             row["base_model_yaml"] = args.adapter_only_model_yaml
+            row["base_model_config"] = args.adapter_only_model_config
             runs.append(row)
 
     errors = []
@@ -434,6 +449,7 @@ def main() -> None:
         "checkpoint_root": str(checkpoint_root),
         "base_model_yaml": args.base_model_yaml,
         "adapter_only_model_yaml": args.adapter_only_model_yaml,
+        "adapter_only_model_config": args.adapter_only_model_config,
         "base_analysis_yaml": args.base_analysis_yaml,
         "created_at": utc_now(),
         "defaults": {

@@ -157,6 +157,17 @@ clas12_track_regression_adapteronly_geometry_v1:
   input_representation: clas12_geometry_v1
   geometry_pitch_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/clas12_geometry_pitch_stats_v7_01.json
 
+clas12_track_regression_adapteronly_geometry_v1_p_phi_theta:
+  <<: *default
+  model_version: clas12_track_regression_adapteronly_geometry_v1_p_phi_theta
+  task: p_phi_theta
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta_event_segment_mctrue_min12.json
+  data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
+  data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
+  data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
+  input_representation: clas12_geometry_v1
+  geometry_pitch_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/clas12_geometry_pitch_stats_v7_01.json
+
 # ---------------------------------------------------------------------------
 # Same idea, but with the CLAS12 Hilbert-band ordering enabled.
 # Use only after the radius-ordering run can load and train.

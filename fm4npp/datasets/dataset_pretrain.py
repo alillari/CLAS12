@@ -127,7 +127,9 @@ class TPCBatchDataset(Dataset):
                  space_filling_order = None,
                  space_filling_curve = 'z',
                  band_classification = False,
-                 bin_dir = ''):
+                 bin_dir = '',
+                 use_aux_features = False,
+                 aux_extra_feature = 'length'):
         
         split = split
         self.band_classification = band_classification
@@ -139,6 +141,23 @@ class TPCBatchDataset(Dataset):
         self.memmap_feature = reader_cls(os.path.join(data_root, 'features_{}'.format(split)))
         self.memmap_seg_target = reader_cls(os.path.join(data_root, 'seg_target_{}'.format(split)))
         self.memmap_reg_target = reader_cls(os.path.join(data_root, 'reg_target_{}'.format(split)))
+
+        # [NEW] Optional auxiliary per-point geometric features (measurement
+        # direction sx,sy,sz + strip length), from cluster_geometry_context_target.
+        # Off by default -- existing behavior/callers are completely unaffected.
+        # Layout of that bank: [x1,y1,z1,x2,y2,z2,sx,sy,sz,physical_length_cm,pitch_cm].
+        # We only use sx,sy,sz (cols 6:9) and physical_length_cm (col 9); endpoints
+        # and pitch are intentionally not used (see team design discussion).
+        self.use_aux_features = use_aux_features
+        # [NEW] which scalar(s) beyond direction to include: 'length' (along-
+        # strip physical length, the unmeasured-axis uncertainty bound),
+        # 'pitch' (strip pitch, the measured-axis precision -- what sigma
+        # was meant to be, sidestepping the fact that the bank's own `e`
+        # field is confirmed always-zero for SVT), or 'both'.
+        assert aux_extra_feature in ('length', 'pitch', 'both')
+        self.aux_extra_feature = aux_extra_feature
+        if self.use_aux_features:
+            self.memmap_aux_geom = reader_cls(os.path.join(data_root, 'cluster_geometry_context_target_{}'.format(split)))
         
 
         self.reco_cols = ['x', 'y', 'z']   # CLAS12: no energy
@@ -160,6 +179,17 @@ class TPCBatchDataset(Dataset):
         self.eta_lim = {'min':-2.5, 'max':1.5}
         self.phi_lim = {'min':-torch.pi, 'max':torch.pi}
         self.r_lim = {'min': 6.0, 'max': 23.0}
+        # [NEW] physical_length_cm normalization range -- from real measured
+        # data on mmap_canonical_loose_truthseg_event_v7_01 (200-event sample):
+        # observed min=0.3908, max=44.4850, mean=35.6822 cm. Only used when
+        # use_aux_features=True. sx,sy,sz need no normalization (already
+        # unit-vector components).
+        self.length_lim = {'min': 0.0, 'max': 45.0}
+        # [NEW] pitch_cm normalization range -- from real measured data on
+        # v7_01 (500-event sample): observed min=0.0156, max=0.0860,
+        # mean=0.0325 cm, 0% zeros (confirmed populated for both BMT and
+        # BST, unlike the bank's own `e` field which is always zero for SVT).
+        self.pitch_lim = {'min': 0.0, 'max': 0.10}
         # NOTE (CLAS12): E_mean/E_std deleted — no energy channel.
         # NOTE (CLAS12): orderdict / dim_sweep_order / revert_order deleted —
         # those fed the Voxelizer/HRS box ordering, which is removed entirely.
@@ -329,10 +359,56 @@ class TPCBatchDataset(Dataset):
         features = torch.from_numpy(np.copy(self.memmap_feature[real_idx])).unsqueeze(0)
         target = torch.from_numpy(np.copy(self.memmap_seg_target[real_idx])).unsqueeze(0)
 
+        # [NEW] Load auxiliary geometric features (sx,sy,sz,length), same
+        # real_idx as position/target -- one row per point, same point order,
+        # so this stays aligned with features/target through every reorder
+        # step below. NOT run through cartesian_to_polar_batched or
+        # apply_norm -- those are position-specific (eta/phi/r decomposition
+        # doesn't make physical sense for a direction vector or a scalar
+        # length). Handled as its own separate, parallel path instead.
+        #
+        # sx,sy,sz is projected onto each point's own LOCAL (radial,
+        # tangential, beam-axis) frame -- NOT used as raw global Cartesian.
+        # A raw global direction vector entangles "what direction" with
+        # "where in the detector": the same physical direction (e.g. purely
+        # radial) produces a different (sx,sy,sz) depending on phi, forcing
+        # the network to relearn this position-dependence from scratch. This
+        # is the same principle behind "Local Reference Frame" (LRF) methods
+        # in point cloud learning (e.g. rotation-invariant point cloud
+        # descriptors) -- projecting onto a local frame makes the same
+        # physical direction type produce the same numbers everywhere.
+        if self.use_aux_features:
+            aux_raw = torch.from_numpy(np.copy(self.memmap_aux_geom[real_idx])).unsqueeze(0).float()
+            aux_sxyz = aux_raw[..., 6:9]      # (1, N, 3) raw global Cartesian direction
+            aux_length = aux_raw[..., 9:10]   # (1, N, 1) physical_length_cm, raw
+            aux_pitch = aux_raw[..., 10:11]   # (1, N, 1) pitch_cm, raw
+
+            x_raw, y_raw = features[..., 0], features[..., 1]  # raw (x, y), same points/order as aux_sxyz
+            rho = torch.sqrt(x_raw**2 + y_raw**2).clamp(min=1e-6)
+            r_hat = torch.stack([x_raw / rho, y_raw / rho, torch.zeros_like(rho)], dim=-1)     # (1, N, 3)
+            phi_hat = torch.stack([-y_raw / rho, x_raw / rho, torch.zeros_like(rho)], dim=-1)  # (1, N, 3)
+
+            s_r = (aux_sxyz * r_hat).sum(dim=-1, keepdim=True)      # radial component
+            s_phi = (aux_sxyz * phi_hat).sum(dim=-1, keepdim=True)  # tangential component
+            s_z = aux_sxyz[..., 2:3]                                # beam-axis component (unchanged: z-hat is already (0,0,1) globally)
+
+            if self.aux_extra_feature == 'length':
+                extra = self.minmax_normalize(aux_length, self.length_lim['max'], self.length_lim['min'])
+            elif self.aux_extra_feature == 'pitch':
+                extra = self.minmax_normalize(aux_pitch, self.pitch_lim['max'], self.pitch_lim['min'])
+            else:  # 'both'
+                length_norm = self.minmax_normalize(aux_length, self.length_lim['max'], self.length_lim['min'])
+                pitch_norm = self.minmax_normalize(aux_pitch, self.pitch_lim['max'], self.pitch_lim['min'])
+                extra = torch.cat([length_norm, pitch_norm], dim=-1)  # (1, N, 2)
+
+            aux_features = torch.cat([s_r, s_phi, s_z, extra], dim=-1)  # (1, N, 4) or (1, N, 5) for 'both'
+
         # print(features.shape, target.shape)
         if not self.train and self.chunk_training:
             features = features[:, start_idx : start_idx+self.len_chunk]
             target = target[:, start_idx : start_idx+self.len_chunk]
+            if self.use_aux_features:
+                aux_features = aux_features[:, start_idx : start_idx+self.len_chunk]
             # print(features.shape, target.shape)
             
         # features, target = set_simpler(features.unsqueeze(0), target.unsqueeze(0), nleave = self.nleave, npoint_lower_thr = self.npoint_lower_thr)
@@ -351,6 +427,8 @@ class TPCBatchDataset(Dataset):
         # Sort by R (index -1 is still r in the 3-column [eta,phi,r] layout)
         ind = norm_features[...,-1].argsort(dim=1)
         norm_features = norm_features[:, ind.squeeze()]
+        if self.use_aux_features:
+            aux_features = aux_features[:, ind.squeeze()]
         # CLAS12: norm_features is already 3 columns [eta,phi,r] — pass directly,
         # no [..., 1:] slice (that would drop eta and leave only 2 columns).
         knearest_points = knn_later_indices_batch(norm_features, k=self.num_pred_points)
@@ -368,6 +446,16 @@ class TPCBatchDataset(Dataset):
         serialized_points = norm_features[:, zsorter.squeeze()].squeeze(0)
         knearest_points = knearest_points[:, zsorter.squeeze()].squeeze(0)
         serialized_target = norm_target[:, zsorter.squeeze()].squeeze(0)
+
+        # [NEW] Apply the SAME final reorder to aux features, then
+        # concatenate onto the position output: (N, 3) -> (N, 7) =
+        # [eta, phi, r, sx, sy, sz, length]. This must happen after
+        # knearest_points/serialized_target are computed above (kNNN
+        # targets are position-only, unaffected by this addition) but
+        # before serialized_points is returned.
+        if self.use_aux_features:
+            serialized_aux = aux_features[:, zsorter.squeeze()].squeeze(0)
+            serialized_points = torch.cat([serialized_points, serialized_aux], dim=-1)
 
         # [BAND CLASSIFICATION TOGGLE] When enabled, replace the r component of
         # each kNNN neighbor target with its integer band index (0-5), so the
@@ -450,6 +538,8 @@ def get_data_loader(params, distributed):
                                     space_filling_order = params.space_filling_order,
                                     space_filling_curve = params.space_filling_curve,
                                     band_classification = getattr(params, 'band_classification', False),
+                                    use_aux_features = getattr(params, 'use_aux_features', False),
+                                    aux_extra_feature = getattr(params, 'aux_extra_feature', 'length'),
                                     train = True)
     
     test_dataset = TPCBatchDataset(data_root = params.data_root, 
@@ -466,6 +556,8 @@ def get_data_loader(params, distributed):
                                    space_filling_order = params.space_filling_order,
                                    space_filling_curve = params.space_filling_curve,
                                    band_classification = getattr(params, 'band_classification', False),
+                                   use_aux_features = getattr(params, 'use_aux_features', False),
+                                   aux_extra_feature = getattr(params, 'aux_extra_feature', 'length'),
                                    reader_type = getattr(params, 'reader_type', 'ragged_mmap'), 
                                    train = False)
 
@@ -511,6 +603,8 @@ def get_val_loader(params, distributed):
                                    train = False,
                                    order = params.order,
                                    band_classification = getattr(params, 'band_classification', False),
+                                   use_aux_features = getattr(params, 'use_aux_features', False),
+                                   aux_extra_feature = getattr(params, 'aux_extra_feature', 'length'),
                                    reader_type = getattr(params, 'reader_type', 'ragged_mmap'),)
 
    

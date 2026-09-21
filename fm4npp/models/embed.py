@@ -290,3 +290,66 @@ class PositionEmbeddingCoordsSine(nn.Module):
         # Pad unused dimensions with zeros
         pos_emb = F.pad(pos_emb, (0, self.padding))
         return pos_emb
+
+
+class EmbedderPosPlusAux(nn.Module):
+    """
+    Combines position (x, y, z) with auxiliary per-point geometric features
+    (measurement direction sx,sy,sz + strip length) via SEPARATE embedding
+    paths, each independently normalized, then added -- NOT concatenated
+    into the same NeRF expansion.
+
+    Design rationale:
+    - Position keeps the existing, UNCHANGED NeRF encoding (needed to fight
+      spectral bias on raw spatial coordinates). This path is untouched,
+      so existing checkpoints' position-encoding behavior is unaffected
+      when this class isn't the one selected.
+    - Auxiliary features (direction + length) don't have the same
+      high-frequency representation problem position does, so they get a
+      simple, directly LEARNED linear embedding instead of a frozen random
+      projection: a frozen linear map from a low input dim (4) to a large
+      embed_dim is rank <= 4 regardless of embed_dim, wasting most of that
+      dimensionality on a redundant copy of the same signal. NeRF's frozen
+      projection avoids this because it sits AFTER a rich nonlinear
+      (sin/cos) expansion, not directly on 3 raw numbers.
+    - Each embedded component gets its own LayerNorm BEFORE combining --
+      otherwise whichever component has larger raw magnitude dominates the
+      sum regardless of actual usefulness (same fix as ELMo's ScalarMix
+      do_layer_norm option, and directly supported by dedicated literature
+      on this exact failure mode for additive position embeddings).
+    - Combined via ADDITION, matching both this file's own existing
+      precedent (EmbedderAdd: energy + position) and established practice
+      in point cloud transformers (e.g. Point2Vec: position embedding
+      added to patch embedding).
+
+    Expects `neighborhood` with (pos_dim + aux_dim) columns in the last
+    dimension: [x, y, z, sx, sy, sz, length] by default.
+    """
+    def __init__(self, pe_method, embed_dim, pos_dim=3, aux_dim=4, learnable_projection=False):
+        super(EmbedderPosPlusAux, self).__init__()
+        assert pe_method in ['none', 'ff', 'nerf', 'cpe']
+        self.pos_dim = pos_dim
+        self.aux_dim = aux_dim
+
+        # Position: existing, unchanged NeRF (or other) encoding pipeline.
+        self.embed = CoordinateEmbedder(method=pe_method, n_continuous_dim=pos_dim,
+                                        target_dim=embed_dim, learnable_projection=learnable_projection)
+        self.pos_norm = nn.LayerNorm(embed_dim)
+
+        # Auxiliary (direction + length): new, directly-learned linear embedding.
+        self.aux_proj = nn.Linear(aux_dim, embed_dim, bias=False)
+        self.aux_norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, neighborhood):
+        pos = neighborhood[..., :self.pos_dim]
+        aux = neighborhood[..., self.pos_dim:self.pos_dim + self.aux_dim]
+
+        pos_embed = self.pos_norm(self.embed(pos))
+        aux_embed = self.aux_norm(self.aux_proj(aux))
+
+        out = pos_embed + aux_embed
+        # Return pos_embed alone (not the combined out) for the second
+        # tuple element, matching EmbedderAdd/EmbedderConcat's existing
+        # (out, pos_embed) contract, where pos_embed is always the
+        # position-only signal, excluding whatever the "other" component was.
+        return out, pos_embed

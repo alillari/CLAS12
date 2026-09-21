@@ -1,0 +1,144 @@
+# CLAS12 CVT downstream track-finding, FULL m1-m6 ADAPTER SWEEP against the
+# knnN=1 backbone sweep (Unbiased_Cluster_Full_Sweep_2026-08-13).
+#
+# One config block per width. embed_dim/num_layers_backbone/klen MUST match
+# the checkpoint being loaded for that width -- all six of our knnN=1
+# checkpoints use depth=12, klen=1; only embed_dim varies m1->m6.
+#
+# Run each with (see run_track_finding_sweep.sh):
+#   python train_track_finding.py --yaml_config <this file> --config <block> \
+#       --usepretrain --pretrained_ckpt <path/to/that/width/ckpt_best.tar>
+# --mambaversion does NOT need to be passed -- default block already sets
+# mambaversion: mamba1, and the (now fixed) entrypoint no longer silently
+# overrides it.
+
+default: &default
+  # [FILLED IN] real EdgeXpert paths, replacing the original placeholders.
+  data_root: /workspace/PP_collision/data/mmap_cluster_full
+  data_root_train: /workspace/PP_collision/data/mmap_cluster_full
+  data_root_test: /workspace/PP_collision/data/mmap_cluster_full
+  # [UNVERIFIED] stat_dir was a placeholder in the original config and its
+  # actual requirement wasn't confirmed during review -- pointed at the real
+  # pretraining stats dir as a reasonable default since it exists on disk.
+  # If track_finding_trainer.py errors looking for a specific stats file here,
+  # that tells us what it actually needs.
+  stat_dir: /workspace/PP_collision/data/stats
+  downstream_dir: /workspace/PP_collision/downstream_log/clas12_track_finding_sweep
+  checkpoint_dir: /workspace/PP_collision/downstream_log/clas12_track_finding_sweep/checkpoints
+
+  data_version: clas12_cvt
+  input_layout: xyz
+  serialization: clas12_band_hilbert
+  batch_size: 64
+  local_batch_size: 64
+  valid_batch_size: 1
+  local_valid_batch_size: 1
+  limit_data: true
+  limit_size: 50000
+  n_data_idx: 1000000
+  n_eval_steps: 200
+  num_data_workers: 4
+  log_to_screen: true
+
+  nleave: 10000000000.0
+  order: REP
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  low_thr: 1
+  high_thr: 50
+  max_gt_classes: 150
+  max_tracks: 150
+
+  embed_method: pos_only
+  pe_method: nerf
+  voxelize: false
+  space_filling_order: false
+  space_filling_curve: z
+  return_dict: false
+  return_reg: false
+  return_reg_test: false
+  return_knn_target: false
+
+  rep_aaai: false
+  nexttoken: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+
+  max_epochs: 15
+  max_lr: 0.0003
+  min_lr: 0.00001
+  first_cycle_steps: 3000
+  warmup_steps: 20
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0.0001
+  early_stopping_warmup_steps: 60
+  grad_clip_value: 0.1
+  total_steps: 30000
+
+  # [FIXED per width below] embed_dim only -- num_layers_backbone/klen/
+  # mambaversion are constant across our whole knnN=1 sweep.
+  base_dim: 256
+  group_size: 8
+  init_std: 0.025
+  model_version: clas12_track_finding_sweep
+  num_layers_backbone: 12
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  klen: 1
+  dropout: 0.1
+  downstream_dropout: 0.1
+  mambaversion: mamba1
+
+  num_heads_backbone: 4
+  num_heads_decoder: 2
+  num_heads_encoder: 2
+  num_embedder_layers: 0
+  use_attention_head: true
+  continue_from_best: true
+
+  loss_matched_ce_weight: 0.5
+  loss_unmatched_ce_weight: 0.1
+  loss_dice_weight: 1
+  loss_focal_weight: 30
+
+clas12_track_finding_m1:
+  <<: *default
+  embed_dim: 64
+  base_dim: 64
+
+clas12_track_finding_m2:
+  <<: *default
+  embed_dim: 128
+  base_dim: 128
+
+clas12_track_finding_m3:
+  <<: *default
+  embed_dim: 256
+  base_dim: 256
+
+clas12_track_finding_m4:
+  <<: *default
+  embed_dim: 512
+  base_dim: 512
+
+clas12_track_finding_m5:
+  <<: *default
+  embed_dim: 1024
+  base_dim: 1024
+
+clas12_track_finding_m6:
+  <<: *default
+  embed_dim: 1536
+  base_dim: 1536
+  
+clas12_track_finding_m1_profile:
+  <<: *default
+  embed_dim: 64
+  base_dim: 64
+  limit_size: 2000
+  max_epochs: 1
+  warmup_steps: 0
+  n_eval_steps: 1

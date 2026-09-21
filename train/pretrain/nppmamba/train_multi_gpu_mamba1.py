@@ -378,7 +378,14 @@ class Trainer():
             b, c = grouped.size(0), grouped.size(-1)
 
             # Prepare targets
-            targets = grouped.reshape(b, -1, 3).to(self.device)
+            # [FIX] was: grouped.reshape(b, -1, 3) -- hardcoded 3 columns.
+            # targets is only ever used for padding detection via
+            # targets[..., 0] (always eta, regardless of column count --
+            # the collator pads every column uniformly with -100), so it's
+            # safe and correct to reshape with the same dynamic `c` already
+            # used for `grouped` right below. Broke when use_aux_features
+            # widens each point from 3 to 7 columns (position + sx,sy,sz,length).
+            targets = grouped.reshape(b, -1, c).to(self.device)
             klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
             grouped = grouped.reshape(b, -1, c).to(self.device)
 
@@ -484,7 +491,8 @@ class Trainer():
                 if i >= getattr(self.params, 'max_val_batches', int(1e12)): break
                 b, c = grouped.size(0), grouped.size(-1)
                 # CLAS12: 3 columns [eta, phi, r], no energy (was reshape(...,4)[:,:,1:]).
-                targets = grouped.reshape(b, -1, 3).to(self.device)
+                # [FIX] same reasoning as the train loop above.
+                targets = grouped.reshape(b, -1, c).to(self.device)
                 klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
                 grouped = grouped.reshape(b, -1, c).to(self.device)
 

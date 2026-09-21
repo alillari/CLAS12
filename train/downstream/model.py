@@ -6,6 +6,31 @@ from fm4npp.models.rmsnorm import RMSNorm
 from fm4npp.models.mamba2 import Mamba2
 
 
+class RegressionTargetNormalizer(nn.Module):
+    def __init__(self, output_dim, mean=None, std=None, eps=1e-8):
+        super().__init__()
+        mean = torch.zeros(output_dim) if mean is None else torch.as_tensor(mean, dtype=torch.float32)
+        std = torch.ones(output_dim) if std is None else torch.as_tensor(std, dtype=torch.float32)
+        expected_shape = (output_dim,)
+        if tuple(mean.shape) != expected_shape or tuple(std.shape) != expected_shape:
+            raise ValueError(
+                f"Regression normalization statistics must have shape {expected_shape}; "
+                f"got mean={tuple(mean.shape)}, std={tuple(std.shape)}"
+            )
+        constant = std <= eps
+        self.register_buffer("mean", mean.clone())
+        self.register_buffer("std", torch.where(constant, torch.ones_like(std), std))
+        self.register_buffer("constant", constant)
+
+    def normalize(self, target):
+        normalized = (target - self.mean) / self.std
+        return torch.where(self.constant, torch.zeros_like(normalized), normalized)
+
+    def denormalize(self, target):
+        denormalized = target * self.std + self.mean
+        return torch.where(self.constant, self.mean, denormalized)
+
+
 
 class SelfAttentionBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout=0.0, prenorm=True):
@@ -470,6 +495,159 @@ class MambaHead(nn.Module):
             'embedding_post_projection': embedding_post_projection
         }
 
+# very simple regression adapter head with few mamba layer for refinement and MLP head
+class MambaTrackRegressionHead(nn.Module):
+    """
+    Track-level regression head.
+
+    Input:
+        x:              (B, N, C)
+        feature:        pretrained FM features, if pretrain=True
+        padding_mask:   (B, N), True for real hits, False for padding
+
+    Output:
+        pred_regression: (B, num_output_dim)
+    """
+
+    def __init__(self, input_dim, embed_dim=256, num_layers=3, d_state=64, d_conv=4, expand=2, 
+                 num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
+                 num_feature_layers=15, num_output_dim=3, return_embedding=False, dropout=0.0,
+                 pooling="mean", embed_method="add", pe_method="nerf",
+                 target_mean=None, target_std=None):
+        super().__init__()
+        self.input_dim = input_dim
+        self.embed_dim = embed_dim
+        self.return_embedding = return_embedding
+        self.target_normalizer = RegressionTargetNormalizer(
+            num_output_dim, mean=target_mean, std=target_std
+        )
+
+        if embed_method == "concat":
+            Embedder = EmbedderConcat
+        elif embed_method == "pos_only":
+            Embedder = EmbedderPosOnly
+        elif embed_method == "add":
+            Embedder = EmbedderAdd
+        else:
+            raise ValueError(f"Unknown embed_method: {embed_method}")
+
+        self.pooling = pooling
+
+        if self.pooling == "attention":
+            self.pool_score = nn.Linear(embed_dim, 1)
+        elif self.pooling != "mean":
+            raise ValueError(f"Unknown pooling mode: {self.pooling}")
+
+        # Input processing
+        self.input_proj = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, embed_dim)
+        )
+
+
+        # Mamba feature extractor
+        self.mamba_layers = nn.ModuleList([
+            nn.Sequential(
+                RMSNorm(embed_dim),
+                Mamba2(
+                    d_model=embed_dim,
+                    d_state=d_state,
+                    d_conv=d_conv,
+                    expand=expand
+                )
+            ) for _ in range(num_layers)
+        ])
+        # if not using the pretrained mamba2, we can use the embedder layers
+        self.mamba_embedder_layers = nn.ModuleList([
+            nn.Sequential(
+                RMSNorm(input_dim),
+                Mamba2(
+                    d_model=input_dim,
+                    d_state=d_state_embedder,
+                    d_conv=d_conv_embedder,
+                    expand=expand_embedder
+                )
+            ) for _ in range(num_embedder_layers)
+        ])
+        self.embedder_norm = RMSNorm(input_dim)
+        self.norm = RMSNorm(embed_dim)
+
+        # Noise prediction head go from point embedding
+        self.out_mlp = MLPHead(embed_dim, num_output_dim, dropout=dropout)
+
+        self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim)
+        self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
+
+    def pool(self, x, padding_mask=None):
+        """
+        x:            (B, N, D)
+        padding_mask: (B, N), True for real hits, False for padding
+        """
+        if self.pooling == "mean":
+            if padding_mask is None:
+                return x.mean(dim=1)
+
+            mask = padding_mask.unsqueeze(-1).to(dtype=x.dtype)
+            denom = mask.sum(dim=1).clamp_min(1.0)
+            return (x * mask).sum(dim=1) / denom
+
+        if self.pooling == "attention":
+            scores = self.pool_score(x).squeeze(-1)  # B x N
+
+            if padding_mask is not None:
+                scores = scores.masked_fill(~padding_mask, torch.finfo(scores.dtype).min)
+
+            weights = torch.softmax(scores, dim=1).unsqueeze(-1)  # B x N x 1
+            return (x * weights).sum(dim=1)
+
+    def forward(self, x, feature=None, padding_mask=None, pretrain=False):
+        if pretrain:
+            x = feature.permute(1, 2, 0, 3)
+            weights = torch.softmax(self.weighted_avg_weights, dim=0)
+            weights = weights.to(x.dtype)
+            x = torch.einsum("bsnd,n->bsd", x, weights)
+        else:
+            x = self.embedder(x)
+
+            if isinstance(x, tuple):
+                x = x[0]
+
+            for layer in self.mamba_embedder_layers:
+                x = layer(x) + x
+
+            x = self.embedder_norm(x)
+
+        embedding_pre_projection = None
+        embedding_post_projection = None
+
+        if self.return_embedding:
+            embedding_pre_projection = x
+
+        x = self.input_proj(x)
+
+        if self.return_embedding:
+            embedding_post_projection = x
+
+        for layer in self.mamba_layers:
+            x = layer(x) + x
+
+        x = self.norm(x)
+
+        pooled = self.pool(x, padding_mask)
+
+        pred = self.out_mlp(pooled)                          # B x num_output_dim
+
+        return {
+            "pred_regression": pred,
+            "pooled_embedding": pooled,
+            "embedding_pre_projection": embedding_pre_projection,
+            "embedding_post_projection": embedding_post_projection,
+        } 
+
+
+# Backward-compatible name for existing imports and code.
+MambaRegressionHead = MambaTrackRegressionHead
+
 # very simple adapter head with few SA for refinement and MLP head
 class AttentionHead(nn.Module):
     def __init__(self, input_dim, embed_dim=256, num_layers=3, num_heads = 4, 
@@ -482,8 +660,12 @@ class AttentionHead(nn.Module):
         self.FFN = adapter_FFN
         if embed_method == 'concat':
             Embedder = EmbedderConcat
-        else:
+        elif embed_method == 'pos_only':
+            Embedder = EmbedderPosOnly
+        elif embed_method == 'add':
             Embedder = EmbedderAdd
+        else:
+            raise ValueError(f"Unknown embed_method: {embed_method}")
 
         # Input processing
         self.input_proj = nn.Sequential(
@@ -577,7 +759,7 @@ class AttentionHead(nn.Module):
         out_logits = self.out_mlp(x) # (B, N, num_output_dim)
 
         return {
-            'pred_logits': out_logits,  # (B, N, num_output_dim)
+            'pred': out_logits,  # (B, N, num_output_dim)
             'embedding_pre_projection': embedding_pre_projection,
             'embedding_post_projection': embedding_post_projection
         }
@@ -871,8 +1053,12 @@ class MultiTaskAttentionHead(nn.Module):
         # Embedding layers (reuse upstream embedder implementations)
         if embed_method == 'concat':
             embedder_cls = EmbedderConcat
-        else:
+        elif embed_method == 'pos_only':
+            embedder_cls = EmbedderPosOnly
+        elif embed_method == 'add':
             embedder_cls = EmbedderAdd
+        else:
+            raise ValueError(f"Unknown embed_method: {embed_method}")
         self.embedder = embedder_cls(
             pe_method=pe_method,
             embed_dim=input_dim,

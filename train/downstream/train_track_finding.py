@@ -39,7 +39,12 @@ def main():
     )
     parser.set_defaults(usepretrain=True)
     parser.add_argument("--train_batch_size", default=32, type=int, help="train batch size")
-    parser.add_argument("--mambaversion", default="mamba2", type=str, help="mambd2/mamba1 for the pretrain model")
+    # [FIX] mambaversion now defaults to None so it does NOT silently override
+    # a correctly-set value from the YAML config unless explicitly requested.
+    parser.add_argument("--mambaversion", default=None, type=str, help="mamba2/mamba1 for the pretrain model; overrides YAML only if explicitly passed")
+    # [FIX] real checkpoint override -- previously there was no way to point
+    # this script at a checkpoint outside the hardcoded model2ckpt dict below.
+    parser.add_argument("--pretrained_ckpt", default=None, type=str, help="path to a pretrained backbone checkpoint; overrides model2ckpt lookup")
     args = parser.parse_args()
 
     # Mapping from model name to log file and checkpoint paths
@@ -103,7 +108,26 @@ def main():
     params.limit_data = True
     params.limit_size = int(args.eventnumber)
     params.valid_batch_size = 1
-    params.pretrained_ckpt = model2ckpt[args.config]
+    # [FIX] was: params.pretrained_ckpt = model2ckpt[args.config]
+    # -- a direct dict lookup with no fallback, so any config not in the
+    # hardcoded model2ckpt dict (e.g. our CLAS12 configs) raised a bare
+    # KeyError and there was no way to supply an arbitrary checkpoint path.
+    # Now: explicit --pretrained_ckpt takes priority; model2ckpt is only a
+    # fallback for the original named configs; a clear error is raised if
+    # --usepretrain is requested but neither resolves anything (matches the
+    # pattern already used correctly in track_regression_experiment.py).
+    if args.pretrained_ckpt:
+        params.pretrained_ckpt = args.pretrained_ckpt
+    elif args.config in model2ckpt:
+        params.pretrained_ckpt = model2ckpt[args.config]
+    else:
+        params.pretrained_ckpt = None
+        if args.usepretrain:
+            raise ValueError(
+                "--usepretrain was set, but no checkpoint was provided via "
+                f"--pretrained_ckpt and config={args.config!r} is not in "
+                "model2ckpt."
+            )
     base_name = f"{args.config}_nerf_tracking_head_d{params.limit_size}_{args.run_num}"
     if args.usepretrain:
         params.log_file_name = base_name + ".log"
@@ -114,7 +138,13 @@ def main():
     params.loss_dice_weight = 1
     params.loss_focal_weight = 30
     params.num_embedder_layers = 0
-    params.mambaversion = args.mambaversion
+    # [FIX] was: params.mambaversion = args.mambaversion (unconditional) --
+    # since the CLI flag used to default to "mamba2", this silently
+    # overwrote a correctly-set "mamba1" from the YAML on every run unless
+    # --mambaversion mamba1 was remembered explicitly. Now only overrides
+    # when the flag is actually passed; otherwise the YAML's value stands.
+    if args.mambaversion is not None:
+        params.mambaversion = args.mambaversion
 
 
     # Launch and train

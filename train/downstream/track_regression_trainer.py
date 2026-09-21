@@ -24,6 +24,7 @@ sys.path.append('../..')
 from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
 from fm4npp.models.mambagpt import MambaGPT, Mamba1GPT
+from train.downstream.lr_schedulers import CosineAnnealingWarmupThenHold
 from fm4npp.models.longformer_gpt import LongformerGPT
 from fm4npp.models.linformer_gpt import LinformerGPT
 from fm4npp.models.embed import *
@@ -623,21 +624,57 @@ class DownstreamTrainer():
         self.grad_clip_value = float(getattr(self.params, "grad_clip_value", 1.0))
         torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=self.grad_clip_value)
 
+        scheduler_mode = str(getattr(self.params, "scheduler_mode", "cosine_restarts"))
         max_optimizer_steps = getattr(self.params, "max_optimizer_steps", None)
         scheduler_steps = int(getattr(
             self.params,
             "scheduler_first_cycle_steps",
             getattr(self.params, "first_cycle_steps", max_optimizer_steps or 200),
         ))
+        anneal_steps = int(getattr(self.params, "scheduler_anneal_steps", 0))
+        if scheduler_mode == "cosine_hold" and anneal_steps <= 0:
+            raise ValueError(
+                "scheduler_mode='cosine_hold' requires a positive "
+                "scheduler_anneal_steps"
+            )
+        if (
+            scheduler_mode == "cosine_hold"
+            and max_optimizer_steps is not None
+            and anneal_steps > int(max_optimizer_steps)
+        ):
+            raise ValueError(
+                "scheduler_anneal_steps cannot exceed max_optimizer_steps for "
+                "scheduler_mode='cosine_hold'"
+            )
+        warmup_reference_steps = anneal_steps if scheduler_mode == "cosine_hold" else scheduler_steps
         warmup_steps = getattr(self.params, "warmup_steps", 20)
         if hasattr(self.params, "warmup_fraction"):
-            warmup_steps = max(1, int(float(self.params.warmup_fraction) * scheduler_steps))
+            warmup_steps = max(
+                1,
+                int(float(self.params.warmup_fraction) * warmup_reference_steps),
+            )
 
-        self.down_scheduler = CosineAnnealingWarmupRestarts(self.down_optimizer,
-                                          first_cycle_steps=scheduler_steps,
-                                          max_lr=self.params.max_lr,
-                                          min_lr=self.params.min_lr,
-                                          warmup_steps=int(warmup_steps))
+        if scheduler_mode == "cosine_restarts":
+            self.down_scheduler = CosineAnnealingWarmupRestarts(
+                self.down_optimizer,
+                first_cycle_steps=scheduler_steps,
+                max_lr=self.params.max_lr,
+                min_lr=self.params.min_lr,
+                warmup_steps=int(warmup_steps),
+            )
+        elif scheduler_mode == "cosine_hold":
+            self.down_scheduler = CosineAnnealingWarmupThenHold(
+                self.down_optimizer,
+                anneal_steps=anneal_steps,
+                max_lr=self.params.max_lr,
+                min_lr=self.params.min_lr,
+                warmup_steps=int(warmup_steps),
+            )
+        else:
+            raise ValueError(
+                "scheduler_mode must be 'cosine_restarts' or 'cosine_hold'; "
+                f"got {scheduler_mode!r}"
+            )
 
 
         # Add safe global class

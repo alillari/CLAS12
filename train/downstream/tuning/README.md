@@ -18,6 +18,11 @@ Currently sampled:
 - `grad_clip_value`
 - `dropout`
 
+For `--scheduler-mode cosine_hold`, Optuna also samples
+`scheduler_anneal_steps`: the step where the single cosine decay reaches
+`min_lr`.  The scheduler then holds `min_lr` through the fixed training budget;
+it never restarts.
+
 Keep these fixed for a given study:
 
 - labeled-data amount, via `--eventnumber`
@@ -89,6 +94,44 @@ final partial cycle. `--n-cycles` and `--scheduler-first-cycle-steps` are
 mutually exclusive. Tune the learning-rate parameters jointly for each fixed
 cycle length rather than transferring a recipe tuned under a different
 schedule.
+
+## Restart-Free Cosine-To-Floor Search
+
+`--scheduler-mode cosine_hold` is the restart-free policy for testing early
+annealing plus low-LR refinement.  It is intentionally different from setting
+`--scheduler-first-cycle-steps` below the training budget, which creates a
+restart with the existing scheduler.
+
+For a 20,000-step budget, the following samples a cosine endpoint from 5,000
+through 16,000 steps in 1,000-step increments.  `warmup_fraction` is always
+applied to that sampled annealing duration, not to all 20,000 steps.
+For this mode its sampled range is 0.10–0.40; the legacy restart studies keep
+their original 0.10–0.35 range.
+
+```bash
+python train/downstream/tuning/run_track_regression_optuna.py \
+  --storage sqlite:////path/to/adapteronly_p_phi_theta_20k_cosine_hold.db \
+  --study-name adapteronly_p_phi_theta_20k_cosine_hold \
+  --output-root /path/to/optuna \
+  --scheduler-mode cosine_hold \
+  --anneal-steps-min 5000 \
+  --anneal-steps-max 16000 \
+  --anneal-steps-step 1000 \
+  --max-optimizer-steps 20000 \
+  --eventnumber 10000 \
+  --train-batch-size 128 \
+  --trial-seeds 11,17,23 \
+  --seed-objective mean \
+  --val-interval-steps 1000 \
+  --early-stopping-min-steps 20000 \
+  --early-stopping-patience 8 \
+  --max-val-batches 500
+```
+
+Do not pass `--n-cycles` or `--scheduler-first-cycle-steps` with this mode.
+The objective is still the best validation loss observed anywhere in training;
+per-seed checkpoint logs retain the final validation observation so endpoint
+behavior can be reviewed separately.
 
 ## W&B Logging
 

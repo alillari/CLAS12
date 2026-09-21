@@ -25,6 +25,7 @@ from train.downstream.tuning.track_regression_search_space import (  # noqa: E40
 
 
 DEFAULT_TRIAL_SEEDS = (11, 17, 23)
+SCHEDULER_MODES = ("cosine_restarts", "cosine_hold")
 
 
 def parse_trial_seeds(value: str) -> tuple[int, ...]:
@@ -62,6 +63,38 @@ def scheduler_first_cycle_steps(
     return max_optimizer_steps // n_cycles
 
 
+def scheduler_mode(args: argparse.Namespace) -> str:
+    """Return the requested scheduler mode while keeping legacy callers valid."""
+    return str(getattr(args, "scheduler_mode", "cosine_restarts"))
+
+
+def cosine_hold_search_range(args: argparse.Namespace) -> tuple[int, int, int]:
+    """Validate and return the discrete annealing endpoint search range."""
+    values = (
+        getattr(args, "anneal_steps_min", None),
+        getattr(args, "anneal_steps_max", None),
+        getattr(args, "anneal_steps_step", None),
+    )
+    if any(value is None for value in values):
+        raise ValueError(
+            "--scheduler-mode cosine_hold requires --anneal-steps-min, "
+            "--anneal-steps-max, and --anneal-steps-step"
+        )
+    minimum, maximum, step = (int(value) for value in values)
+    if minimum <= 0 or maximum <= 0 or step <= 0:
+        raise ValueError("cosine-hold anneal-step bounds must be positive")
+    if minimum > maximum:
+        raise ValueError("--anneal-steps-min cannot exceed --anneal-steps-max")
+    if maximum > int(args.max_optimizer_steps):
+        raise ValueError("--anneal-steps-max cannot exceed --max-optimizer-steps")
+    if (maximum - minimum) % step:
+        raise ValueError(
+            "--anneal-steps-max minus --anneal-steps-min must be divisible by "
+            "--anneal-steps-step"
+        )
+    return minimum, maximum, step
+
+
 def validate_training_controls(args: argparse.Namespace) -> None:
     """Reject combinations that would silently skip validation or training."""
     if args.eventnumber <= 0:
@@ -88,6 +121,25 @@ def validate_training_controls(args: argparse.Namespace) -> None:
         raise ValueError("--max-train-batches must be positive when provided")
     if args.num_data_workers is not None and args.num_data_workers < 0:
         raise ValueError("--num-data-workers must be non-negative")
+    mode = scheduler_mode(args)
+    if mode not in SCHEDULER_MODES:
+        raise ValueError(f"Unsupported --scheduler-mode: {mode!r}")
+    has_hold_bounds = any(
+        getattr(args, name, None) is not None
+        for name in ("anneal_steps_min", "anneal_steps_max", "anneal_steps_step")
+    )
+    if mode == "cosine_hold":
+        if args.n_cycles is not None or getattr(args, "scheduler_first_cycle_steps", None) is not None:
+            raise ValueError(
+                "--scheduler-mode cosine_hold cannot use --n-cycles or "
+                "--scheduler-first-cycle-steps"
+            )
+        cosine_hold_search_range(args)
+    else:
+        if has_hold_bounds:
+            raise ValueError(
+                "--anneal-steps-* options require --scheduler-mode cosine_hold"
+            )
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,6 +180,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-optimizer-steps", type=int, default=3000)
     parser.add_argument(
+        "--scheduler-mode",
+        choices=SCHEDULER_MODES,
+        default="cosine_restarts",
+        help="Use repeated cosine cycles or a single cosine decay followed by a min-LR hold.",
+    )
+    parser.add_argument(
         "--n-cycles",
         type=int,
         default=None,
@@ -138,6 +196,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Explicit first cosine-cycle length; permits a final partial cycle (e.g. 7000 in a 20000-step run).",
+    )
+    parser.add_argument(
+        "--anneal-steps-min",
+        type=int,
+        help="Minimum cosine-to-floor endpoint sampled by --scheduler-mode cosine_hold.",
+    )
+    parser.add_argument(
+        "--anneal-steps-max",
+        type=int,
+        help="Maximum cosine-to-floor endpoint sampled by --scheduler-mode cosine_hold.",
+    )
+    parser.add_argument(
+        "--anneal-steps-step",
+        type=int,
+        help="Discrete step size for sampled cosine-to-floor endpoints.",
     )
     parser.add_argument("--val-interval-steps", type=int, default=500)
     parser.add_argument("--early-stopping-min-steps", type=int, default=1000)
@@ -212,14 +285,8 @@ def load_base_params(yaml_config: Path, config_name: str) -> dict[str, Any]:
 
 
 def fixed_overrides(args: argparse.Namespace) -> dict[str, Any]:
-    first_cycle_steps = scheduler_first_cycle_steps(
-        int(args.max_optimizer_steps),
-        int(args.n_cycles or 1),
-        getattr(args, "scheduler_first_cycle_steps", None),
-    )
     overrides: dict[str, Any] = {
         "max_optimizer_steps": int(args.max_optimizer_steps),
-        "scheduler_first_cycle_steps": first_cycle_steps,
         "val_interval_steps": int(args.val_interval_steps),
         "early_stopping_min_steps": int(args.early_stopping_min_steps),
         "early_stopping_patience": int(args.early_stopping_patience),
@@ -227,6 +294,14 @@ def fixed_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "limit_data": True,
         "limit_size": int(args.eventnumber),
     }
+    if scheduler_mode(args) == "cosine_hold":
+        overrides["scheduler_mode"] = "cosine_hold"
+    else:
+        overrides["scheduler_first_cycle_steps"] = scheduler_first_cycle_steps(
+            int(args.max_optimizer_steps),
+            int(args.n_cycles or 1),
+            getattr(args, "scheduler_first_cycle_steps", None),
+        )
     if args.max_train_batches is not None:
         overrides["max_train_batches"] = int(args.max_train_batches)
     if args.num_data_workers is not None:
@@ -326,7 +401,7 @@ def study_contract(
     yaml_digest = hashlib.sha256(yaml_path.read_bytes()).hexdigest()
     effective_params = effective_params or {}
     stats_path = Path(str(effective_params.get("regression_target_stats", ""))).resolve()
-    return {
+    contract = {
         "contract_version": 1,
         "yaml_config": str(yaml_path),
         "yaml_sha256": yaml_digest,
@@ -339,12 +414,6 @@ def study_contract(
         "eventnumber": int(args.eventnumber),
         "train_batch_size": int(args.train_batch_size),
         "max_optimizer_steps": int(args.max_optimizer_steps),
-        "n_cycles": int(args.n_cycles) if args.n_cycles is not None else None,
-        "scheduler_first_cycle_steps": int(
-            scheduler_first_cycle_steps(
-                int(args.max_optimizer_steps), int(args.n_cycles or 1), args.scheduler_first_cycle_steps
-            )
-        ),
         "val_interval_steps": int(args.val_interval_steps),
         "early_stopping_min_steps": int(args.early_stopping_min_steps),
         "early_stopping_patience": int(args.early_stopping_patience),
@@ -353,6 +422,28 @@ def study_contract(
         "trial_seeds": list(parse_trial_seeds(args.trial_seeds)),
         "seed_objective": args.seed_objective,
     }
+    # Preserve the exact legacy restart contract so existing studies can still
+    # be resumed.  The hold policy records its distinct, immutable search range.
+    if scheduler_mode(args) == "cosine_hold":
+        minimum, maximum, step = cosine_hold_search_range(args)
+        contract.update({
+            "scheduler_mode": "cosine_hold",
+            "anneal_steps_min": minimum,
+            "anneal_steps_max": maximum,
+            "anneal_steps_step": step,
+        })
+    else:
+        contract.update({
+            "n_cycles": int(args.n_cycles) if args.n_cycles is not None else None,
+            "scheduler_first_cycle_steps": int(
+                scheduler_first_cycle_steps(
+                    int(args.max_optimizer_steps),
+                    int(args.n_cycles or 1),
+                    args.scheduler_first_cycle_steps,
+                )
+            ),
+        })
+    return contract
 
 
 def validate_study_contract(study: Any, contract: dict[str, Any]) -> None:
@@ -431,6 +522,8 @@ def objective_factory(args: argparse.Namespace):
     base_params = load_base_params(base_yaml, args.config)
     fixed = fixed_overrides(args)
     trial_seeds = parse_trial_seeds(args.trial_seeds)
+    mode = scheduler_mode(args)
+    hold_range = cosine_hold_search_range(args) if mode == "cosine_hold" else None
 
     def objective(trial: Any) -> float:
         from train.downstream.track_regression_experiment import (
@@ -440,13 +533,24 @@ def objective_factory(args: argparse.Namespace):
 
         trial_name = f"trial_{trial.number:06d}"
         trial_dir = study_dir / trial_name
-        suggested = suggest_adapteronly_optimizer_params(trial)
+        suggested = suggest_adapteronly_optimizer_params(
+            trial,
+            scheduler_mode=mode,
+            anneal_steps_min=hold_range[0] if hold_range else None,
+            anneal_steps_max=hold_range[1] if hold_range else None,
+            anneal_steps_step=hold_range[2] if hold_range else None,
+        )
         params = dict(base_params)
         params.update(fixed)
         params.update(suggested)
+        warmup_reference_steps = int(
+            params["scheduler_anneal_steps"]
+            if mode == "cosine_hold"
+            else params["scheduler_first_cycle_steps"]
+        )
         params["warmup_steps"] = max(
             1,
-            int(float(params["warmup_fraction"]) * int(params["scheduler_first_cycle_steps"])),
+            int(float(params["warmup_fraction"]) * warmup_reference_steps),
         )
         params.update({
             "artifact_root": str(study_dir),
@@ -454,6 +558,29 @@ def objective_factory(args: argparse.Namespace):
             "model_version": f"{args.study_name}_{trial_name}",
         })
 
+        execution_contract = {
+            "max_optimizer_steps": int(params["max_optimizer_steps"]),
+            "n_cycles": int(args.n_cycles) if args.n_cycles is not None else None,
+            "scheduler_first_cycle_steps": (
+                int(params["scheduler_first_cycle_steps"])
+                if mode == "cosine_restarts"
+                else None
+            ),
+            "warmup_fraction": float(params["warmup_fraction"]),
+            "warmup_steps": int(params["warmup_steps"]),
+            "val_interval_steps": int(params["val_interval_steps"]),
+            "early_stopping_min_steps": int(params["early_stopping_min_steps"]),
+            "early_stopping_patience": int(params["early_stopping_patience"]),
+            "early_stopping_min_delta": float(params["early_stopping_min_delta"]),
+            "max_val_batches": int(params["max_val_batches"]),
+            "train_batch_size": int(args.train_batch_size),
+            "eventnumber": int(args.eventnumber),
+        }
+        if mode == "cosine_hold":
+            execution_contract.update({
+                "scheduler_mode": "cosine_hold",
+                "scheduler_anneal_steps": int(params["scheduler_anneal_steps"]),
+            })
         set_trial_attrs(trial, {
             "study_name": args.study_name,
             "trial_dir": str(trial_dir),
@@ -464,20 +591,7 @@ def objective_factory(args: argparse.Namespace):
             "data_root_test": params.get("data_root_test"),
             "trial_seeds": list(trial_seeds),
             "seed_objective": args.seed_objective,
-            "execution_contract": {
-                "max_optimizer_steps": int(params["max_optimizer_steps"]),
-                "n_cycles": int(args.n_cycles) if args.n_cycles is not None else None,
-                "scheduler_first_cycle_steps": int(params["scheduler_first_cycle_steps"]),
-                "warmup_fraction": float(params["warmup_fraction"]),
-                "warmup_steps": int(params["warmup_steps"]),
-                "val_interval_steps": int(params["val_interval_steps"]),
-                "early_stopping_min_steps": int(params["early_stopping_min_steps"]),
-                "early_stopping_patience": int(params["early_stopping_patience"]),
-                "early_stopping_min_delta": float(params["early_stopping_min_delta"]),
-                "max_val_batches": int(params["max_val_batches"]),
-                "train_batch_size": int(args.train_batch_size),
-                "eventnumber": int(args.eventnumber),
-            },
+            "execution_contract": execution_contract,
         })
         seed_results = []
         for training_seed in trial_seeds:
@@ -559,13 +673,14 @@ def main() -> None:
     args = parse_args()
     trial_seeds = parse_trial_seeds(args.trial_seeds)
     validate_training_controls(args)
-    if args.n_cycles is not None and args.scheduler_first_cycle_steps is not None:
-        raise ValueError("Use only one of --n-cycles and --scheduler-first-cycle-steps")
-    scheduler_first_cycle_steps(
-        args.max_optimizer_steps,
-        int(args.n_cycles or 1),
-        args.scheduler_first_cycle_steps,
-    )
+    if scheduler_mode(args) == "cosine_restarts":
+        if args.n_cycles is not None and args.scheduler_first_cycle_steps is not None:
+            raise ValueError("Use only one of --n-cycles and --scheduler-first-cycle-steps")
+        scheduler_first_cycle_steps(
+            args.max_optimizer_steps,
+            int(args.n_cycles or 1),
+            args.scheduler_first_cycle_steps,
+        )
     if args.enable_pruning and len(trial_seeds) != 1:
         raise ValueError("--enable-pruning currently requires exactly one --trial-seeds value")
     if args.n_jobs != 1:

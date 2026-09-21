@@ -9,11 +9,16 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from train.downstream.tuning.run_track_regression_optuna import (
+    cosine_hold_search_range,
     fixed_overrides,
     parse_trial_seeds,
     scheduler_first_cycle_steps,
+    validate_training_controls,
     validate_effective_inputs,
     validate_study_contract,
+)
+from train.downstream.tuning.track_regression_search_space import (
+    suggest_adapteronly_optimizer_params,
 )
 
 
@@ -33,6 +38,12 @@ def args_for_schedule(max_steps=30000, n_cycles=1):
         stat_dir=None,
         regression_target_stats=None,
         eventnumber=100000,
+        train_batch_size=128,
+        n_trials=1,
+        scheduler_mode="cosine_restarts",
+        anneal_steps_min=None,
+        anneal_steps_max=None,
+        anneal_steps_step=None,
     )
 
 
@@ -56,6 +67,44 @@ class TrackRegressionOptunaScheduleTest(unittest.TestCase):
         args.scheduler_first_cycle_steps = 7000
         overrides = fixed_overrides(args)
         self.assertEqual(overrides["scheduler_first_cycle_steps"], 7000)
+
+    def test_cosine_hold_adds_no_restart_period(self):
+        args = args_for_schedule(max_steps=20000, n_cycles=None)
+        args.scheduler_mode = "cosine_hold"
+        args.anneal_steps_min = 5000
+        args.anneal_steps_max = 16000
+        args.anneal_steps_step = 1000
+        validate_training_controls(args)
+        self.assertEqual(cosine_hold_search_range(args), (5000, 16000, 1000))
+        overrides = fixed_overrides(args)
+        self.assertEqual(overrides["scheduler_mode"], "cosine_hold")
+        self.assertNotIn("scheduler_first_cycle_steps", overrides)
+
+    def test_cosine_hold_rejects_restart_controls(self):
+        args = args_for_schedule(max_steps=20000, n_cycles=2)
+        args.scheduler_mode = "cosine_hold"
+        args.anneal_steps_min = 5000
+        args.anneal_steps_max = 16000
+        args.anneal_steps_step = 1000
+        with self.assertRaisesRegex(ValueError, "cannot use --n-cycles"):
+            validate_training_controls(args)
+
+    def test_cosine_hold_search_space_samples_anneal_endpoint(self):
+        class Trial:
+            def suggest_float(self, _name, low, _high, **_kwargs):
+                return low
+
+            def suggest_int(self, _name, low, _high, **_kwargs):
+                return low
+
+        params = suggest_adapteronly_optimizer_params(
+            Trial(),
+            scheduler_mode="cosine_hold",
+            anneal_steps_min=5000,
+            anneal_steps_max=16000,
+            anneal_steps_step=1000,
+        )
+        self.assertEqual(params["scheduler_anneal_steps"], 5000)
 
     def test_trial_seeds_are_nonempty_and_deduplicated(self):
         self.assertEqual(parse_trial_seeds("11,17,11,23"), (11, 17, 23))

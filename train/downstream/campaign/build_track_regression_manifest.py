@@ -231,15 +231,6 @@ def best_trial_recipe(args: argparse.Namespace) -> tuple[dict[str, Any], dict[st
             "or has no objective value."
         )
 
-    missing = [key for key in TUNED_OPTUNA_PARAM_KEYS if key not in trial.params]
-    if missing:
-        raise ValueError(
-            f"Best trial {trial.number} is missing tuned parameter(s): "
-            + ", ".join(missing)
-        )
-
-    recipe = {key: trial.params[key] for key in TUNED_OPTUNA_PARAM_KEYS}
-    recipe["min_lr"] = float(recipe["max_lr"]) * float(recipe["min_lr_ratio"])
     contract = trial.user_attrs.get("execution_contract")
     if not isinstance(contract, dict):
         raise ValueError(
@@ -247,24 +238,55 @@ def best_trial_recipe(args: argparse.Namespace) -> tuple[dict[str, Any], dict[st
             "Legacy studies cannot be faithfully imported; rerun tuning or set "
             "all schedule overrides explicitly."
         )
+    scheduler_mode = str(contract.get("scheduler_mode", "cosine_restarts"))
+    if scheduler_mode not in ("cosine_restarts", "cosine_hold"):
+        raise ValueError(f"Unsupported Optuna scheduler_mode: {scheduler_mode!r}")
+    tuned_keys = TUNED_OPTUNA_PARAM_KEYS + (
+        ("scheduler_anneal_steps",) if scheduler_mode == "cosine_hold" else ()
+    )
+    missing = [key for key in tuned_keys if key not in trial.params]
+    if missing:
+        raise ValueError(
+            f"Best trial {trial.number} is missing tuned parameter(s): "
+            + ", ".join(missing)
+        )
+    recipe = {key: trial.params[key] for key in tuned_keys}
+    recipe["min_lr"] = float(recipe["max_lr"]) * float(recipe["min_lr_ratio"])
     missing_contract = [key for key in EXECUTION_CONTRACT_KEYS if key not in contract]
-    if "n_cycles" not in contract and "scheduler_first_cycle_steps" not in contract:
+    if scheduler_mode == "cosine_restarts" and (
+        "n_cycles" not in contract and "scheduler_first_cycle_steps" not in contract
+    ):
         missing_contract.append("n_cycles or scheduler_first_cycle_steps")
+    if scheduler_mode == "cosine_hold" and "scheduler_anneal_steps" not in contract:
+        missing_contract.append("scheduler_anneal_steps")
     if missing_contract:
         raise ValueError(
             f"Best trial {trial.number} execution contract is missing " + ", ".join(missing_contract)
         )
-    n_cycles = contract.get("n_cycles")
     max_steps = int(contract["max_optimizer_steps"])
-    source_cycle_steps = int(contract.get("scheduler_first_cycle_steps", 0))
-    if max_steps <= 0 or source_cycle_steps <= 0:
+    if max_steps <= 0:
         raise ValueError(f"Invalid Optuna execution contract for trial {trial.number}: {contract!r}")
-    if n_cycles is not None:
-        n_cycles = int(n_cycles)
-        if n_cycles <= 0 or max_steps % n_cycles or source_cycle_steps != max_steps // n_cycles:
+    if scheduler_mode == "cosine_restarts":
+        n_cycles = contract.get("n_cycles")
+        source_cycle_steps = int(contract.get("scheduler_first_cycle_steps", 0))
+        if source_cycle_steps <= 0:
             raise ValueError(f"Invalid Optuna execution contract for trial {trial.number}: {contract!r}")
+        if n_cycles is not None:
+            n_cycles = int(n_cycles)
+            if n_cycles <= 0 or max_steps % n_cycles or source_cycle_steps != max_steps // n_cycles:
+                raise ValueError(f"Invalid Optuna execution contract for trial {trial.number}: {contract!r}")
+        recipe["scheduler_first_cycle_steps"] = source_cycle_steps
+    else:
+        anneal_steps = int(recipe["scheduler_anneal_steps"])
+        if anneal_steps <= 0 or anneal_steps > max_steps:
+            raise ValueError(f"Invalid Optuna execution contract for trial {trial.number}: {contract!r}")
+        if int(contract["scheduler_anneal_steps"]) != anneal_steps:
+            raise ValueError(
+                f"Optuna trial {trial.number} scheduler_anneal_steps disagrees with "
+                "its execution contract"
+            )
+        recipe["scheduler_mode"] = "cosine_hold"
     recipe.update({key: contract[key] for key in EXECUTION_CONTRACT_KEYS})
-    recipe["scheduler_first_cycle_steps"] = source_cycle_steps
     source = {
         "storage": args.optuna_storage,
         "study_name": args.optuna_study_name,
@@ -292,7 +314,16 @@ def main() -> None:
     training_overrides = dict(optuna_overrides)
     manual_overrides = parse_training_overrides(args)
     training_overrides.update(manual_overrides)
-    if source_optuna is not None and "scheduler_first_cycle_steps" not in manual_overrides:
+    imported_scheduler_mode = str(
+        (source_optuna or {}).get("execution_contract", {}).get(
+            "scheduler_mode", "cosine_restarts"
+        )
+    )
+    if (
+        source_optuna is not None
+        and imported_scheduler_mode == "cosine_restarts"
+        and "scheduler_first_cycle_steps" not in manual_overrides
+    ):
         n_cycles = source_optuna["execution_contract"].get("n_cycles")
         max_steps = int(training_overrides["max_optimizer_steps"])
         if n_cycles is not None and max_steps % int(n_cycles):
@@ -315,11 +346,16 @@ def main() -> None:
                 )
             training_overrides["scheduler_first_cycle_steps"] = source_cycle_steps
     if source_optuna is not None and "warmup_fraction" in training_overrides:
+        warmup_reference_key = (
+            "scheduler_anneal_steps"
+            if str(training_overrides.get("scheduler_mode", "cosine_restarts")) == "cosine_hold"
+            else "scheduler_first_cycle_steps"
+        )
         training_overrides["warmup_steps"] = max(
             1,
             int(
                 float(training_overrides["warmup_fraction"])
-                * int(training_overrides["scheduler_first_cycle_steps"])
+                * int(training_overrides[warmup_reference_key])
             ),
         )
     if "scheduler_first_cycle_steps" in training_overrides:
@@ -333,6 +369,14 @@ def main() -> None:
                     "scheduler_first_cycle_steps must be no larger than a positive "
                     f"max_optimizer_steps; got {cycle_steps} and {max_steps}"
                 )
+    if str(training_overrides.get("scheduler_mode", "cosine_restarts")) == "cosine_hold":
+        anneal_steps = int(training_overrides.get("scheduler_anneal_steps", 0))
+        max_steps = int(training_overrides.get("max_optimizer_steps", 0))
+        if anneal_steps <= 0 or max_steps <= 0 or anneal_steps > max_steps:
+            raise ValueError(
+                "scheduler_anneal_steps must be in [1, max_optimizer_steps] "
+                "for scheduler_mode=cosine_hold"
+            )
 
     if not checkpoint_root.is_dir():
         raise FileNotFoundError(f"Checkpoint root does not exist: {checkpoint_root}")

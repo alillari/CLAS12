@@ -352,13 +352,21 @@ class TPCBatchDataset(Dataset):
                  require_pid_target=False,
                  require_noise_target=False,
                  return_coatjava_seg_pred=False,
-                 require_coatjava_seg_pred=False):
+                 require_coatjava_seg_pred=False,
+                 input_representation='center_only'):
 
         self.data_root = data_root
         self.split = split
         self.memmap_feature = RaggedMmap(os.path.join(data_root, f'features_{split}'))
         self.memmap_seg_target = RaggedMmap(os.path.join(data_root, f'seg_target_{split}'))
         self.n_feature_events = len(self.memmap_feature)
+        self.input_representation = str(input_representation)
+        if self.input_representation not in {'center_only', 'clas12_geometry_v1'}:
+            raise ValueError(
+                "input_representation must be 'center_only' or 'clas12_geometry_v1', "
+                f"got {self.input_representation!r}"
+            )
+        self.return_geometry_context = self.input_representation == 'clas12_geometry_v1'
 
         # Downstream loaders often expect reg_target, but CLAS12 adapter-only may not need it.
         # Load it when present; otherwise create a zero placeholder only for return_dict/return_reg compatibility.
@@ -394,6 +402,18 @@ class TPCBatchDataset(Dataset):
         self.memmap_mid_target, self.has_mid_target = self._open_optional_point_target(
             f'mid_target_{split}', require=False
         )
+        if self.return_geometry_context:
+            if not return_dict:
+                raise ValueError("clas12_geometry_v1 requires return_dict=True to preserve typed sidecars")
+            self.memmap_token_context = self._open_required_context_sidecar(
+                f'cluster_token_context_target_{split}', expected_width=5, expected_dtype=np.int64
+            )
+            self.memmap_geometry_context = self._open_required_context_sidecar(
+                f'cluster_geometry_context_target_{split}', expected_width=11, expected_dtype=np.float32
+            )
+        else:
+            self.memmap_token_context = None
+            self.memmap_geometry_context = None
 
         self.input_layout = input_layout.lower()
         self.serialization = serialization
@@ -595,6 +615,29 @@ class TPCBatchDataset(Dataset):
         print(f"[INFO] Ignoring {name}: {msg}")
         return None, False
 
+    def _open_required_context_sidecar(self, name, expected_width, expected_dtype):
+        """Open a typed, row-aligned v7 context sidecar without coercion."""
+        memmap_target = RaggedMmap(os.path.join(self.data_root, name))
+        if len(memmap_target) != self.n_feature_events:
+            raise ValueError(
+                f"{name} has {len(memmap_target)} events but features_{self.split} "
+                f"has {self.n_feature_events}"
+            )
+        for event_index in range(len(memmap_target)):
+            sample = np.asarray(memmap_target[event_index])
+            if sample.shape[0]:
+                if sample.ndim != 2 or sample.shape[1] != expected_width:
+                    raise ValueError(
+                        f"{name} must have row shape ({expected_width},), got {sample.shape} "
+                        f"at event {event_index}"
+                    )
+                if sample.dtype != expected_dtype:
+                    raise TypeError(
+                        f"{name} must be {expected_dtype}, got {sample.dtype} at event {event_index}"
+                    )
+                return memmap_target
+        return memmap_target
+
     def _load_optional_reg_target(self, real_idx, n_hits, device=None):
         if self.has_reg_target:
             return torch.from_numpy(np.copy(self.memmap_reg_target[real_idx])).unsqueeze(0)
@@ -607,6 +650,9 @@ class TPCBatchDataset(Dataset):
             point_target = point_target[:, start_idx:start_idx + self.len_chunk]
         point_target = point_target[:, r_sort_1d]
         return point_target[:, sorter].squeeze(0)
+
+    def _load_context(self, memmap_target, real_idx):
+        return torch.from_numpy(np.copy(memmap_target[real_idx])).unsqueeze(0)
 
     def _to_model_features(self, features):
         """Convert raw event feature tensor (1,N,C) to model feature layout."""
@@ -664,11 +710,17 @@ class TPCBatchDataset(Dataset):
         features = torch.from_numpy(np.copy(self.memmap_feature[real_idx])).float().unsqueeze(0)
         target = torch.from_numpy(np.copy(self.memmap_seg_target[real_idx])).unsqueeze(0)
         reg_target = self._load_optional_reg_target(real_idx, features.size(1), device=features.device)
+        if self.return_geometry_context:
+            token_context = self._load_context(self.memmap_token_context, real_idx)
+            geometry_context = self._load_context(self.memmap_geometry_context, real_idx)
 
         if not self.train and self.chunk_training:
             features = features[:, start_idx:start_idx + self.len_chunk]
             target = target[:, start_idx:start_idx + self.len_chunk]
             reg_target = reg_target[:, start_idx:start_idx + self.len_chunk]
+            if self.return_geometry_context:
+                token_context = token_context[:, start_idx:start_idx + self.len_chunk]
+                geometry_context = geometry_context[:, start_idx:start_idx + self.len_chunk]
 
         model_features = self._to_model_features(features)
         norm_features = self.apply_norm(model_features) if self.normalize else model_features
@@ -680,6 +732,9 @@ class TPCBatchDataset(Dataset):
         norm_features = norm_features[:, r_sort_1d]
         norm_target = target[:, r_sort_1d]
         norm_reg_target = reg_target[:, r_sort_1d]
+        if self.return_geometry_context:
+            token_context = token_context[:, r_sort_1d]
+            geometry_context = geometry_context[:, r_sort_1d]
 
         # For CLAS12 position-only data, norm_features already has exactly 3 columns [eta,phi,r].
         # For original TPC data, drop E and use only [eta,phi,r] for k-NNN targets.
@@ -699,6 +754,9 @@ class TPCBatchDataset(Dataset):
         serialized_points = norm_features[:, sorter].squeeze(0)
         serialized_target = norm_target[:, sorter].squeeze(0)
         serialized_reg_target = norm_reg_target[:, sorter].squeeze(0)
+        if self.return_geometry_context:
+            serialized_token_context = token_context[:, sorter].squeeze(0)
+            serialized_geometry_context = geometry_context[:, sorter].squeeze(0)
         knearest_points = knearest_points[:, sorter].squeeze(0)
         if self.return_knn_target:
             knearest_target = knearest_target[:, sorter].squeeze(0)
@@ -735,6 +793,9 @@ class TPCBatchDataset(Dataset):
             serialized_target = serialized_target[start_idx:start_idx + self.len_chunk]
             serialized_reg_target = serialized_reg_target[start_idx:start_idx + self.len_chunk]
             knearest_points = knearest_points[start_idx:start_idx + self.len_chunk]
+            if self.return_geometry_context:
+                serialized_token_context = serialized_token_context[start_idx:start_idx + self.len_chunk]
+                serialized_geometry_context = serialized_geometry_context[start_idx:start_idx + self.len_chunk]
             if self.return_dict:
                 serialized_pid_target = serialized_pid_target[start_idx:start_idx + self.len_chunk]
                 serialized_noise_target = serialized_noise_target[start_idx:start_idx + self.len_chunk]
@@ -760,6 +821,9 @@ class TPCBatchDataset(Dataset):
                 out['coatjava_seg_pred'] = serialized_coatjava_seg_pred
             if self.return_knn_target:
                 out['knearest_target'] = knearest_target
+            if self.return_geometry_context:
+                out['token_context'] = serialized_token_context
+                out['geometry_context'] = serialized_geometry_context
             return out
 
         if self.return_reg:
@@ -842,6 +906,18 @@ class MyCollator:
                 self.pad_tensor(d['coatjava_seg_pred'].unsqueeze(-1), point_longest).squeeze(-1)
                 for d in batch
             ])
+        has_geometry_context = 'geometry_context' in batch[0]
+        if has_geometry_context:
+            if 'token_context' not in batch[0]:
+                raise ValueError("geometry_context requires token_context")
+            token_context = torch.stack([
+                F.pad(d['token_context'], (0, 0, 0, point_longest - d['token_context'].size(0)), value=0)
+                for d in batch
+            ])
+            geometry_context = torch.stack([
+                F.pad(d['geometry_context'], (0, 0, 0, point_longest - d['geometry_context'].size(0)), value=0.0)
+                for d in batch
+            ])
 
         out = {
             'points': grouped,
@@ -870,6 +946,9 @@ class MyCollator:
             out['knearest_target'] = knn_t
         if has_coatjava_seg_pred:
             out['coatjava_seg_pred'] = coatjava_seg_pred
+        if has_geometry_context:
+            out['token_context'] = token_context
+            out['geometry_context'] = geometry_context
         return out
 
     def collate_tuple(self, batch):
@@ -1061,6 +1140,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
         target = torch.from_numpy(target_np).unsqueeze(0)
         reg_target = self._load_optional_reg_target(real_idx, len(segment_labels), device=features.device)
         reg_target = reg_target[:, segment_mask]
+        if self.return_geometry_context:
+            token_context = self._load_context(self.memmap_token_context, real_idx)[:, segment_mask]
+            geometry_context = self._load_context(self.memmap_geometry_context, real_idx)[:, segment_mask]
         regression_target_mask = torch.as_tensor(
             regression_target_mask_np, dtype=torch.bool
         ).unsqueeze(0)
@@ -1070,6 +1152,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
             target = target[:, start_idx:start_idx + self.len_chunk]
             reg_target = reg_target[:, start_idx:start_idx + self.len_chunk]
             regression_target_mask = regression_target_mask[:, start_idx:start_idx + self.len_chunk]
+            if self.return_geometry_context:
+                token_context = token_context[:, start_idx:start_idx + self.len_chunk]
+                geometry_context = geometry_context[:, start_idx:start_idx + self.len_chunk]
 
         model_features = self._to_model_features(features)
         norm_features = self.apply_norm(model_features) if self.normalize else model_features
@@ -1079,6 +1164,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
         norm_target = target[:, r_sort_1d]
         norm_reg_target = reg_target[:, r_sort_1d]
         norm_regression_target_mask = regression_target_mask[:, r_sort_1d]
+        if self.return_geometry_context:
+            token_context = token_context[:, r_sort_1d]
+            geometry_context = geometry_context[:, r_sort_1d]
 
         knn_input = norm_features if self.is_position_only else norm_features[..., 1:]
         if self.return_knn_target:
@@ -1097,6 +1185,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
         serialized_target = norm_target[:, sorter].squeeze(0)
         serialized_reg_target = norm_reg_target[:, sorter].squeeze(0)
         serialized_regression_target_mask = norm_regression_target_mask[:, sorter].squeeze(0)
+        if self.return_geometry_context:
+            serialized_token_context = token_context[:, sorter].squeeze(0)
+            serialized_geometry_context = geometry_context[:, sorter].squeeze(0)
         knearest_points = knearest_points[:, sorter].squeeze(0)
         if self.return_knn_target:
             knearest_target = knearest_target[:, sorter].squeeze(0)
@@ -1128,6 +1219,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
             serialized_target = serialized_target[start_idx:start_idx + self.len_chunk]
             serialized_reg_target = serialized_reg_target[start_idx:start_idx + self.len_chunk]
             knearest_points = knearest_points[start_idx:start_idx + self.len_chunk]
+            if self.return_geometry_context:
+                serialized_token_context = serialized_token_context[start_idx:start_idx + self.len_chunk]
+                serialized_geometry_context = serialized_geometry_context[start_idx:start_idx + self.len_chunk]
             if self.return_dict:
                 serialized_pid_target = serialized_pid_target[start_idx:start_idx + self.len_chunk]
                 serialized_noise_target = serialized_noise_target[start_idx:start_idx + self.len_chunk]
@@ -1156,6 +1250,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
                 out['mid_target'] = serialized_mid_target
             if self.return_knn_target:
                 out['knearest_target'] = knearest_target
+            if self.return_geometry_context:
+                out['token_context'] = serialized_token_context
+                out['geometry_context'] = serialized_geometry_context
             return out
 
         if self.return_reg:
@@ -1238,6 +1335,7 @@ def get_data_loader(params, distributed):
                                     require_noise_target=getattr(params, 'require_noise_target', False),
                                     return_coatjava_seg_pred=getattr(params, 'return_coatjava_seg_pred', False),
                                     require_coatjava_seg_pred=getattr(params, 'require_coatjava_seg_pred', False),
+                                    input_representation=getattr(params, 'input_representation', 'center_only'),
                                     **sample_mode_kwargs)
     
     test_dataset = dataset_cls(data_root = params.data_root_test, 
@@ -1279,6 +1377,7 @@ def get_data_loader(params, distributed):
                                        'require_coatjava_seg_pred_test',
                                        getattr(params, 'require_coatjava_seg_pred', False),
                                    ),
+                                   input_representation=getattr(params, 'input_representation', 'center_only'),
                                    **sample_mode_kwargs)
 
     seed = getattr(params, "seed", None)
@@ -1362,6 +1461,7 @@ def get_val_loader(params, distributed):
                                        'require_coatjava_seg_pred_test',
                                        getattr(params, 'require_coatjava_seg_pred', False),
                                    ),
+                                   input_representation=getattr(params, 'input_representation', 'center_only'),
                                    **sample_mode_kwargs)
 
     test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None

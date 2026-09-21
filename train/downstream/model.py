@@ -513,11 +513,19 @@ class MambaTrackRegressionHead(nn.Module):
                  num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
                  num_feature_layers=15, num_output_dim=3, return_embedding=False, dropout=0.0,
                  pooling="mean", embed_method="add", pe_method="nerf",
-                 target_mean=None, target_std=None):
+                 target_mean=None, target_std=None,
+                 input_representation="center_only",
+                 geometry_pitch_mean_cm=None, geometry_pitch_std_cm=None):
         super().__init__()
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
+        self.input_representation = str(input_representation)
+        if self.input_representation not in {"center_only", "clas12_geometry_v1"}:
+            raise ValueError(
+                "input_representation must be 'center_only' or 'clas12_geometry_v1', "
+                f"got {self.input_representation!r}"
+            )
         self.target_normalizer = RegressionTargetNormalizer(
             num_output_dim, mean=target_mean, std=target_std
         )
@@ -576,6 +584,21 @@ class MambaTrackRegressionHead(nn.Module):
         self.out_mlp = MLPHead(embed_dim, num_output_dim, dropout=dropout)
 
         self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim)
+        if self.input_representation == "clas12_geometry_v1":
+            if embed_method != "pos_only":
+                raise ValueError("clas12_geometry_v1 requires embed_method='pos_only'")
+            if geometry_pitch_mean_cm is None or geometry_pitch_std_cm is None:
+                raise ValueError(
+                    "clas12_geometry_v1 requires geometry_pitch_mean_cm and "
+                    "geometry_pitch_std_cm computed from the training split"
+                )
+            self.geometry_embedder = CLAS12GeometryContextEmbedder(
+                embed_dim=input_dim,
+                pitch_mean_cm=geometry_pitch_mean_cm,
+                pitch_std_cm=geometry_pitch_std_cm,
+            )
+        else:
+            self.geometry_embedder = None
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
     def pool(self, x, padding_mask=None):
@@ -600,8 +623,21 @@ class MambaTrackRegressionHead(nn.Module):
             weights = torch.softmax(scores, dim=1).unsqueeze(-1)  # B x N x 1
             return (x * weights).sum(dim=1)
 
-    def forward(self, x, feature=None, padding_mask=None, pretrain=False):
+    def forward(
+        self,
+        x,
+        feature=None,
+        padding_mask=None,
+        pretrain=False,
+        token_context=None,
+        geometry_context=None,
+    ):
         if pretrain:
+            if self.input_representation != "center_only":
+                raise ValueError(
+                    "clas12_geometry_v1 is adapter-only for this experiment; "
+                    "do not pass it through the frozen pretrained backbone"
+                )
             x = feature.permute(1, 2, 0, 3)
             weights = torch.softmax(self.weighted_avg_weights, dim=0)
             weights = weights.to(x.dtype)
@@ -611,6 +647,18 @@ class MambaTrackRegressionHead(nn.Module):
 
             if isinstance(x, tuple):
                 x = x[0]
+
+            geometry_branch_rms = None
+            if self.geometry_embedder is not None:
+                if token_context is None or geometry_context is None:
+                    raise ValueError(
+                        "clas12_geometry_v1 requires token_context and geometry_context sidecars"
+                    )
+                if padding_mask is None:
+                    raise ValueError("clas12_geometry_v1 requires an explicit padding_mask")
+                x, geometry_branch_rms = self.geometry_embedder(
+                    x, token_context, geometry_context, padding_mask
+                )
 
             for layer in self.mamba_embedder_layers:
                 x = layer(x) + x
@@ -642,6 +690,7 @@ class MambaTrackRegressionHead(nn.Module):
             "pooled_embedding": pooled,
             "embedding_pre_projection": embedding_pre_projection,
             "embedding_post_projection": embedding_post_projection,
+            "geometry_branch_rms": geometry_branch_rms if not pretrain else None,
         } 
 
 

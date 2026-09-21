@@ -225,6 +225,9 @@ def build_head(trainer):
         pe_method=params.pe_method,
         target_mean=trainer.regression_target_stats["mean"],
         target_std=trainer.regression_target_stats["std"],
+        input_representation=getattr(params, "input_representation", "center_only"),
+        geometry_pitch_mean_cm=getattr(params, "geometry_pitch_mean_cm", None),
+        geometry_pitch_std_cm=getattr(params, "geometry_pitch_std_cm", None),
     ).to(trainer.device)
 
 
@@ -2074,7 +2077,10 @@ def main():
                     points, torch.stack(embeddings), pretrain=True, padding_mask=mask
                 )["pred_regression"]
             else:
-                prediction = trainer.down_model(points, feature=None, padding_mask=mask)["pred_regression"]
+                geometry_kwargs = trainer._geometry_context_kwargs(batch, pretrain=False)
+                prediction = trainer.down_model(
+                    points, feature=None, padding_mask=mask, **geometry_kwargs
+                )["pred_regression"]
 
             target_segment_mask = batch.get("target_segment_mask")
             if target_segment_mask is not None:

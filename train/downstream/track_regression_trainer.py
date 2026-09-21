@@ -1,3 +1,4 @@
+import json
 import numpy as np
 from sklearn.metrics import adjusted_rand_score
 import os, sys, time, shutil, random
@@ -89,6 +90,21 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
         
         self.params = params
+        if getattr(params, "input_representation", "center_only") == "clas12_geometry_v1":
+            geometry_stats_path = getattr(params, "geometry_pitch_stats", None)
+            if not geometry_stats_path:
+                raise ValueError(
+                    "clas12_geometry_v1 requires geometry_pitch_stats generated from the v7 pretrain split"
+                )
+            with open(geometry_stats_path) as stream:
+                geometry_stats = json.load(stream)
+            if geometry_stats.get("schema") != "clas12_geometry_pitch_stats_v1":
+                raise ValueError(f"Unexpected geometry pitch statistics schema: {geometry_stats.get('schema')!r}")
+            if geometry_stats.get("split") != "pretrain" or int(geometry_stats.get("count", 0)) < 1:
+                raise ValueError("Geometry pitch statistics must contain a non-empty pretrain split")
+            self.params["geometry_pitch_mean_cm"] = float(geometry_stats["mean_cm"])
+            self.params["geometry_pitch_std_cm"] = float(geometry_stats["std_cm"])
+            self.params["geometry_pitch_stats"] = os.path.abspath(geometry_stats_path)
         if getattr(params, "adapter_sample_mode", "event_segment") != "event_segment":
             raise ValueError(
                 "track_legacy regression is disabled. Use the v6 event product with "
@@ -423,7 +439,7 @@ class DownstreamTrainer():
         #                  ).to(self.device)
         
         #else:
-        self.down_model = MambaTrackRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean"), embed_method=self.params.embed_method, pe_method=self.params.pe_method, target_mean=self.regression_target_stats["mean"], target_std=self.regression_target_stats["std"]).to(self.device)
+        self.down_model = MambaTrackRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean"), embed_method=self.params.embed_method, pe_method=self.params.pe_method, target_mean=self.regression_target_stats["mean"], target_std=self.regression_target_stats["std"], input_representation=getattr(self.params, "input_representation", "center_only"), geometry_pitch_mean_cm=getattr(self.params, "geometry_pitch_mean_cm", None), geometry_pitch_std_cm=getattr(self.params, "geometry_pitch_std_cm", None)).to(self.device)
 
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -494,6 +510,7 @@ class DownstreamTrainer():
                 targets = self.build_regression_targets(reg, mask, target_segment_mask)
 
                 self.down_optimizer.zero_grad()
+                geometry_kwargs = self._geometry_context_kwargs(inputdict, pretrain)
                 if pretrain:
                     with torch.no_grad():
                         _, pre_embed, _ = self.model(grouped, return_z = True)
@@ -503,7 +520,7 @@ class DownstreamTrainer():
                     pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask, **geometry_kwargs)
 
                 pred = pred_dict['pred_regression']
                 outputs = {
@@ -609,6 +626,9 @@ class DownstreamTrainer():
             dropout=float(getattr(self.params, "dropout", 0.0)),
             target_mean=self.regression_target_stats["mean"],
             target_std=self.regression_target_stats["std"],
+            input_representation=getattr(self.params, "input_representation", "center_only"),
+            geometry_pitch_mean_cm=getattr(self.params, "geometry_pitch_mean_cm", None),
+            geometry_pitch_std_cm=getattr(self.params, "geometry_pitch_std_cm", None),
         ).to(self.device)
 
         #print number of parameters in the model
@@ -844,6 +864,30 @@ class DownstreamTrainer():
     def _current_lr(self):
         return self.down_optimizer.param_groups[0]["lr"]
 
+    def _geometry_context_kwargs(self, inputdict, pretrain):
+        """Move v7 typed sidecars alongside their already-serialized point rows."""
+        if getattr(self.params, "input_representation", "center_only") == "center_only":
+            return {}
+        if pretrain:
+            raise ValueError("clas12_geometry_v1 is intentionally adapter-only")
+        try:
+            token_context = inputdict['token_context'].to(self.device, dtype=torch.long)
+            geometry_context = inputdict['geometry_context'].to(self.device, dtype=torch.float32)
+        except KeyError as exc:
+            raise KeyError(
+                "Geometry representation requested but data loader did not return v7 context sidecars"
+            ) from exc
+        return {"token_context": token_context, "geometry_context": geometry_context}
+
+    def _log_geometry_branch_rms(self, pred_dict):
+        norms = pred_dict.get("geometry_branch_rms")
+        if norms is None or self.world_rank != 0:
+            return
+        if self.global_step not in {0, 1} and self.global_step % 1000 != 0:
+            return
+        formatted = ", ".join(f"{name}={value.item():.3f}" for name, value in norms.items())
+        print(f"[geometry branch RMS] step={self.global_step}: {formatted}")
+
     def _train_one_batch(self, inputdict, pretrain=False):
         grouped = inputdict['points'].to(self.device)  # B X N X C
         b, c = grouped.size(0), grouped.size(-1)
@@ -857,13 +901,15 @@ class DownstreamTrainer():
         targets = self.build_regression_targets(reg, mask, target_segment_mask)
 
         self.down_optimizer.zero_grad()
+        geometry_kwargs = self._geometry_context_kwargs(inputdict, pretrain)
         if pretrain:
             with torch.no_grad():
                 _, pre_embed, _ = self.model(grouped, return_z=True)
             feature = torch.stack(pre_embed)
             pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
         else:
-            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask, **geometry_kwargs)
+        self._log_geometry_branch_rms(pred_dict)
 
         pred = pred_dict["pred_regression"]  # B x num_output_classes
 
@@ -1073,6 +1119,7 @@ class DownstreamTrainer():
                 targets = self.build_regression_targets(reg, mask, target_segment_mask)
 
                 self.down_optimizer.zero_grad()
+                geometry_kwargs = self._geometry_context_kwargs(inputdict, pretrain)
                 if pretrain:
                     with torch.no_grad():
                         _, pre_embed, _ = self.model(grouped, return_z = True)
@@ -1082,7 +1129,7 @@ class DownstreamTrainer():
                     pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask, **geometry_kwargs)
 
                 pred = pred_dict["pred_regression"]
 
@@ -1127,6 +1174,7 @@ class DownstreamTrainer():
             'regression_task': self.regression_target_stats["task"],
             'regression_target_columns': self.regression_target_stats["columns"],
             'regression_target_stats': self.regression_target_stats["path"],
+            'input_representation': getattr(self.params, 'input_representation', 'center_only'),
             'params': vars(self.params)  # Save all hyperparameters
         }
 
@@ -1169,6 +1217,13 @@ class DownstreamTrainer():
                 "Adapter checkpoint regression task does not match the current "
                 f"configuration: checkpoint has {checkpoint_task!r}, config has "
                 f"{current_task!r}. Use the matching model YAML/task and stats file."
+            )
+        checkpoint_representation = checkpoint.get('input_representation')
+        current_representation = getattr(self.params, 'input_representation', 'center_only')
+        if checkpoint_representation is not None and checkpoint_representation != current_representation:
+            raise ValueError(
+                "Adapter checkpoint input representation does not match the current configuration: "
+                f"checkpoint has {checkpoint_representation!r}, config has {current_representation!r}."
             )
     
         # 3. Handle DDP keys

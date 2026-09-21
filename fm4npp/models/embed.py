@@ -79,6 +79,150 @@ class EmbedderPosOnly(nn.Module):
         # contract — Mamba1GPT.forward unpacks `x, pos = self.embedder(x)`.
         # pos_embed == out here, since position is the only signal.
         return out, out
+
+
+def clas12_xyz_to_normalized_etaphr(xyz):
+    """Convert raw CLAS12 Cartesian centimetres to the established token coordinates.
+
+    The downstream loader serializes center points as normalized ``[eta, phi, r]``
+    with these exact limits.  Geometry sidecars deliberately remain raw centimetres
+    until the model, so endpoint coordinates use this helper before the same NeRF
+    encoding.  The denominator clamp only affects all-zero padding rows.
+    """
+    if xyz.size(-1) != 3:
+        raise ValueError(f"Expected xyz[..., 3], got {tuple(xyz.shape)}")
+    x, y, z = xyz.unbind(dim=-1)
+    transverse_r = torch.sqrt(x.square() + y.square())
+    total_r = torch.sqrt(x.square() + y.square() + z.square())
+    eta = torch.atanh(z / total_r.clamp_min(torch.finfo(xyz.dtype).tiny))
+    phi = torch.atan2(y, x)
+    return torch.stack(
+        ((eta + 2.5) / 4.0, (phi + math.pi) / (2.0 * math.pi), (transverse_r - 6.0) / 17.0),
+        dim=-1,
+    )
+
+
+class CLAS12GeometryContextEmbedder(nn.Module):
+    """Add minimal row-aligned CVT measurement geometry to a center token.
+
+    ``center_embedding`` is supplied by the legacy ``EmbedderPosOnly`` branch,
+    preserving its frozen random NeRF projection.  Endpoints use the same 63-D
+    NeRF convention (three inputs plus sin/cos at ten log-spaced frequencies),
+    but a shared learned projection and a symmetric sum make their contribution
+    invariant under endpoint exchange.
+    """
+
+    token_context_width = 5
+    geometry_context_width = 11
+    num_detector_layer_pairs = 12
+
+    def __init__(
+        self,
+        embed_dim,
+        pitch_mean_cm,
+        pitch_std_cm,
+        endpoint_projection_std=1.0,
+        scalar_branch_std=math.sqrt(33.0),
+    ):
+        super().__init__()
+        if not math.isfinite(float(pitch_mean_cm)):
+            raise ValueError("pitch_mean_cm must be finite")
+        if not math.isfinite(float(pitch_std_cm)) or float(pitch_std_cm) <= 0.0:
+            raise ValueError("pitch_std_cm must be finite and positive")
+        self.embed_dim = int(embed_dim)
+        self.register_buffer("pitch_mean_cm", torch.tensor(float(pitch_mean_cm)))
+        self.register_buffer("pitch_std_cm", torch.tensor(float(pitch_std_cm)))
+
+        self.endpoint_nerf = NerfEmbedder(
+            n_continuous_dim=3,
+            include_input=True,
+            max_freq_log2=9,
+            num_freqs=10,
+            log_sampling=True,
+            periodic_fns=[torch.sin, torch.cos],
+        )
+        if self.endpoint_nerf.out_dim != 63:
+            raise RuntimeError(f"Expected CLAS12 NeRF width 63, got {self.endpoint_nerf.out_dim}")
+        self.endpoint_phi = nn.Linear(self.endpoint_nerf.out_dim, self.embed_dim, bias=False)
+        self.endpoint_rho = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        # 0 is padding; 1..6 are BMT layers and 7..12 are BST layers.
+        self.detector_layer_embedding = nn.Embedding(
+            self.num_detector_layer_pairs + 1, self.embed_dim, padding_idx=0
+        )
+        self.pitch_projection = nn.Linear(1, self.embed_dim, bias=False)
+
+        # The current frozen center projection is N(0, 1), not fan-in scaled.
+        # NeRF's 63 components have approximately 33 units of squared norm, so
+        # initialize categorical and standardized-pitch branches to a comparable
+        # component RMS.  rho=I/2 compensates the initially highly correlated
+        # two endpoint encodings.  The final /sqrt(4) keeps the summed token near
+        # the old center-only RMS before the existing RMSNorm.
+        with torch.no_grad():
+            self.endpoint_phi.weight.normal_(mean=0.0, std=float(endpoint_projection_std))
+            self.endpoint_rho.weight.copy_(torch.eye(self.embed_dim) * 0.5)
+            self.detector_layer_embedding.weight.normal_(mean=0.0, std=float(scalar_branch_std))
+            self.detector_layer_embedding.weight[0].zero_()
+            self.pitch_projection.weight.normal_(mean=0.0, std=float(scalar_branch_std))
+
+    @staticmethod
+    def detector_layer_index(token_context, valid_mask):
+        """Map v7 detector/layer ids BMT=1/BST=2 and layers 1..6 to 1..12."""
+        detector = token_context[..., 0].long()
+        layer = token_context[..., 1].long()
+        invalid = valid_mask & ((detector < 1) | (detector > 2) | (layer < 1) | (layer > 6))
+        if invalid.any():
+            bad = torch.nonzero(invalid, as_tuple=False)[0].tolist()
+            raise ValueError(
+                "Invalid CLAS12 detector/layer context at batch,row "
+                f"{bad}: detector/layer must be BMT=1 or BST=2 and layer in 1..6"
+            )
+        index = (detector - 1) * 6 + layer
+        return torch.where(valid_mask, index, torch.zeros_like(index))
+
+    @staticmethod
+    def _masked_rms(tensor, valid_mask):
+        values = tensor[valid_mask]
+        if values.numel() == 0:
+            return tensor.new_tensor(0.0)
+        return values.square().mean().sqrt()
+
+    def forward(self, center_embedding, token_context, geometry_context, valid_mask):
+        expected_prefix = center_embedding.shape[:2]
+        if center_embedding.ndim != 3:
+            raise ValueError(f"center_embedding must be (B,N,D), got {tuple(center_embedding.shape)}")
+        if token_context.shape != (*expected_prefix, self.token_context_width):
+            raise ValueError(
+                f"token_context must be (B,N,{self.token_context_width}), got {tuple(token_context.shape)}"
+            )
+        if geometry_context.shape != (*expected_prefix, self.geometry_context_width):
+            raise ValueError(
+                f"geometry_context must be (B,N,{self.geometry_context_width}), got {tuple(geometry_context.shape)}"
+            )
+        if valid_mask.shape != expected_prefix:
+            raise ValueError(f"valid_mask must be (B,N), got {tuple(valid_mask.shape)}")
+        if not torch.isfinite(geometry_context[valid_mask]).all():
+            raise ValueError("Non-finite CLAS12 geometry context on a valid token")
+
+        endpoint1 = clas12_xyz_to_normalized_etaphr(geometry_context[..., 0:3])
+        endpoint2 = clas12_xyz_to_normalized_etaphr(geometry_context[..., 3:6])
+        h_endpoint = self.endpoint_rho(
+            self.endpoint_phi(self.endpoint_nerf.forward(endpoint1))
+            + self.endpoint_phi(self.endpoint_nerf.forward(endpoint2))
+        )
+        detector_layer = self.detector_layer_index(token_context, valid_mask)
+        h_detector_layer = self.detector_layer_embedding(detector_layer)
+        pitch = (geometry_context[..., 10:11] - self.pitch_mean_cm) / self.pitch_std_cm
+        h_pitch = self.pitch_projection(pitch)
+        token = (center_embedding + h_endpoint + h_detector_layer + h_pitch) * 0.5
+        token = token.masked_fill(~valid_mask.unsqueeze(-1), 0.0)
+        branch_rms = {
+            "center": self._masked_rms(center_embedding, valid_mask).detach(),
+            "endpoint": self._masked_rms(h_endpoint, valid_mask).detach(),
+            "detector_layer": self._masked_rms(h_detector_layer, valid_mask).detach(),
+            "pitch": self._masked_rms(h_pitch, valid_mask).detach(),
+            "sum": self._masked_rms(token, valid_mask).detach(),
+        }
+        return token, branch_rms
         
 class CoordinateEmbedder(nn.Module):
     """

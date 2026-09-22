@@ -49,6 +49,22 @@ def parse_args() -> argparse.Namespace:
         help="Base downstream pretrained track-regression YAML.",
     )
     parser.add_argument(
+        "--pretrained-model-config",
+        default="clas12_track_regression_pretrained",
+        help=(
+            "Named configuration to render for every pretrained-backbone row "
+            "from --base-model-yaml."
+        ),
+    )
+    parser.add_argument(
+        "--pretrain-events",
+        type=int,
+        help=(
+            "Pretraining-event count recorded for checkpoint directories whose "
+            "names do not include an n<events> token."
+        ),
+    )
+    parser.add_argument(
         "--adapter-only-model-yaml",
         default=str(DEFAULT_ADAPTER_ONLY_MODEL_YAML),
         help="Base downstream adapter-only track-regression YAML.",
@@ -431,6 +447,9 @@ def main() -> None:
                         train_batch_size=args.train_batch_size,
                         max_samples=args.max_samples,
                         run_id=run_id,
+                        base_model_yaml=args.base_model_yaml,
+                        base_model_config=args.pretrained_model_config,
+                        pretrain_events=args.pretrain_events,
                     )
                 )
         except Exception as exc:
@@ -448,6 +467,7 @@ def main() -> None:
         "artifact_root": str(artifact_root),
         "checkpoint_root": str(checkpoint_root),
         "base_model_yaml": args.base_model_yaml,
+        "pretrained_model_config": args.pretrained_model_config,
         "adapter_only_model_yaml": args.adapter_only_model_yaml,
         "adapter_only_model_config": args.adapter_only_model_config,
         "base_analysis_yaml": args.base_analysis_yaml,

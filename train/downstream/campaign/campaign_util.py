@@ -33,7 +33,7 @@ DEFAULT_MODEL_FAMILY = "mamba1"
 RUN_NAME_RE = re.compile(
     r"(?:^|_)w(?P<width>\d+)(?=_|$).*?"
     r"(?:^|_)d(?P<depth>\d+)(?=_|$).*?"
-    r"(?:^|_)n(?P<events>\d+)(?=_|$)"
+    r"(?:(?:^|_)n(?P<events>\d+)(?=_|$))?"
 )
 CHECKPOINT_SUFFIXES = {
     ".ckpt",
@@ -99,13 +99,13 @@ def parse_run_name(run_id: str) -> dict[str, int]:
     if not match:
         raise ValueError(
             f"Cannot parse run metadata from {run_id!r}. Expected tokens like "
-            "'w1536', 'd12', and 'n5483352'."
+            "'w1536' and 'd12' (with optional 'n5483352')."
         )
     return {
         "base_dim": int(match.group("width")),
         "embed_dim": int(match.group("width")),
         "num_layers_backbone": int(match.group("depth")),
-        "pretrain_events": int(match.group("events")),
+        "pretrain_events": int(match.group("events") or 0),
     }
 
 
@@ -175,6 +175,9 @@ def build_run_row(
     train_batch_size: int,
     max_samples: int,
     run_id: str | None = None,
+    base_model_yaml: str | Path = DEFAULT_BASE_MODEL_YAML,
+    base_model_config: str = "clas12_track_regression_pretrained",
+    pretrain_events: int | None = None,
 ) -> dict[str, Any]:
     backbone_run_id = source_dir.name
     run_id = run_id or backbone_run_id
@@ -190,13 +193,16 @@ def build_run_row(
         "source_dir": str(source_dir.resolve()),
         "pretrained_checkpoint": str(sidecar_checkpoint.resolve()),
         "use_pretrained_backbone": True,
-        "base_model_yaml": str(DEFAULT_BASE_MODEL_YAML),
-        "base_model_config": "clas12_track_regression_pretrained",
+        "base_model_yaml": str(sidecar.get("base_model_yaml", base_model_yaml)),
+        "base_model_config": sidecar.get("model_config_base", base_model_config),
         "model_family": sidecar.get("model_family", DEFAULT_MODEL_FAMILY),
         "base_dim": int(sidecar.get("base_dim", metadata["base_dim"])),
         "embed_dim": int(sidecar.get("embed_dim", metadata["embed_dim"])),
         "num_layers_backbone": int(sidecar.get("num_layers_backbone", metadata["num_layers_backbone"])),
-        "pretrain_events": int(sidecar.get("pretrain_events", metadata["pretrain_events"])),
+        "pretrain_events": int(sidecar.get(
+            "pretrain_events",
+            metadata["pretrain_events"] if pretrain_events is None else pretrain_events,
+        )),
         "eventnumber": int(sidecar.get("eventnumber", eventnumber)),
         "labeled_events": int(sidecar.get("labeled_events", eventnumber)),
         "train_batch_size": int(sidecar.get("train_batch_size", train_batch_size)),

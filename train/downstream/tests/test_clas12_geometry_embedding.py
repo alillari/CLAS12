@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 from fm4npp.datasets.dataset import MyCollator
 from fm4npp.models.embed import (
     CLAS12GeometryContextEmbedder,
+    EmbedderPosPlusAux,
     EmbedderPosOnly,
     clas12_xyz_to_normalized_etaphr,
 )
@@ -98,6 +99,17 @@ class CLAS12GeometryEmbeddingTest(unittest.TestCase):
         output, positional = embedder(points)
         torch.testing.assert_close(output, positional)
         self.assertEqual(tuple(output.shape), (2, 3, 16))
+
+    def test_pos_plus_aux_embedding_has_a_strict_token_width_contract(self):
+        embedder = EmbedderPosPlusAux(
+            pe_method="nerf", embed_dim=16, pos_dim=3, aux_dim=4
+        )
+        tokens = torch.rand(2, 3, 7)
+        output, positional = embedder(tokens)
+        self.assertEqual(tuple(output.shape), (2, 3, 16))
+        self.assertEqual(tuple(positional.shape), (2, 3, 16))
+        with self.assertRaisesRegex(ValueError, "expected 7 token columns"):
+            embedder(tokens[..., :-1])
 
     def test_collator_keeps_typed_context_and_zero_pads_it(self):
         sample = {

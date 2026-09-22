@@ -228,6 +228,8 @@ def build_head(trainer):
         input_representation=getattr(params, "input_representation", "center_only"),
         geometry_pitch_mean_cm=getattr(params, "geometry_pitch_mean_cm", None),
         geometry_pitch_std_cm=getattr(params, "geometry_pitch_std_cm", None),
+        pos_dim=getattr(params, "pos_dim", 3),
+        aux_dim=getattr(params, "aux_dim", 4),
     ).to(trainer.device)
 
 
@@ -2070,16 +2072,17 @@ def main():
             points = points.reshape(batch_size, -1, channels)
             mask = points[..., 0] != -100
             regression = batch["reg_target"].to(trainer.device)
+            model_input = trainer._representation_input(points, batch)
 
             if use_pretrained:
-                _, embeddings, _ = trainer.model(points, return_z=True)
+                _, embeddings, _ = trainer.model(model_input, return_z=True)
                 prediction = trainer.down_model(
-                    points, torch.stack(embeddings), pretrain=True, padding_mask=mask
+                    model_input, torch.stack(embeddings), pretrain=True, padding_mask=mask
                 )["pred_regression"]
             else:
                 geometry_kwargs = trainer._geometry_context_kwargs(batch, pretrain=False)
                 prediction = trainer.down_model(
-                    points, feature=None, padding_mask=mask, **geometry_kwargs
+                    model_input, feature=None, padding_mask=mask, **geometry_kwargs
                 )["pred_regression"]
 
             target_segment_mask = batch.get("target_segment_mask")

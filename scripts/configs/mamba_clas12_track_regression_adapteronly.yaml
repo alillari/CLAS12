@@ -168,6 +168,28 @@ clas12_track_regression_adapteronly_geometry_v1_p_phi_theta:
   input_representation: clas12_geometry_v1
   geometry_pitch_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/clas12_geometry_pitch_stats_v7_01.json
 
+# Mike-compatible v7 token packing.  Unlike clas12_geometry_v1, this is the
+# exact four-auxiliary-value input expected by a pos_plus_aux pretrained
+# backbone: local strip direction plus either physical length or pitch.
+clas12_track_regression_adapteronly_pos_plus_aux_length_p_phi_theta: &pos_plus_aux_length_adapter
+  <<: *default
+  model_version: clas12_track_regression_adapteronly_pos_plus_aux_length_p_phi_theta
+  task: p_phi_theta
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta_event_segment_mctrue_min12_v7_01.json
+  data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
+  data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
+  data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
+  input_representation: clas12_pos_plus_aux_v1
+  embed_method: pos_plus_aux
+  pos_dim: 3
+  aux_dim: 4
+  aux_extra_feature: length
+
+clas12_track_regression_adapteronly_pos_plus_aux_pitch_p_phi_theta:
+  <<: *pos_plus_aux_length_adapter
+  model_version: clas12_track_regression_adapteronly_pos_plus_aux_pitch_p_phi_theta
+  aux_extra_feature: pitch
+
 # ---------------------------------------------------------------------------
 # Same idea, but with the CLAS12 Hilbert-band ordering enabled.
 # Use only after the radius-ordering run can load and train.

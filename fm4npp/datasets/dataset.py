@@ -361,12 +361,17 @@ class TPCBatchDataset(Dataset):
         self.memmap_seg_target = RaggedMmap(os.path.join(data_root, f'seg_target_{split}'))
         self.n_feature_events = len(self.memmap_feature)
         self.input_representation = str(input_representation)
-        if self.input_representation not in {'center_only', 'clas12_geometry_v1'}:
+        if self.input_representation not in {
+            'center_only', 'clas12_geometry_v1', 'clas12_pos_plus_aux_v1'
+        }:
             raise ValueError(
-                "input_representation must be 'center_only' or 'clas12_geometry_v1', "
+                "input_representation must be 'center_only', 'clas12_geometry_v1', "
+                "or 'clas12_pos_plus_aux_v1', "
                 f"got {self.input_representation!r}"
             )
-        self.return_geometry_context = self.input_representation == 'clas12_geometry_v1'
+        self.return_geometry_context = self.input_representation in {
+            'clas12_geometry_v1', 'clas12_pos_plus_aux_v1'
+        }
 
         # Downstream loaders often expect reg_target, but CLAS12 adapter-only may not need it.
         # Load it when present; otherwise create a zero placeholder only for return_dict/return_reg compatibility.
@@ -404,7 +409,10 @@ class TPCBatchDataset(Dataset):
         )
         if self.return_geometry_context:
             if not return_dict:
-                raise ValueError("clas12_geometry_v1 requires return_dict=True to preserve typed sidecars")
+                raise ValueError(
+                    "CLAS12 geometry representations require return_dict=True "
+                    "to preserve typed sidecars"
+                )
             self.memmap_token_context = self._open_required_context_sidecar(
                 f'cluster_token_context_target_{split}', expected_width=5, expected_dtype=np.int64
             )

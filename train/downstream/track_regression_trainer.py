@@ -1,7 +1,7 @@
 import json
 import numpy as np
 from sklearn.metrics import adjusted_rand_score
-import os, sys, time, shutil, random
+import os, sys, time, shutil, random, math
 import argparse
 import torch
 
@@ -90,7 +90,8 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
         
         self.params = params
-        if getattr(params, "input_representation", "center_only") == "clas12_geometry_v1":
+        input_representation = getattr(params, "input_representation", "center_only")
+        if input_representation == "clas12_geometry_v1":
             geometry_stats_path = getattr(params, "geometry_pitch_stats", None)
             if not geometry_stats_path:
                 raise ValueError(
@@ -105,6 +106,29 @@ class DownstreamTrainer():
             self.params["geometry_pitch_mean_cm"] = float(geometry_stats["mean_cm"])
             self.params["geometry_pitch_std_cm"] = float(geometry_stats["std_cm"])
             self.params["geometry_pitch_stats"] = os.path.abspath(geometry_stats_path)
+        elif input_representation == "clas12_pos_plus_aux_v1":
+            if getattr(params, "embed_method", None) != "pos_plus_aux":
+                raise ValueError(
+                    "clas12_pos_plus_aux_v1 requires embed_method='pos_plus_aux'"
+                )
+            if int(getattr(params, "pos_dim", 3)) != 3:
+                raise ValueError("clas12_pos_plus_aux_v1 requires pos_dim=3")
+            aux_extra_feature = str(getattr(params, "aux_extra_feature", "length"))
+            expected_aux_dim = 5 if aux_extra_feature == "both" else 4
+            if aux_extra_feature not in {"length", "pitch", "both"}:
+                raise ValueError(
+                    "aux_extra_feature must be one of 'length', 'pitch', or 'both'"
+                )
+            if int(getattr(params, "aux_dim", expected_aux_dim)) != expected_aux_dim:
+                raise ValueError(
+                    f"aux_extra_feature={aux_extra_feature!r} produces {expected_aux_dim} "
+                    f"auxiliary columns, but aux_dim={getattr(params, 'aux_dim', None)!r}"
+                )
+            if getattr(params, "mambaversion", "mamba2") not in {"mamba1", "mamba2"}:
+                raise ValueError(
+                    "clas12_pos_plus_aux_v1 is currently supported only by "
+                    "Mamba1GPT or MambaGPT backbones"
+                )
         if getattr(params, "adapter_sample_mode", "event_segment") != "event_segment":
             raise ValueError(
                 "track_legacy regression is disabled. Use the v6 event product with "
@@ -284,7 +308,8 @@ class DownstreamTrainer():
         if self.params.mambaversion == 'mamba1':
             self.model = Mamba1GPT(embed_dim=self.params.embed_dim, num_layers=self.params.num_layers_backbone,
                                 d_state=self.params.d_state, d_conv=4, expand=2, klen=self.klen, dropout=self.params.dropout,
-                                embed_method=self.params.embed_method, pe_method=self.params.pe_method)
+                                embed_method=self.params.embed_method, pe_method=self.params.pe_method,
+                                pos_dim=getattr(self.params, 'pos_dim', 3), aux_dim=getattr(self.params, 'aux_dim', 4))
         elif self.params.mambaversion == 'longformer':
             self.model = LongformerGPT(
                 embed_dim=self.params.embed_dim,
@@ -313,7 +338,8 @@ class DownstreamTrainer():
         else:
             self.model = MambaGPT(embed_dim=self.params.embed_dim, num_layers=self.params.num_layers_backbone,
                     d_state=self.params.d_state, d_conv=4, expand=2, klen=self.klen, dropout=self.params.dropout,
-                    embed_method=self.params.embed_method, pe_method=self.params.pe_method)
+                    embed_method=self.params.embed_method, pe_method=self.params.pe_method,
+                    pos_dim=getattr(self.params, 'pos_dim', 3), aux_dim=getattr(self.params, 'aux_dim', 4))
         
 
         def initialize_mamba2(model, d_state, embed_dim):
@@ -439,7 +465,7 @@ class DownstreamTrainer():
         #                  ).to(self.device)
         
         #else:
-        self.down_model = MambaTrackRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean"), embed_method=self.params.embed_method, pe_method=self.params.pe_method, target_mean=self.regression_target_stats["mean"], target_std=self.regression_target_stats["std"], input_representation=getattr(self.params, "input_representation", "center_only"), geometry_pitch_mean_cm=getattr(self.params, "geometry_pitch_mean_cm", None), geometry_pitch_std_cm=getattr(self.params, "geometry_pitch_std_cm", None)).to(self.device)
+        self.down_model = MambaTrackRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean"), embed_method=self.params.embed_method, pe_method=self.params.pe_method, target_mean=self.regression_target_stats["mean"], target_std=self.regression_target_stats["std"], input_representation=getattr(self.params, "input_representation", "center_only"), geometry_pitch_mean_cm=getattr(self.params, "geometry_pitch_mean_cm", None), geometry_pitch_std_cm=getattr(self.params, "geometry_pitch_std_cm", None), pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4)).to(self.device)
 
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -511,16 +537,17 @@ class DownstreamTrainer():
 
                 self.down_optimizer.zero_grad()
                 geometry_kwargs = self._geometry_context_kwargs(inputdict, pretrain)
+                model_input = self._representation_input(grouped, inputdict)
                 if pretrain:
                     with torch.no_grad():
-                        _, pre_embed, _ = self.model(grouped, return_z = True)
+                        _, pre_embed, _ = self.model(model_input, return_z = True)
                     #feature = torch.stack(pre_embed).mean(0)
                     feature = torch.stack(pre_embed)
                     #print('feature: ', feature.size())
-                    pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+                    pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask, **geometry_kwargs)
+                    pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
 
                 pred = pred_dict['pred_regression']
                 outputs = {
@@ -629,6 +656,8 @@ class DownstreamTrainer():
             input_representation=getattr(self.params, "input_representation", "center_only"),
             geometry_pitch_mean_cm=getattr(self.params, "geometry_pitch_mean_cm", None),
             geometry_pitch_std_cm=getattr(self.params, "geometry_pitch_std_cm", None),
+            pos_dim=getattr(self.params, "pos_dim", 3),
+            aux_dim=getattr(self.params, "aux_dim", 4),
         ).to(self.device)
 
         #print number of parameters in the model
@@ -866,7 +895,8 @@ class DownstreamTrainer():
 
     def _geometry_context_kwargs(self, inputdict, pretrain):
         """Move v7 typed sidecars alongside their already-serialized point rows."""
-        if getattr(self.params, "input_representation", "center_only") == "center_only":
+        input_representation = getattr(self.params, "input_representation", "center_only")
+        if input_representation in {"center_only", "clas12_pos_plus_aux_v1"}:
             return {}
         if pretrain:
             raise ValueError("clas12_geometry_v1 is intentionally adapter-only")
@@ -878,6 +908,75 @@ class DownstreamTrainer():
                 "Geometry representation requested but data loader did not return v7 context sidecars"
             ) from exc
         return {"token_context": token_context, "geometry_context": geometry_context}
+
+    def _representation_input(self, grouped, inputdict):
+        """Return the backbone/adapter token tensor for the selected input contract.
+
+        ``clas12_pos_plus_aux_v1`` reproduces Mike's v7 preprocessing from our
+        typed sidecars: normalized center ``[eta, phi, r]`` plus strip direction
+        in the local radial/tangential/z frame and a normalized length or pitch.
+        The points and sidecars have already undergone the same serialization in
+        ``TPCBatchDataset``; this method only packages their aligned rows.
+        """
+        if getattr(self.params, "input_representation", "center_only") != "clas12_pos_plus_aux_v1":
+            return grouped
+        if grouped.size(-1) != 3:
+            raise ValueError(
+                "clas12_pos_plus_aux_v1 expects normalized center points with three columns"
+            )
+        try:
+            geometry_context = inputdict["geometry_context"].to(
+                self.device, dtype=grouped.dtype
+            )
+        except KeyError as exc:
+            raise KeyError(
+                "clas12_pos_plus_aux_v1 requires v7 geometry_context sidecars"
+            ) from exc
+        if geometry_context.shape[:2] != grouped.shape[:2] or geometry_context.size(-1) != 11:
+            raise ValueError(
+                "geometry_context must be row-aligned (B, N, 11) with serialized points; "
+                f"got points={tuple(grouped.shape)}, geometry={tuple(geometry_context.shape)}"
+            )
+
+        # The loader's phi normalization is (phi + pi) / (2*pi).  Constructing
+        # this frame from serialized normalized phi is algebraically identical to
+        # Mike's raw-x/raw-y calculation, while preserving our typed sidecars.
+        phi = grouped[..., 1] * (2.0 * math.pi) - math.pi
+        r_hat = torch.stack((torch.cos(phi), torch.sin(phi), torch.zeros_like(phi)), dim=-1)
+        phi_hat = torch.stack((-torch.sin(phi), torch.cos(phi), torch.zeros_like(phi)), dim=-1)
+        strip_direction = geometry_context[..., 6:9]
+        s_r = (strip_direction * r_hat).sum(dim=-1, keepdim=True)
+        s_phi = (strip_direction * phi_hat).sum(dim=-1, keepdim=True)
+        s_z = strip_direction[..., 2:3]
+
+        aux_extra_feature = str(getattr(self.params, "aux_extra_feature", "length"))
+        length = geometry_context[..., 9:10] / 45.0
+        pitch = geometry_context[..., 10:11] / 0.10
+        if aux_extra_feature == "length":
+            scalar = length
+        elif aux_extra_feature == "pitch":
+            scalar = pitch
+        elif aux_extra_feature == "both":
+            scalar = torch.cat((length, pitch), dim=-1)
+        else:
+            raise RuntimeError(f"Unexpected aux_extra_feature={aux_extra_feature!r}")
+
+        packed = torch.cat((grouped, s_r, s_phi, s_z, scalar), dim=-1)
+        expected_width = int(getattr(self.params, "pos_dim", 3)) + int(
+            getattr(self.params, "aux_dim", 4)
+        )
+        if packed.size(-1) != expected_width:
+            raise ValueError(
+                f"Packed CLAS12 token has width {packed.size(-1)}, but pos_dim + aux_dim "
+                f"is {expected_width}; check aux_extra_feature and aux_dim"
+            )
+
+        # Preserve the established all--100 padding contract for both Mamba
+        # backbones (which replace it with zero) and AdapterOnly masking.
+        padding_mask = grouped[..., 0] != -100
+        return torch.where(
+            padding_mask.unsqueeze(-1), packed, torch.full_like(packed, -100.0)
+        )
 
     def _log_geometry_branch_rms(self, pred_dict):
         norms = pred_dict.get("geometry_branch_rms")
@@ -902,13 +1001,14 @@ class DownstreamTrainer():
 
         self.down_optimizer.zero_grad()
         geometry_kwargs = self._geometry_context_kwargs(inputdict, pretrain)
+        model_input = self._representation_input(grouped, inputdict)
         if pretrain:
             with torch.no_grad():
-                _, pre_embed, _ = self.model(grouped, return_z=True)
+                _, pre_embed, _ = self.model(model_input, return_z=True)
             feature = torch.stack(pre_embed)
-            pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+            pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
         else:
-            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask, **geometry_kwargs)
+            pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
         self._log_geometry_branch_rms(pred_dict)
 
         pred = pred_dict["pred_regression"]  # B x num_output_classes
@@ -1120,16 +1220,17 @@ class DownstreamTrainer():
 
                 self.down_optimizer.zero_grad()
                 geometry_kwargs = self._geometry_context_kwargs(inputdict, pretrain)
+                model_input = self._representation_input(grouped, inputdict)
                 if pretrain:
                     with torch.no_grad():
-                        _, pre_embed, _ = self.model(grouped, return_z = True)
+                        _, pre_embed, _ = self.model(model_input, return_z = True)
                     #feature = torch.stack(pre_embed).mean(0)
                     feature = torch.stack(pre_embed)
                     #print('feature: ', feature.size())
-                    pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+                    pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask, **geometry_kwargs)
+                    pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
 
                 pred = pred_dict["pred_regression"]
 

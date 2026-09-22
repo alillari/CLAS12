@@ -515,15 +515,19 @@ class MambaTrackRegressionHead(nn.Module):
                  pooling="mean", embed_method="add", pe_method="nerf",
                  target_mean=None, target_std=None,
                  input_representation="center_only",
-                 geometry_pitch_mean_cm=None, geometry_pitch_std_cm=None):
+                 geometry_pitch_mean_cm=None, geometry_pitch_std_cm=None,
+                 pos_dim=3, aux_dim=4):
         super().__init__()
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
         self.input_representation = str(input_representation)
-        if self.input_representation not in {"center_only", "clas12_geometry_v1"}:
+        if self.input_representation not in {
+            "center_only", "clas12_geometry_v1", "clas12_pos_plus_aux_v1"
+        }:
             raise ValueError(
-                "input_representation must be 'center_only' or 'clas12_geometry_v1', "
+                "input_representation must be 'center_only', 'clas12_geometry_v1', "
+                "or 'clas12_pos_plus_aux_v1', "
                 f"got {self.input_representation!r}"
             )
         self.target_normalizer = RegressionTargetNormalizer(
@@ -534,6 +538,8 @@ class MambaTrackRegressionHead(nn.Module):
             Embedder = EmbedderConcat
         elif embed_method == "pos_only":
             Embedder = EmbedderPosOnly
+        elif embed_method == "pos_plus_aux":
+            Embedder = EmbedderPosPlusAux
         elif embed_method == "add":
             Embedder = EmbedderAdd
         else:
@@ -583,7 +589,15 @@ class MambaTrackRegressionHead(nn.Module):
         # Noise prediction head go from point embedding
         self.out_mlp = MLPHead(embed_dim, num_output_dim, dropout=dropout)
 
-        self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim)
+        if embed_method == "pos_plus_aux":
+            self.embedder = Embedder(
+                pe_method=pe_method,
+                embed_dim=input_dim,
+                pos_dim=pos_dim,
+                aux_dim=aux_dim,
+            )
+        else:
+            self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim)
         if self.input_representation == "clas12_geometry_v1":
             if embed_method != "pos_only":
                 raise ValueError("clas12_geometry_v1 requires embed_method='pos_only'")
@@ -599,6 +613,13 @@ class MambaTrackRegressionHead(nn.Module):
             )
         else:
             self.geometry_embedder = None
+        if self.input_representation == "clas12_pos_plus_aux_v1":
+            if embed_method != "pos_plus_aux":
+                raise ValueError(
+                    "clas12_pos_plus_aux_v1 requires embed_method='pos_plus_aux'"
+                )
+            if int(pos_dim) != 3:
+                raise ValueError("clas12_pos_plus_aux_v1 requires pos_dim=3")
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
     def pool(self, x, padding_mask=None):
@@ -633,7 +654,7 @@ class MambaTrackRegressionHead(nn.Module):
         geometry_context=None,
     ):
         if pretrain:
-            if self.input_representation != "center_only":
+            if self.input_representation == "clas12_geometry_v1":
                 raise ValueError(
                     "clas12_geometry_v1 is adapter-only for this experiment; "
                     "do not pass it through the frozen pretrained backbone"

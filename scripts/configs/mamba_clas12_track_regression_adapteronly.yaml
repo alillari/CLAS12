@@ -168,6 +168,21 @@ clas12_track_regression_adapteronly_geometry_v1_p_phi_theta:
   input_representation: clas12_geometry_v1
   geometry_pitch_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/clas12_geometry_pitch_stats_v7_01.json
 
+# Opt-in directional-objective ablation. Generate regression_loss_reference_stats
+# with compute_regression_loss_reference_stats.py before selecting this config.
+clas12_track_regression_adapteronly_geometry_v1_p_phi_theta_physical_resolution:
+  <<: *default
+  model_version: clas12_track_regression_adapteronly_geometry_v1_p_phi_theta_physical_resolution
+  task: p_phi_theta
+  regression_loss: physical_resolution_l1
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta_event_segment_mctrue_min12_v7_01.json
+  regression_loss_reference_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_loss_reference_cvttraj_p_phi_theta_event_segment_mctrue_min12.json
+  data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
+  data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
+  data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
+  input_representation: clas12_geometry_v1
+  geometry_pitch_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/clas12_geometry_pitch_stats_v7_01.json
+
 # Mike-compatible v7 token packing.  Unlike clas12_geometry_v1, this is the
 # exact four-auxiliary-value input expected by a pos_plus_aux pretrained
 # backbone: local strip direction plus either physical length or pitch.

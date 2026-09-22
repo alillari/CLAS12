@@ -584,6 +584,7 @@ def masked_regression_loss(
     target_std=None,
     phi_pairs=(),
     phi_eps=1.0e-12,
+    physical_scales=None,
 ):
     pred = outputs["pred"]
     truth = targets["target"]
@@ -599,6 +600,65 @@ def masked_regression_loss(
 
     if not valid.any():
         # Return a differentiable zero if a batch contains no valid targets.
+        return {"loss": pred.sum() * 0.0}
+
+    if option == "physical_resolution_l1":
+        if physical_scales is None:
+            raise ValueError(
+                "physical_resolution_l1 requires physical_scales from a "
+                "validated regression loss-reference file"
+            )
+        if target_std is None:
+            raise ValueError("physical_resolution_l1 requires target_std")
+        if tuple(tuple(pair) for pair in phi_pairs) != ((1, 2),) or pred.shape[-1] != 4:
+            raise ValueError(
+                "physical_resolution_l1 currently requires p_phi_theta targets "
+                "with the phi pair at columns (1, 2)"
+            )
+        required_scales = (
+            "p_scale_gev", "theta_scale_rad", "phi_scale_rad",
+            "target_momentum_scale_to_gev",
+        )
+        try:
+            values = {
+                key: float(physical_scales[key]) for key in required_scales
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "physical_resolution_l1 received malformed physical_scales"
+            ) from exc
+        if any(not np.isfinite(value) or value <= 0.0 for value in values.values()):
+            raise ValueError("physical_resolution_l1 requires positive finite scales")
+
+        std = torch.as_tensor(target_std, dtype=pred.dtype, device=pred.device)
+        p_valid = valid[..., 0]
+        theta_valid = valid[..., 3]
+        phi_valid = valid[..., 1] & valid[..., 2]
+        component_losses = []
+        if p_valid.any():
+            delta_p_gev = (
+                (pred[..., 0] - truth[..., 0]) * std[0]
+                * values["target_momentum_scale_to_gev"]
+            )
+            component_losses.append(
+                torch.abs(delta_p_gev[p_valid]) / values["p_scale_gev"]
+            )
+        if theta_valid.any():
+            delta_theta_rad = (pred[..., 3] - truth[..., 3]) * std[3]
+            component_losses.append(
+                torch.abs(delta_theta_rad[theta_valid]) / values["theta_scale_rad"]
+            )
+        if phi_valid.any():
+            pred_cos, pred_sin = _project_phi_pair(pred, 1, 2, eps=phi_eps)
+            true_cos, true_sin = _project_phi_pair(truth, 1, 2, eps=phi_eps)
+            sin_delta = pred_sin * true_cos - pred_cos * true_sin
+            cos_delta = pred_cos * true_cos + pred_sin * true_sin
+            delta_phi_rad = torch.atan2(sin_delta, cos_delta)
+            component_losses.append(
+                torch.abs(delta_phi_rad[phi_valid]) / values["phi_scale_rad"]
+            )
+        if component_losses:
+            return {"loss": torch.cat([part.reshape(-1) for part in component_losses]).mean()}
         return {"loss": pred.sum() * 0.0}
 
     phi_pair_indices = {

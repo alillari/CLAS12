@@ -37,6 +37,7 @@ from model import *
 from loss import *
 from downstream_util import *
 from regression_utils import (
+    load_regression_loss_reference_stats,
     load_regression_target_stats,
     regression_output_dim,
     transform_regression_target_torch,
@@ -148,11 +149,22 @@ class DownstreamTrainer():
         # Set it here so training and inference construct compatible heads.
         self.params["num_output_classes"] = regression_output_dim(params.task)
         self.regression_loss = getattr(params, "regression_loss", "mse").lower()
-        if self.regression_loss not in {"mse", "mae", "huber"}:
+        if self.regression_loss not in {"mse", "mae", "huber", "physical_resolution_l1"}:
             raise ValueError(
                 f"Unsupported regression_loss {self.regression_loss!r}; choose "
-                "one of ['mse', 'mae', 'huber']"
+                "one of ['mse', 'mae', 'huber', 'physical_resolution_l1']"
             )
+        self.regression_loss_reference = None
+        if self.regression_loss == "physical_resolution_l1":
+            reference_path = getattr(params, "regression_loss_reference_stats", None)
+            if not reference_path:
+                raise ValueError(
+                    "physical_resolution_l1 requires regression_loss_reference_stats"
+                )
+            self.regression_loss_reference = load_regression_loss_reference_stats(
+                reference_path, params.task
+            )
+            self.params["regression_loss_reference_stats"] = self.regression_loss_reference["path"]
         self.params["regression_loss"] = self.regression_loss
         print("running on rank {} with world size {}".format(self.world_rank, self.world_size))
 
@@ -575,6 +587,7 @@ class DownstreamTrainer():
                     angular_indices=self.regression_target_stats["angular_indices"],
                     target_std=self.regression_target_stats["std"],
                     phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
+                    physical_scales=self.regression_loss_reference,
                 )
                 target_list.append(targets['target'].cpu())
                 target_valid_list.append(targets['target_valid'].cpu())
@@ -1038,6 +1051,7 @@ class DownstreamTrainer():
             angular_indices=self.regression_target_stats["angular_indices"],
             target_std=self.regression_target_stats["std"],
             phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
+            physical_scales=self.regression_loss_reference,
         )
 
         loss = losses['loss']
@@ -1259,6 +1273,7 @@ class DownstreamTrainer():
                     angular_indices=self.regression_target_stats["angular_indices"],
                     target_std=self.regression_target_stats["std"],
                     phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
+                    physical_scales=self.regression_loss_reference,
                 )
 
                

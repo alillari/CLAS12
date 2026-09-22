@@ -227,3 +227,83 @@ def load_regression_target_stats(path, task):
         "angular_indices": list(regression_angular_indices(task)),
         "phi_pairs": [list(pair) for pair in regression_phi_pairs(task)],
     }
+
+
+def load_regression_loss_reference_stats(path, task):
+    """Load the opt-in physical-resolution reference for ``p_phi_theta``.
+
+    This is deliberately separate from target standardization statistics.  The
+    latter describe the MC-label distribution; this artifact records a matched
+    conventional-reconstruction residual scale in physical units.
+    """
+    path = Path(path)
+    with path.open() as stream:
+        stats = json.load(stream)
+
+    expected_task = "p_phi_theta"
+    if canonical_regression_task(task) != expected_task:
+        raise ValueError(
+            "physical_resolution_l1 is currently defined only for "
+            f"{expected_task!r}, not {canonical_regression_task(task)!r}"
+        )
+    if stats.get("schema") != "clas12_regression_loss_reference_v1":
+        raise ValueError(
+            f"Unexpected regression loss-reference schema in {path}: "
+            f"{stats.get('schema')!r}"
+        )
+    if canonical_regression_task(stats.get("task", "")) != expected_task:
+        raise ValueError(
+            f"Loss-reference task in {path} is {stats.get('task')!r}, "
+            f"expected {expected_task!r}"
+        )
+
+    residuals = stats.get("residuals")
+    if not isinstance(residuals, dict):
+        raise ValueError(f"Loss-reference file {path} has no residuals object")
+
+    keys = {
+        "p_scale_gev": ("p_absolute_gev", "GeV"),
+        "theta_scale_rad": ("theta_rad", "rad"),
+        "phi_scale_rad": ("phi_rad_wrapped", "rad"),
+    }
+    loaded = {}
+    for output_name, (name, unit) in keys.items():
+        payload = residuals.get(name)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Loss-reference file {path} is missing residual {name!r}")
+        if payload.get("unit") != unit:
+            raise ValueError(
+                f"Loss-reference residual {name!r} in {path} has unit "
+                f"{payload.get('unit')!r}, expected {unit!r}"
+            )
+        try:
+            value = float(payload["central_width_68"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Loss-reference residual {name!r} in {path} lacks a finite "
+                "central_width_68"
+            ) from exc
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"Loss-reference residual {name!r} in {path} must have a "
+                f"positive finite central_width_68, got {value!r}"
+            )
+        loaded[output_name] = value
+
+    try:
+        momentum_scale = float(stats["target_momentum_scale_to_gev"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Loss-reference file {path} lacks target_momentum_scale_to_gev"
+        ) from exc
+    if not np.isfinite(momentum_scale) or momentum_scale <= 0.0:
+        raise ValueError(
+            f"Loss-reference file {path} has invalid target_momentum_scale_to_gev "
+            f"{momentum_scale!r}"
+        )
+    loaded.update({
+        "path": str(path),
+        "target_momentum_scale_to_gev": momentum_scale,
+        "reference_method": stats.get("reference_method"),
+    })
+    return loaded

@@ -13,6 +13,7 @@ sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from loss import masked_regression_loss
 from regression_utils import (
+    load_regression_loss_reference_stats,
     REGRESSION_TARGET_COLUMNS,
     load_regression_target_stats,
     project_phi_pair_numpy,
@@ -195,6 +196,49 @@ class RegressionTargetTransformTest(unittest.TestCase):
             phi_pairs=regression_phi_pairs("pt_phi_eta"),
         )["loss"]
         self.assertLess(float(loss), 1.0e-4)
+
+    def test_physical_resolution_l1_uses_physical_scales_and_wrapped_phi(self):
+        # p and theta are normalized targets.  Their physical residuals are
+        # recovered with target_std before division by the reference scales.
+        pred = torch.tensor([[1.2, math.cos(math.pi - 0.01), math.sin(math.pi - 0.01), 2.3]])
+        truth = torch.tensor([[1.0, math.cos(-math.pi + 0.01), math.sin(-math.pi + 0.01), 2.0]])
+        scales = {
+            "p_scale_gev": 0.1,
+            "theta_scale_rad": 0.2,
+            "phi_scale_rad": 0.02,
+            "target_momentum_scale_to_gev": 1.0e-3,
+        }
+        loss = masked_regression_loss(
+            {"pred": pred},
+            {"target": truth, "target_valid": torch.ones_like(truth, dtype=torch.bool)},
+            option="physical_resolution_l1",
+            target_std=[100.0, 1.0, 1.0, 0.5],
+            phi_pairs=regression_phi_pairs("p_phi_theta"),
+            physical_scales=scales,
+        )["loss"]
+        # p: 0.2 normalized * 100 MeV * 1e-3 / 0.1 = 0.2
+        # theta: 0.3 normalized * 0.5 / 0.2 = 0.75
+        # phi: 0.02 rad / 0.02 = 1.0
+        self.assertAlmostEqual(float(loss), (0.2 + 0.75 + 1.0) / 3.0, places=5)
+
+    def test_load_physical_resolution_reference_stats(self):
+        payload = {
+            "schema": "clas12_regression_loss_reference_v1",
+            "task": "p_phi_theta",
+            "target_momentum_scale_to_gev": 1.0e-3,
+            "residuals": {
+                "p_absolute_gev": {"unit": "GeV", "central_width_68": 0.04},
+                "theta_rad": {"unit": "rad", "central_width_68": 0.01},
+                "phi_rad_wrapped": {"unit": "rad", "central_width_68": 0.02},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "loss_reference.json"
+            path.write_text(json.dumps(payload))
+            loaded = load_regression_loss_reference_stats(path, "p_phi_theta")
+        self.assertEqual(loaded["p_scale_gev"], 0.04)
+        self.assertEqual(loaded["theta_scale_rad"], 0.01)
+        self.assertEqual(loaded["phi_scale_rad"], 0.02)
 
 
 if __name__ == "__main__":

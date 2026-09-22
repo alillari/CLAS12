@@ -12,6 +12,7 @@ DOWNSTREAM_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from loss import masked_regression_loss
+from scripts.compute_regression_loss_reference_stats import central_width_68
 from regression_utils import (
     load_regression_loss_reference_stats,
     REGRESSION_TARGET_COLUMNS,
@@ -221,6 +222,67 @@ class RegressionTargetTransformTest(unittest.TestCase):
         # phi: 0.02 rad / 0.02 = 1.0
         self.assertAlmostEqual(float(loss), (0.2 + 0.75 + 1.0) / 3.0, places=5)
 
+    def test_physical_resolution_relative_huber_uses_true_p_and_wrapped_phi(self):
+        # The normalized true p is 2, but the physical true p is
+        # (2 * 100 + 800) MeV = 1 GeV.  A 50 MeV prediction error is 5%.
+        pred = torch.tensor([[2.5, math.cos(math.pi - 0.01), math.sin(math.pi - 0.01), 2.3]])
+        truth = torch.tensor([[2.0, math.cos(-math.pi + 0.01), math.sin(-math.pi + 0.01), 2.0]])
+        scales = {
+            "p_scale_relative": 0.04,
+            "theta_scale_rad": 0.2,
+            "phi_scale_rad": 0.02,
+            "target_momentum_scale_to_gev": 1.0e-3,
+        }
+        loss = masked_regression_loss(
+            {"pred": pred},
+            {"target": truth, "target_valid": torch.ones_like(truth, dtype=torch.bool)},
+            option="physical_resolution_relative_huber",
+            target_mean=[800.0, 0.0, 0.0, 0.0],
+            target_std=[100.0, 1.0, 1.0, 0.5],
+            phi_pairs=regression_phi_pairs("p_phi_theta"),
+            physical_scales=scales,
+        )["loss"]
+        # Huber with delta=1 on scaled residuals: p=1.25, theta=.75, phi=1.
+        self.assertAlmostEqual(float(loss), (0.75 + 0.28125 + 0.5) / 3.0, places=5)
+
+    def test_physical_resolution_relative_huber_requires_target_mean(self):
+        target = torch.tensor([[1.0, 1.0, 0.0, 1.0]])
+        with self.assertRaisesRegex(ValueError, "requires target_mean"):
+            masked_regression_loss(
+                {"pred": target},
+                {"target": target, "target_valid": torch.ones_like(target, dtype=torch.bool)},
+                option="physical_resolution_relative_huber",
+                target_std=[1.0] * 4,
+                phi_pairs=regression_phi_pairs("p_phi_theta"),
+                physical_scales={"p_scale_relative": 0.04, "theta_scale_rad": 0.01,
+                                 "phi_scale_rad": 0.02, "target_momentum_scale_to_gev": 0.001},
+            )
+
+    def test_physical_resolution_relative_huber_divides_by_each_true_momentum(self):
+        truth = torch.tensor([[1.0, 1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]])
+        pred = truth.clone()
+        pred[:, 0] += 0.1  # Same absolute 0.1 GeV error for both tracks.
+        valid = torch.zeros_like(truth, dtype=torch.bool)
+        valid[:, 0] = True
+        loss = masked_regression_loss(
+            {"pred": pred}, {"target": truth, "target_valid": valid},
+            option="physical_resolution_relative_huber",
+            target_mean=[0.0] * 4, target_std=[1000.0, 1.0, 1.0, 1.0],
+            phi_pairs=regression_phi_pairs("p_phi_theta"),
+            physical_scales={"p_scale_relative": 0.1, "theta_scale_rad": 0.01,
+                             "phi_scale_rad": 0.02, "target_momentum_scale_to_gev": 0.001},
+        )["loss"]
+        # Relative residuals are 10% and 5%, hence scaled residuals 1 and .5.
+        self.assertAlmostEqual(float(loss), (0.5 + 0.125) / 2.0, places=5)
+
+    def test_reference_width_is_offset_invariant(self):
+        residuals = np.array([-0.08, -0.05, -0.01, 0.02, 0.09])
+        width, q16, q84 = central_width_68(residuals)
+        shifted_width, shifted_q16, shifted_q84 = central_width_68(residuals + 0.25)
+        self.assertAlmostEqual(width, shifted_width)
+        self.assertAlmostEqual(shifted_q16 - q16, 0.25)
+        self.assertAlmostEqual(shifted_q84 - q84, 0.25)
+
     def test_load_physical_resolution_reference_stats(self):
         payload = {
             "schema": "clas12_regression_loss_reference_v1",
@@ -228,6 +290,7 @@ class RegressionTargetTransformTest(unittest.TestCase):
             "target_momentum_scale_to_gev": 1.0e-3,
             "residuals": {
                 "p_absolute_gev": {"unit": "GeV", "central_width_68": 0.04},
+                "p_relative": {"unit": "fraction", "central_width_68": 0.06},
                 "theta_rad": {"unit": "rad", "central_width_68": 0.01},
                 "phi_rad_wrapped": {"unit": "rad", "central_width_68": 0.02},
             },
@@ -236,7 +299,12 @@ class RegressionTargetTransformTest(unittest.TestCase):
             path = Path(tmpdir) / "loss_reference.json"
             path.write_text(json.dumps(payload))
             loaded = load_regression_loss_reference_stats(path, "p_phi_theta")
+            relative = load_regression_loss_reference_stats(
+                path, "p_phi_theta", momentum_residual="relative"
+            )
         self.assertEqual(loaded["p_scale_gev"], 0.04)
+        self.assertEqual(relative["p_scale_relative"], 0.06)
+        self.assertNotIn("p_scale_gev", relative)
         self.assertEqual(loaded["theta_scale_rad"], 0.01)
         self.assertEqual(loaded["phi_scale_rad"], 0.02)
 

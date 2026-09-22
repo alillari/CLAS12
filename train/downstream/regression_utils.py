@@ -229,7 +229,7 @@ def load_regression_target_stats(path, task):
     }
 
 
-def load_regression_loss_reference_stats(path, task):
+def load_regression_loss_reference_stats(path, task, momentum_residual="absolute"):
     """Load the opt-in physical-resolution reference for ``p_phi_theta``.
 
     This is deliberately separate from target standardization statistics.  The
@@ -243,9 +243,11 @@ def load_regression_loss_reference_stats(path, task):
     expected_task = "p_phi_theta"
     if canonical_regression_task(task) != expected_task:
         raise ValueError(
-            "physical_resolution_l1 is currently defined only for "
+            "Physical-resolution losses are currently defined only for "
             f"{expected_task!r}, not {canonical_regression_task(task)!r}"
         )
+    if momentum_residual not in {"absolute", "relative"}:
+        raise ValueError(f"Unknown momentum residual mode {momentum_residual!r}")
     if stats.get("schema") != "clas12_regression_loss_reference_v1":
         raise ValueError(
             f"Unexpected regression loss-reference schema in {path}: "
@@ -261,8 +263,13 @@ def load_regression_loss_reference_stats(path, task):
     if not isinstance(residuals, dict):
         raise ValueError(f"Loss-reference file {path} has no residuals object")
 
+    momentum_key = (
+        ("p_scale_gev", "p_absolute_gev", "GeV")
+        if momentum_residual == "absolute"
+        else ("p_scale_relative", "p_relative", "fraction")
+    )
     keys = {
-        "p_scale_gev": ("p_absolute_gev", "GeV"),
+        momentum_key[0]: (momentum_key[1], momentum_key[2]),
         "theta_scale_rad": ("theta_rad", "rad"),
         "phi_scale_rad": ("phi_rad_wrapped", "rad"),
     }

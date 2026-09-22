@@ -149,20 +149,31 @@ class DownstreamTrainer():
         # Set it here so training and inference construct compatible heads.
         self.params["num_output_classes"] = regression_output_dim(params.task)
         self.regression_loss = getattr(params, "regression_loss", "mse").lower()
-        if self.regression_loss not in {"mse", "mae", "huber", "physical_resolution_l1"}:
+        if self.regression_loss not in {
+            "mse", "mae", "huber", "physical_resolution_l1",
+            "physical_resolution_relative_huber",
+        }:
             raise ValueError(
                 f"Unsupported regression_loss {self.regression_loss!r}; choose "
-                "one of ['mse', 'mae', 'huber', 'physical_resolution_l1']"
+                "one of ['mse', 'mae', 'huber', 'physical_resolution_l1', "
+                "'physical_resolution_relative_huber']"
             )
         self.regression_loss_reference = None
-        if self.regression_loss == "physical_resolution_l1":
+        if self.regression_loss in {
+            "physical_resolution_l1", "physical_resolution_relative_huber"
+        }:
             reference_path = getattr(params, "regression_loss_reference_stats", None)
             if not reference_path:
                 raise ValueError(
-                    "physical_resolution_l1 requires regression_loss_reference_stats"
+                    f"{self.regression_loss} requires regression_loss_reference_stats"
                 )
             self.regression_loss_reference = load_regression_loss_reference_stats(
-                reference_path, params.task
+                reference_path,
+                params.task,
+                momentum_residual=(
+                    "relative" if self.regression_loss == "physical_resolution_relative_huber"
+                    else "absolute"
+                ),
             )
             self.params["regression_loss_reference_stats"] = self.regression_loss_reference["path"]
         self.params["regression_loss"] = self.regression_loss
@@ -586,6 +597,7 @@ class DownstreamTrainer():
                     option=self.regression_loss,
                     angular_indices=self.regression_target_stats["angular_indices"],
                     target_std=self.regression_target_stats["std"],
+                    target_mean=self.regression_target_stats["mean"],
                     phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
                     physical_scales=self.regression_loss_reference,
                 )
@@ -1050,6 +1062,7 @@ class DownstreamTrainer():
             option=self.regression_loss,
             angular_indices=self.regression_target_stats["angular_indices"],
             target_std=self.regression_target_stats["std"],
+            target_mean=self.regression_target_stats["mean"],
             phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
             physical_scales=self.regression_loss_reference,
         )
@@ -1272,6 +1285,7 @@ class DownstreamTrainer():
                     option=self.regression_loss,
                     angular_indices=self.regression_target_stats["angular_indices"],
                     target_std=self.regression_target_stats["std"],
+                    target_mean=self.regression_target_stats["mean"],
                     phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
                     physical_scales=self.regression_loss_reference,
                 )

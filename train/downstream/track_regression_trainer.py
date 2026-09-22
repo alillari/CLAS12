@@ -1,3 +1,4 @@
+import hashlib
 import json
 import numpy as np
 from sklearn.metrics import adjusted_rand_score
@@ -193,16 +194,29 @@ class DownstreamTrainer():
             if not os.path.isdir(self.global_log_dir):
                 os.makedirs(self.global_log_dir)   
                 
-            self.globalfile = os.path.join(self.global_log_dir, 
-                                           'config_{}_run_{}_{}.csv'.format(
-                                               self.config,
-                                               self.run_num, 
-                                               self.parse_exp_details(self.params.params, 
-                                                                      partial = ['data_version', 
-                                                                                 'limit_size',
-                                                                                 'model_version'],
-                                                                      globalfile=True)
-                                           ))
+            global_details = self.parse_exp_details(
+                self.params.params,
+                partial=['data_version', 'limit_size', 'model_version'],
+                globalfile=True,
+            )
+            global_filename = 'config_{}_run_{}_{}.csv'.format(
+                self.config,
+                self.run_num,
+                global_details,
+            )
+            # Long campaign identifiers (for example versioned pretrained
+            # backbones plus label budgets) can exceed the per-filename
+            # NAME_MAX limit even though the containing path is valid. Keep
+            # the historical descriptive form when it fits; otherwise retain
+            # a readable prefix and add a digest of the complete identity.
+            if len(global_filename.encode()) > 240:
+                digest = hashlib.sha256(global_filename.encode()).hexdigest()[:12]
+                suffix = f"_{digest}.csv"
+                prefix = f"config_{self.config}_run_{self.run_num}"
+                max_prefix_bytes = 240 - len(suffix.encode())
+                prefix = prefix.encode()[:max_prefix_bytes].decode(errors="ignore")
+                global_filename = f"{prefix}{suffix}"
+            self.globalfile = os.path.join(self.global_log_dir, global_filename)
             print(self.globalfile)
 
         if dist.is_initialized():

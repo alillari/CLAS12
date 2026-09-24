@@ -7,7 +7,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from campaign_util import read_yaml
 
-METRICS=(("native_ari_signal","Signal ARI"),("native_ari_with_background","Inclusive ARI"),("native_track_purity_global","Global track purity"),("native_fake_rate","Fake-track rate"),("native_background_rejection","Background rejection"),("native_signal_loss_to_background","Signal loss to background"))
+METRICS=(("native_ari_signal","Signal ARI"),("native_ari_with_background","Inclusive ARI"),("native_matched_iou_mean","Matched IoU"),("native_track_purity_global","Global track purity"),("native_track_efficiency_global","Global track efficiency"),("native_fake_rate","Fake-track rate"),("native_background_rejection","Background rejection"),("native_signal_loss_to_background","Signal loss to background"))
+FOCUS_METRICS=(("native_matched_iou_mean","matched_iou"),("native_track_efficiency_global","efficiency"),("native_signal_loss_to_background","signal_loss_to_background"))
 def val(x):
     try: return float(x) if x not in (None,"","None","null") else None
     except ValueError: return None
@@ -27,11 +28,20 @@ def draw(ax,rs,key,coat):
     ax.set_xscale("log");ax.grid(True,which="both",alpha=.25)
 def suite(rs,out,name,coat):
     out.mkdir(parents=True,exist_ok=True)
-    fig,axs=plt.subplots(2,3,figsize=(13,7),constrained_layout=True)
+    fig,axs=plt.subplots(3,3,figsize=(13,10),constrained_layout=True)
     for ax,(key,label) in zip(axs.flat,METRICS): draw(ax,rs,key,coat);ax.set_title(label);ax.set_xlabel("Labeled events")
+    for ax in list(axs.flat)[len(METRICS):]: ax.set_visible(False)
     h,l=axs.flat[0].get_legend_handles_labels()
     if h: fig.legend(h,l,loc="outside lower center",ncol=min(4,len(h)),fontsize="small")
     fig.savefig(out/f"{name}.png",dpi=160);plt.close(fig)
+def focus_suite(rs,out):
+    labels=dict(METRICS)
+    for key,name in FOCUS_METRICS:
+        fig,ax=plt.subplots(figsize=(9,5),constrained_layout=True)
+        draw(ax,rs,key,True)
+        ax.set_title(labels[key]);ax.set_xlabel("Labeled events");ax.set_ylabel(labels[key])
+        if ax.has_data(): ax.legend(fontsize="small")
+        fig.savefig(out/f"{name}_vs_labeled_events.png",dpi=160);plt.close(fig)
 def nparams(r):
     if adapter(r): return None
     try:
@@ -57,5 +67,5 @@ def main():
     with (summary/"run_table.csv").open(newline="") as s:rs=[r for r in csv.DictReader(s) if r.get("summary_found","").lower()=="true"]
     if not rs:raise ValueError("No completed evaluations; collate first.")
     for b in sorted({r.get("backbone_run_id") for r in rs}):suite([r for r in rs if r.get("backbone_run_id")==b],out/f"per_model",f"{b}_vs_labeled_events",True)
-    suite(rs,out,"adapter_vs_all_pretrained",False);suite(rs,out,"adapter_pretrained_and_coatjava",True);parameter_suite([r for r in rs if not adapter(r)],out);print(f"Wrote plots to {out}")
+    suite(rs,out,"adapter_vs_all_pretrained",False);suite(rs,out,"adapter_pretrained_and_coatjava",True);focus_suite(rs,out);parameter_suite([r for r in rs if not adapter(r)],out);print(f"Wrote plots to {out}")
 if __name__=="__main__":main()

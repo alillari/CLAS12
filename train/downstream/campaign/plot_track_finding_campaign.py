@@ -11,7 +11,13 @@ from campaign_util import read_yaml
 METRICS=(("native_ari_signal","Signal ARI"),("native_ari_with_background","Inclusive ARI"),("native_matched_iou_mean","Matched IoU"),("native_track_purity_global","Global track purity"),("native_track_efficiency_global","Global track efficiency"),("native_fake_rate","Fake-track rate"),("native_background_rejection","Background rejection"),("native_signal_loss_to_background","Signal loss to background"))
 FOCUS_METRICS=(("native_matched_iou_mean","matched_iou"),("native_track_efficiency_global","efficiency"),("native_signal_loss_to_background","signal_loss_to_background"))
 PAPER_METRICS=(("native_ari_signal","Signal ARI"),("native_track_efficiency_global","Track efficiency"),("native_track_purity_global","Track purity"))
-MODEL_COLORS=("#4E79A7","#59A14F","#B07AA1","#76B7B2","#F28E2B","#D43F3A")
+DNP_PAPER="#F7F6F2"
+DNP_NAVY="#18344A"
+DNP_RUST="#B85C3B"
+DNP_TEXT="#202428"
+DNP_MUTED="#6B7177"
+DNP_SOFT="#E8E6E1"
+OTHER_COLORS=("#C3C8C6","#B3BAB7","#A2ABA7","#929C98","#828E89")
 def val(x):
     try: return float(x) if x not in (None,"","None","null") else None
     except ValueError: return None
@@ -70,39 +76,78 @@ def paper_suite(rs,out,model_names):
         for label,name in sorted(by_label.items(),key=lambda item:int(item[0][1:])):
             row=next(r for r in rs if r.get("backbone_run_id")==name)
             writer.writerow((label,name,row["embed_dim"],row["num_layers_backbone"]))
-    colors={label:MODEL_COLORS[(int(label[1:])-1)%len(MODEL_COLORS)] for label in by_label}
-    series=[("Adapter only",None,"#666666")]+[(label,name,colors[label]) for label,name in sorted(by_label.items(),key=lambda item:int(item[0][1:]))]
-    for subset in ("all_models","adapter_m6_coatjava"):
-        if subset=="adapter_m6_coatjava" and "m6" not in by_label:
+    ordered=sorted(by_label,key=lambda label:int(label[1:]))
+    has_m6_largest=bool(ordered) and ordered[-1]=="m6"
+    other_names=[by_label[label] for label in ordered if label!="m6"]
+    def points(rows,key):
+        return sorted(
+            (x,y) for r in rows
+            if (x:=val(r.get("labeled_events"))) is not None
+            and (y:=val(r.get(key))) is not None
+        )
+    def line(ax,rows,key,label,color,lw=2.4,alpha=1,zorder=3):
+        pts=points(rows,key)
+        if pts:
+            ax.plot(*zip(*pts),label=label,color=color,lw=lw,alpha=alpha,
+                    marker="o",ms=5.5,zorder=zorder)
+    for subset in ("all_models","adapter_m6_coatjava","other_pretrained_lines","other_pretrained_envelope"):
+        if subset!="all_models" and not has_m6_largest:
             continue
-        selected=series if subset=="all_models" else [series[0],("m6",by_label["m6"],colors["m6"])]
         for layout in ("3x1","1x3"):
             vertical=layout=="3x1"
             fig,axs=plt.subplots(3 if vertical else 1,1 if vertical else 3,figsize=(7.2,11) if vertical else (15,4.6),squeeze=False,constrained_layout=True)
+            fig.patch.set_facecolor(DNP_PAPER)
             for ax,(key,title) in zip(axs.flat,PAPER_METRICS):
-                for label,name,color in selected:
-                    rows=[r for r in rs if adapter(r)] if name is None else [r for r in rs if r.get("backbone_run_id")==name]
-                    pts=sorted((val(r.get("labeled_events")),val(r.get(key))) for r in rows if val(r.get("labeled_events")) is not None and val(r.get(key)) is not None)
-                    if pts:
-                        ax.plot(*zip(*pts),label=label,color=color,lw=2.2,marker="o",ms=5.5,zorder=3)
+                ax.set_facecolor(DNP_PAPER)
+                line(ax,[r for r in rs if adapter(r)],key,"Adapter only",DNP_NAVY)
+                if subset=="all_models":
+                    for i,label in enumerate(ordered):
+                        if has_m6_largest and label=="m6": continue
+                        rows=[r for r in rs if r.get("backbone_run_id")==by_label[label]]
+                        line(ax,rows,key,label,OTHER_COLORS[i%len(OTHER_COLORS)],lw=1.7,alpha=.9,zorder=2)
+                elif subset=="other_pretrained_lines":
+                    for i,name in enumerate(other_names):
+                        rows=[r for r in rs if r.get("backbone_run_id")==name]
+                        line(ax,rows,key,"Other pretrained backbones" if i==0 else "_nolegend_",
+                             "#AAB2AE",lw=1.6,alpha=.65,zorder=2)
+                elif subset=="other_pretrained_envelope":
+                    by_x=defaultdict(list)
+                    for r in rs:
+                        if r.get("backbone_run_id") in other_names:
+                            x,y=val(r.get("labeled_events")),val(r.get(key))
+                            if x is not None and y is not None: by_x[x].append(y)
+                    xs=sorted(x for x,ys in by_x.items() if len(ys)>=2)
+                    if xs:
+                        lower=[min(by_x[x]) for x in xs]
+                        upper=[max(by_x[x]) for x in xs]
+                        ax.fill_between(xs,lower,upper,color="#B5BDB9",alpha=.55,
+                                        label="Other pretrained backbones (range)",zorder=1)
+                        ax.plot(xs,lower,color="#9CA7A2",lw=.8,zorder=2)
+                        ax.plot(xs,upper,color="#9CA7A2",lw=.8,zorder=2)
+                if has_m6_largest:
+                    line(ax,[r for r in rs if r.get("backbone_run_id")==by_label["m6"]],key,
+                         "Largest pretrained backbone (m6)",DNP_RUST,lw=2.7,zorder=4)
                 baseline=[val(r.get(key.replace("native_","native_coatjava_"))) for r in rs]
                 baseline=[x for x in baseline if x is not None]
-                if baseline: ax.axhline(sum(baseline)/len(baseline),label="COATJAVA",color="#222222",lw=2,ls="--",zorder=2)
-                ax.set_title(title,fontsize=13,weight="semibold",pad=10)
-                ax.set_xscale("log");ax.set_xlabel("Labeled events")
+                if baseline: ax.axhline(sum(baseline)/len(baseline),label="COATJAVA",color=DNP_TEXT,lw=1.8,ls="--",zorder=2)
+                ax.set_title(title,fontsize=13,weight="semibold",pad=10,color=DNP_TEXT)
+                ax.set_xscale("log");ax.set_xlabel("Labeled events",color=DNP_TEXT)
                 ax.set_xlim(80,125000)
                 ax.set_xticks((100,1000,10000,100000),labels=("100","1k","10k","100k"))
                 values=[val(r.get(key)) for r in rs]+baseline
                 values=[x for x in values if x is not None]
                 if values: ax.set_ylim(max(0,min(values)-0.04),min(1,max(values)+0.04))
                 ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
-                ax.grid(axis="y",color="#D7DCE2",lw=.8)
+                ax.grid(axis="y",color=DNP_SOFT,lw=.9)
                 ax.spines[["top","right"]].set_visible(False)
-                ax.tick_params(labelsize=10)
+                ax.spines[["left","bottom"]].set_color(DNP_MUTED)
+                ax.tick_params(labelsize=10,colors=DNP_TEXT)
             handles,legend_labels=axs.flat[0].get_legend_handles_labels()
-            fig.legend(handles,legend_labels,loc="outside lower center",ncol=4 if subset=="all_models" else 3,frameon=False,fontsize=10)
+            fig.legend(handles,legend_labels,loc="outside lower center",
+                       ncol=4 if subset=="all_models" else 2 if subset.startswith("other_pretrained") else 3,
+                       frameon=False,fontsize=9.5,labelcolor=DNP_TEXT)
             for extension in ("png","pdf"):
-                fig.savefig(out/f"track_finding_{subset}_{layout}.{extension}",dpi=300)
+                fig.savefig(out/f"track_finding_{subset}_{layout}.{extension}",dpi=300,facecolor=DNP_PAPER)
             plt.close(fig)
 def nparams(r):
     if adapter(r): return None

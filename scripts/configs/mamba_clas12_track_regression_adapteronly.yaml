@@ -5,6 +5,15 @@
 # Shared defaults
 # ---------------------------------------------------------------------------
 default: &default
+  # Physics checkpoint policy: see train/downstream/PHYSICS_CHECKPOINTS.md.
+  checkpoint_selection: physics
+  physics_checkpoint:
+    min_bin_entries: 200
+    min_valid_bins: null  # all configured bins; lower explicitly for sparse studies
+    guardrails: {B_macro: null, B_worst: null, T_macro: null}
+    require_configured_guardrails: false  # provisional width selection when unset
+    width_tie_atol: 1.0e-6
+    width_tie_rtol: 0.0
   # Set CLAS12_ARTIFACT_ROOT to move all run artifacts without editing this file.
   # For downstream track regression, this directory must contain at least:
   #   features_pretrain/, features_test/

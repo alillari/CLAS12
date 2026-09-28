@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    train_experiment(
+    result = train_experiment(
         TrackRegressionExperimentConfig(
             yaml_config=args.yaml_config,
             config=args.config,
@@ -63,6 +63,12 @@ def main() -> None:
             seed=args.seed,
         )
     )
+
+    if result["checkpoint_path"] is None:
+        raise RuntimeError(
+            f"No checkpoint passed selection ({result['checkpoint_selection_status']}). "
+            f"Inspect {result['physics_checkpoint_summary']} and {result['artifact_summary']}."
+        )
 
 
 if __name__ == "__main__":

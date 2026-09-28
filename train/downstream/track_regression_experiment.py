@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from fm4npp.utils import YParams
+from train.downstream.physics_checkpoints import MOMENTUM_TASKS, resolve_config as resolve_physics_config, selection_mode
 
 try:
     from .track_regression_trainer import DownstreamTrainer
@@ -181,6 +182,11 @@ def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
     params.checkpoint_file_name = config.checkpoint_file_name or (
         params.log_file_name.rsplit(".", 1)[0] + "_checkpoint.pth"
     )
+    params["checkpoint_selection"] = selection_mode(params.params)
+    if params.task in MOMENTUM_TASKS:
+        params["physics_checkpoint"] = resolve_physics_config(params.task, getattr(params, "physics_checkpoint", None))
+    if params.checkpoint_selection == "physics":
+        params["drop_last_test"] = False
     return params
 
 
@@ -214,7 +220,16 @@ def train_experiment(
             params.checkpoint_dir,
             params.log_file_name.rsplit(".", 1)[0] + "_artifacts.json",
         )
+        selection = {
+            "checkpoint_selection": trainer.checkpoint_selection,
+            "checkpoint_selection_status": getattr(params, "checkpoint_selection_status", "validation_loss"),
+            "physics_checkpoint_summary": getattr(params, "physics_checkpoint_summary", None),
+            "selected_physics_metrics": getattr(params, "selected_physics_metrics", None),
+            "best_loss_step": trainer.best_loss_step,
+            "best_loss_epoch": trainer.best_loss_epoch,
+        }
         artifact_summary = {
+            **selection,
             "config": config.config,
             "run_num": config.run_num,
             "yaml_config": os.path.abspath(config.yaml_config),
@@ -247,6 +262,7 @@ def train_experiment(
         print(f"Wrote training artifact summary to {summary_path}")
 
         return {
+            **selection,
             "best_val_loss": json_safe(getattr(trainer, "best_loss", None)),
             "best_step": json_safe(getattr(trainer, "best_step", None)),
             "best_epoch": json_safe(getattr(trainer, "best_epoch", None)),

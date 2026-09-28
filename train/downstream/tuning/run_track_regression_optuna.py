@@ -24,6 +24,9 @@ from train.downstream.tuning.track_regression_search_space import (  # noqa: E40
 )
 
 
+from train.downstream.physics_checkpoints import resolve_config as resolve_physics_config, selection_mode
+
+
 DEFAULT_TRIAL_SEEDS = (11, 17, 23)
 SCHEDULER_MODES = ("cosine_restarts", "cosine_hold")
 
@@ -422,6 +425,9 @@ def study_contract(
         "trial_seeds": list(parse_trial_seeds(args.trial_seeds)),
         "seed_objective": args.seed_objective,
     }
+    if selection_mode(effective_params) == "physics":
+        contract.update(contract_version=2, checkpoint_selection="physics", objective_metric="selected_W_macro",
+                        physics_checkpoint=resolve_physics_config(effective_params.get("task", "mom"), effective_params.get("physics_checkpoint")))
     # Preserve the exact legacy restart contract so existing studies can still
     # be resumed.  The hold policy records its distinct, immutable search range.
     if scheduler_mode(args) == "cosine_hold":
@@ -647,7 +653,13 @@ def objective_factory(args: argparse.Namespace):
             seed_results.append(result)
             finish_wandb_run(wandb_run, {"state": "complete", "seed": training_seed, **result})
 
-        losses = [float(result["best_val_loss"]) for result in seed_results]
+        physics = seed_results[0]["checkpoint_selection"] == "physics"
+        if physics and any(result["selected_physics_metrics"] is None for result in seed_results):
+            write_json(trial_dir / "trial_result.json", {"state": "no_checkpoint_passed", "seed_results": seed_results})
+            import optuna
+            raise optuna.TrialPruned("No checkpoint passed physics guardrails; inspect seed checkpoint summaries")
+        losses = [float(result["selected_physics_metrics"]["W_macro"] if physics else result["best_val_loss"])
+                  for result in seed_results]
         if args.seed_objective == "median":
             objective_value = float(statistics.median(losses))
         elif args.seed_objective == "mean_plus_std":
@@ -657,7 +669,9 @@ def objective_factory(args: argparse.Namespace):
         aggregate = {
             "objective": objective_value,
             "seed_objective": args.seed_objective,
-            "seed_losses": losses,
+            "objective_metric": "selected_W_macro" if physics else "best_val_loss",
+            "seed_objective_values": losses,
+            "seed_losses": [result["best_val_loss"] for result in seed_results],
             "seed_mean": float(statistics.mean(losses)),
             "seed_std": float(statistics.pstdev(losses)),
             "seed_results": seed_results,
@@ -715,6 +729,9 @@ def main() -> None:
     )
 
     print(f"Study: {args.study_name}")
+    if not any(trial.state == optuna.trial.TrialState.COMPLETE for trial in study.trials):
+        print("No completed trial has an eligible checkpoint. Inspect per-run checkpoint summaries and best candidates.")
+        return
     print(f"Best trial: {study.best_trial.number}")
     print(f"Best value: {study.best_value}")
     print(f"Best params: {study.best_trial.params}")

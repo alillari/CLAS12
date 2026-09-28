@@ -7,6 +7,15 @@
 # from its state-dict keys and tensor shapes.
 
 default: &default
+  # Physics checkpoint policy: see train/downstream/PHYSICS_CHECKPOINTS.md.
+  checkpoint_selection: physics
+  physics_checkpoint:
+    min_bin_entries: 200
+    min_valid_bins: null  # all configured bins; lower explicitly for sparse studies
+    guardrails: {B_macro: null, B_worst: null, T_macro: null}
+    require_configured_guardrails: false  # provisional width selection when unset
+    width_tie_atol: 1.0e-6
+    width_tie_rtol: 0.0
   # === CLAS12 data and target statistics ===
   data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
   data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/

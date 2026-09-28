@@ -40,6 +40,7 @@ from regression_utils import (  # noqa: E402
     single_target_to_physical_numpy,
     target_to_cartesian_numpy,
 )
+from physics_checkpoints import write_evaluation_summary
 from track_regression_trainer import DownstreamTrainer  # noqa: E402
 
 
@@ -2048,6 +2049,7 @@ def main():
     records = []
     native_truth_rows = []
     native_adapter_rows = []
+    physics_truth_rows = []
     cursor = 0
     with torch.no_grad():
         for batch in tqdm(trainer.val_data_loader, desc="Evaluating tracks"):
@@ -2081,8 +2083,8 @@ def main():
             normalized_truth = target_batch["target"]
             prediction_native = trainer.down_model.target_normalizer.denormalize(prediction).cpu().numpy()
             truth_native = trainer.down_model.target_normalizer.denormalize(normalized_truth).cpu().numpy()
+            truth_native[~target_batch["target_valid"].cpu().numpy()] = np.nan
             if single_target:
-                truth_native[~target_batch["target_valid"].cpu().numpy()] = np.nan
                 physical_prediction = single_target_to_physical_numpy(prediction_native, regression_task)
                 physical_truth = single_target_to_physical_numpy(truth_native, regression_task)
             else:
@@ -2090,6 +2092,7 @@ def main():
                 truth = target_to_cartesian_numpy(truth_native, regression_task)
 
             take = min(batch_size, remaining)
+            physics_truth_rows.extend(trainer.physics_truth_xyz(regression, mask, target_segment_mask).cpu().numpy()[:take])
             for local_index in range(take):
                 dataset_index = cursor + local_index
                 real_index, segment_label = resolve_evaluation_sample_identity(
@@ -2224,6 +2227,12 @@ def main():
             )
         attach_sample_metadata(records, metadata_path)
 
+    physics_config = trainer.loaded_checkpoint_metadata.get("physics_checkpoint_config") or trainer.physics_config
+    if not np.isclose(physics_config["momentum_scale_to_gev"], target_scale, rtol=1e-12, atol=0.):
+        raise ValueError("Evaluation target momentum units differ from physics checkpoint configuration")
+    write_evaluation_summary(config["output_dir"], np.asarray(native_adapter_rows), np.asarray(native_truth_rows),
+                             regression_task, physics_config, truth_xyz=np.asarray(physics_truth_rows),
+                             checkpoint=config["checkpoint"], metadata=trainer.loaded_checkpoint_metadata)
     if single_target:
         write_single_target_evaluation(
             config, regression_task, records,

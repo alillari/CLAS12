@@ -16,6 +16,7 @@ from train.downstream.tuning.run_track_regression_optuna import (
     validate_training_controls,
     validate_effective_inputs,
     validate_study_contract,
+    study_contract,
 )
 from train.downstream.tuning.track_regression_search_space import (
     suggest_adapteronly_optimizer_params,
@@ -126,6 +127,21 @@ class TrackRegressionOptunaScheduleTest(unittest.TestCase):
         validate_study_contract(study, contract)
         with self.assertRaisesRegex(ValueError, "different execution contract"):
             validate_study_contract(study, {"n_cycles": 3, "trial_seeds": [11, 17, 23]})
+
+    def test_physics_study_contract_cannot_mix_with_loss_objective(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = args_for_schedule()
+            yaml_path = Path(tmp, 'model.yaml'); yaml_path.write_text('task: p')
+            stats = Path(tmp, 'stats.json'); stats.write_text('{}')
+            args.yaml_config = str(yaml_path); args.config = 'p'
+            args.trial_seeds = '11,17'; args.seed_objective = 'mean'
+            params = dict(data_root=tmp, data_root_test=tmp, stat_dir=tmp,
+                          regression_target_stats=str(stats), task='p')
+            physics = study_contract(args, params)
+            legacy = study_contract(args, dict(params, checkpoint_selection='validation_loss'))
+            self.assertEqual(physics['objective_metric'], 'selected_W_macro')
+            self.assertEqual(physics['physics_checkpoint']['residual'], 'p_relative')
+            self.assertNotEqual(physics['contract_version'], legacy['contract_version'])
 
     def test_input_preflight_rejects_stats_from_different_mount(self):
         with tempfile.TemporaryDirectory() as tmp:

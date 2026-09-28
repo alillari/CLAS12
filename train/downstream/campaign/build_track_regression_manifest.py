@@ -7,6 +7,8 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from config_overrides import assign_override, parse_value, deep_merge
+
 from campaign_util import (
     DEFAULT_ADAPTER_ONLY_MODEL_YAML,
     DEFAULT_ARTIFACT_ROOT,
@@ -90,6 +92,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--train-batch-size", type=int, default=DEFAULT_TRAIN_BATCH_SIZE)
     parser.add_argument("--max-samples", type=int, default=DEFAULT_MAX_SAMPLES)
+    parser.add_argument("--validation-samples", type=int, help="Fixed validation track limit, independent of training labels (default in model: 50000).")
+    parser.add_argument("--validation-batch-size", type=int, help="Validation batch size, independent of training batches (default: 128).")
     parser.add_argument("--max-epochs", type=int, help="Override downstream max_epochs for rendered model YAMLs.")
     parser.add_argument("--early-stopping-patience", type=int, help="Override early_stopping_patience.")
     parser.add_argument("--early-stopping-warmup-steps", type=int, help="Override early_stopping_warmup_steps.")
@@ -100,7 +104,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="Additional rendered model YAML override. Can be repeated.",
+        help="Typed YAML override; dotted keys and mappings are supported. Repeated values apply in order.",
     )
     parser.add_argument(
         "--optuna-storage",
@@ -160,19 +164,7 @@ def parse_eventnumbers(values: list[str] | None) -> list[int]:
 
 
 def parse_scalar(value: str):
-    lowered = value.lower()
-    if lowered in {"true", "false"}:
-        return lowered == "true"
-    if lowered in {"none", "null"}:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    try:
-        return float(value)
-    except ValueError:
-        return value
+    return parse_value(value)
 
 
 def parse_training_overrides(args: argparse.Namespace) -> dict:
@@ -183,6 +175,8 @@ def parse_training_overrides(args: argparse.Namespace) -> dict:
         "early_stopping_warmup_steps": args.early_stopping_warmup_steps,
         "max_train_batches": args.max_train_batches,
         "max_val_batches": args.max_val_batches,
+        "limit_test_size": getattr(args, "validation_samples", None),
+        "valid_batch_size": getattr(args, "validation_batch_size", None),
     }
     overrides.update({key: value for key, value in direct.items() if value is not None})
     for item in args.training_override:
@@ -192,7 +186,7 @@ def parse_training_overrides(args: argparse.Namespace) -> dict:
         key = key.strip()
         if not key:
             raise ValueError(f"--training-override has an empty key: {item!r}")
-        overrides[key] = parse_scalar(value.strip())
+        assign_override(overrides, key, parse_scalar(value.strip()))
     return overrides
 
 
@@ -341,7 +335,7 @@ def main() -> None:
     optuna_overrides, source_optuna = best_trial_recipe(args)
     training_overrides = dict(optuna_overrides)
     manual_overrides = parse_training_overrides(args)
-    training_overrides.update(manual_overrides)
+    training_overrides = deep_merge(training_overrides, manual_overrides)
     imported_scheduler_mode = str(
         (source_optuna or {}).get("execution_contract", {}).get(
             "scheduler_mode", "cosine_restarts"

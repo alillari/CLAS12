@@ -44,9 +44,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", help="Optional explicit plot output directory.")
     parser.add_argument(
         "--plot-suite",
-        choices=("standard", "momentum-resolution", "presentation", "presentation-ml", "all"),
+        choices=("standard", "physics", "momentum-resolution", "presentation", "presentation-ml", "all"),
         default="standard",
-        help="Plot suite to generate. 'standard' preserves existing campaign plots.",
+        help="Plot suite; standard/all include macro checkpoint plots, physics plots only the macro reports.",
     )
     parser.add_argument(
         "--presentation-labels", type=int,
@@ -243,6 +243,7 @@ def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, 
             "labeled_events": int(merged["labeled_events"]) if merged.get("labeled_events") is not None else None,
             "model_family": merged.get("model_family", "mamba1"),
             "campaign_metric_space": metric_space,
+            "training_target_task": next((r.get("training_target_task") for r in metric_rows_for_run.values() if r.get("training_target_task")), "unknown"),
         }
         row["backbone_width_label"] = (
             "adapter-only"
@@ -296,7 +297,7 @@ def best_by_slice(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         value = row.get("adapter_rmse_mean")
         if value is None:
             continue
-        key = (row.get("backbone_run_id"), row.get("labeled_events"))
+        key = (row.get("training_target_task"), row.get("backbone_run_id"), row.get("labeled_events"))
         if key not in best or value < best[key]["adapter_rmse_mean"]:
             best[key] = row
     return list(best.values())
@@ -1080,7 +1081,11 @@ def main() -> None:
     manifest_rows = manifest_lookup(manifest_path)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.plot_suite in ("presentation", "all"):
+    metric_rows = read_jsonl(headline_jsonl) if headline_jsonl.exists() else []
+    has_joint_metrics = any(row.get("space") == "component" and row.get("method") == "adapter" for row in metric_rows)
+    if args.plot_suite == "all" and not has_joint_metrics:
+        print("Scalar-head campaign: skipping joint-vector presentation and fitted-resolution suites.")
+    if args.plot_suite == "presentation" or (args.plot_suite == "all" and has_joint_metrics):
         from momentum_presentation import make_presentation
 
         make_presentation(
@@ -1088,7 +1093,7 @@ def main() -> None:
             labeled_events=args.presentation_labels, manifest_path=manifest_path,
         )
 
-    if args.plot_suite in ("presentation", "presentation-ml", "all"):
+    if args.plot_suite in ("presentation", "presentation-ml") or (args.plot_suite == "all" and has_joint_metrics):
         from momentum_ml_presentation import make_ml_presentation
 
         make_ml_presentation(
@@ -1097,15 +1102,27 @@ def main() -> None:
         )
 
     if args.plot_suite in ("standard", "all"):
-        metric_rows = read_jsonl(headline_jsonl)
         rows = build_plot_rows(metric_rows, manifest_rows)
-        if not rows:
+        if rows:
+            write_csv(output_dir / "plot_data.csv", rows)
+            write_csv(output_dir / "best_by_slice.csv", best_by_slice(rows))
+            tasks = sorted({r['training_target_task'] for r in rows})
+            for task in tasks:
+                destination = output_dir / safe_label(task) if len(tasks) > 1 else output_dir
+                destination.mkdir(parents=True, exist_ok=True)
+                make_plots([r for r in rows if r['training_target_task'] == task], destination)
+        elif not (headline_jsonl.parent / 'physics_checkpoint_metrics.csv').exists():
             raise RuntimeError(f"No completed adapter ml_error rows found in {headline_jsonl}")
-        write_csv(output_dir / "plot_data.csv", rows)
-        write_csv(output_dir / "best_by_slice.csv", best_by_slice(rows))
-        make_plots(rows, output_dir)
 
-    if args.plot_suite in ("momentum-resolution", "all"):
+    if args.plot_suite in ('standard', 'physics', 'all'):
+        from physics_reporting import make_physics_campaign_plots
+        physics_csv = headline_jsonl.parent / 'physics_checkpoint_metrics.csv'
+        if physics_csv.exists():
+            make_physics_campaign_plots(physics_csv, output_dir / 'physics_checkpoints')
+        elif args.plot_suite == 'physics':
+            raise FileNotFoundError(f'{physics_csv} missing; run campaign collation first')
+
+    if args.plot_suite == "momentum-resolution" or (args.plot_suite == "all" and has_joint_metrics):
         if campaign_dir is None:
             delta_path = headline_jsonl.parent / "delta_p_over_p_fits.csv"
             delta_theta_path = headline_jsonl.parent / "delta_theta_fits.csv"

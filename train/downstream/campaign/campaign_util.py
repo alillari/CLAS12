@@ -16,10 +16,20 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ruamel.yaml import YAML
+try:
+    from .config_overrides import deep_merge
+except ImportError:
+    from config_overrides import deep_merge
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "train" / "downstream"))
+from physics_checkpoints import MOMENTUM_TASKS, resolve_config as resolve_physics_config, selection_mode
+from validation_config import configure_validation
+try:
+    from .physics_reporting import collect_run, write_campaign_reports
+except ImportError:
+    from physics_reporting import collect_run, write_campaign_reports
 from evaluation_contract import (
     configure_entrance_evaluation, is_entrance_evaluation, require_entrance_evaluation,
 )
@@ -282,8 +292,16 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
             "num_layers_backbone": int(run["num_layers_backbone"]),
             "mambaversion": run.get("model_family", DEFAULT_MODEL_FAMILY),
         })
-    params.update(manifest.get("training_overrides", {}))
-    params.update(run.get("training_overrides", {}))
+    params = deep_merge(params, manifest.get("training_overrides", {}))
+    params = deep_merge(params, run.get("training_overrides", {}))
+    dotted = [key for key in params if '.' in key]
+    if dotted:
+        raise ValueError(f"Use nested mappings in manifest training_overrides, not literal dotted keys: {dotted}")
+    params['checkpoint_selection'] = selection_mode(params)
+    if params.get('task') in MOMENTUM_TASKS:
+        params['physics_checkpoint'] = resolve_physics_config(params['task'], params.get('physics_checkpoint'))
+    if params['checkpoint_selection'] == 'physics':
+        configure_validation(params)
     write_yaml(Path(run["model_yaml"]), {run["model_config"]: params})
 
 
@@ -539,6 +557,8 @@ def collate_summary(manifest: dict[str, Any]) -> None:
     delta_p_over_p_out = summary_dir / "delta_p_over_p_fits.csv"
     delta_theta_out = summary_dir / "delta_theta_fits.csv"
 
+    physics_reports = [collect_run(run) for run in manifest.get("runs", [])]
+    physics_by_run = {report["metadata"]["run_id"]: report for report in physics_reports}
     table_rows = []
     delta_p_over_p_rows = []
     delta_theta_rows = []
@@ -551,7 +571,11 @@ def collate_summary(manifest: dict[str, Any]) -> None:
             delta_theta = evaluation_dir / "delta_theta_fits.csv"
             if headline.exists():
                 with headline.open() as stream:
-                    shutil.copyfileobj(stream, headline_stream)
+                    for line in stream:
+                        if line.strip():
+                            metric = json.loads(line)
+                            metric.setdefault('training_target_task', physics_by_run[run['run_id']]['metadata']['task'])
+                            headline_stream.write(json.dumps(metric, allow_nan=False) + '\n')
             table_row = {
                 "run_id": run["run_id"],
                 "backbone_run_id": run.get("backbone_run_id"),
@@ -588,6 +612,7 @@ def collate_summary(manifest: dict[str, Any]) -> None:
                     "adapter_tail_fraction_10pct": momentum.get("relative_tail_fraction_10pct"),
                     "adapter_to_cvt_resolution_ratio": summary_data.get("adapter_to_cvt_resolution_ratio"),
                 })
+            table_row.update(physics_by_run[run["run_id"]]["table"])
             table_rows.append(table_row)
             if delta_p_over_p.exists():
                 with delta_p_over_p.open(newline="") as stream:
@@ -641,6 +666,8 @@ def collate_summary(manifest: dict[str, Any]) -> None:
             writer.writerows(delta_theta_rows)
     elif delta_theta_out.exists():
         delta_theta_out.unlink()
+
+    write_campaign_reports(summary_dir, physics_reports)
 
     if manifest.get("campaign_type") == "optuna_seed_ablation":
         collate_seed_ablation_summary(summary_dir, table_rows)

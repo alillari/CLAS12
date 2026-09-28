@@ -1294,6 +1294,7 @@ def campaign_metadata(config, summary):
 
 def build_campaign_headline_rows(config, summary, ml_metric_rows):
     metadata = campaign_metadata(config, summary)
+    metadata["training_target_task"] = summary.get("training_target_task")
     rows = []
 
     component_r2 = {}

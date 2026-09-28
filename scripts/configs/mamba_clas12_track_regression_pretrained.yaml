@@ -41,6 +41,10 @@ default: &default
   local_batch_size: 128
   valid_batch_size: 128
   local_valid_batch_size: 128
+  # Fixed validation cohort, independent of the training label budget.
+  limit_test_data: true
+  limit_test_size: 50000
+  max_val_batches: null
   limit_data: true
   limit_size: 50000
   n_data_idx: 1000000

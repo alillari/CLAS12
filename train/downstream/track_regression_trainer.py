@@ -45,9 +45,10 @@ from regression_utils import (
     resolve_regression_loss,
     transform_regression_target_torch,
 )
+from validation_config import preserve_validation_rng
 from physics_checkpoints import (
     MOMENTUM_TASKS, CheckpointSummary, resolve_config as resolve_physics_config,
-    selection_mode, summarize_native, write_evaluation_summary,
+    selection_mode, summarize_native, summarize, write_evaluation_summary, atomic_json, SCHEMA,
 )
 
 class DownstreamTrainer():
@@ -855,6 +856,7 @@ class DownstreamTrainer():
 
         if self.checkpoint_selection == "physics":
             self._initialize_physics_history(checkpoint_file_name)
+            self._preflight_validation_support()
         
 
         if getattr(self.params, "loss_reweight", False):
@@ -1121,6 +1123,71 @@ class DownstreamTrainer():
         if self.selected_checkpoint_path.exists():
             shutil.move(str(self.selected_checkpoint_path), str(Path(directory, "previous_selected.pth")))
         self.params["physics_checkpoint_summary"] = str(Path(directory, "checkpoint_summary.json"))
+        self.physics_report_pointer = self.selected_checkpoint_path.with_name(
+            self.selected_checkpoint_path.stem + "_physics_report.json")
+        self.physics_history.write(plots=False)
+        self._write_physics_pointer("awaiting_validation")
+
+    def _write_physics_pointer(self, status):
+        atomic_json(self.physics_report_pointer, {
+            "schema": SCHEMA, "task": self.regression_target_stats["task"],
+            "checkpoint_summary": self.params.physics_checkpoint_summary,
+            "validation_support": getattr(self.params, "validation_support", None),
+            "selection_status": status,
+        })
+
+    def _preflight_validation_support(self):
+        """Count the actual fixed validation truth bins before optimizer steps."""
+        truths, xyz_rows = [], []
+        cap = getattr(self.params, "max_val_batches", None)
+        # DataLoader iterator construction consumes CPU RNG even without shuffle.
+        with torch.no_grad(), preserve_validation_rng(self.val_data_loader):
+            for i, batch in enumerate(tqdm(self.val_data_loader, desc="Validation bin occupancy")):
+                if cap is not None and i >= cap:
+                    break
+                points = batch['points'].to(self.device)
+                points = points.reshape(points.size(0), -1, points.size(-1))
+                mask = points[..., 0] != -100
+                reg = batch['reg_target'].to(self.device)
+                segment = batch.get('target_segment_mask')
+                if segment is not None:
+                    segment = segment.to(self.device).bool()
+                targets = self.build_regression_targets(reg, mask, segment)
+                truth = self.down_model.target_normalizer.denormalize(targets['target']).cpu().numpy()
+                truth[~targets['target_valid'].cpu().numpy()] = np.nan
+                truths.append(truth)
+                xyz_rows.append(self.physics_truth_xyz(reg, mask, segment).cpu().numpy())
+        if truths:
+            truth = np.concatenate(truths)
+            support = summarize_native(truth, truth, self.regression_target_stats['task'],
+                                       self.physics_config, np.concatenate(xyz_rows))
+        else:
+            support = summarize([], [], self.physics_config)
+        self.validation_truth_support_hash = support['truth_support_hash']
+        passed = support['n_valid_bins'] >= self.physics_config['min_valid_bins']
+        path = self.physics_history.output_dir / 'validation_support.json'
+        payload = {
+            'schema': SCHEMA, 'purpose': 'validation_truth_occupancy',
+            'task': self.regression_target_stats['task'], 'config': self.physics_config,
+            'data_root_test': str(getattr(self.params, 'data_root_test', '')),
+            'requested_sample_limit': getattr(self.params, 'limit_test_size', None)
+                if getattr(self.params, 'limit_test_data', True) else None,
+            'validation_batch_size': getattr(self.params, 'valid_batch_size', None),
+            'max_val_batches': cap, 'passed': passed,
+            **{key: support[key] for key in ('n_samples', 'n_valid_truth', 'n_invalid_truth',
+                'n_outside_bins', 'n_valid_bins', 'valid_bin_indices', 'truth_support_hash')},
+            'per_bin': [{key: row[key] for key in ('index','low','high','n_truth','valid','invalid_reason')}
+                        for row in support['per_bin']],
+        }
+        atomic_json(path, payload)
+        self.params['validation_support'] = str(path)
+        self._write_physics_pointer('awaiting_validation' if passed else 'insufficient_validation_bins')
+        print(f"Validation occupancy: {support['n_valid_bins']}/{len(support['per_bin'])} valid bins; "
+              f"counts={[row['n_truth'] for row in support['per_bin']]}; report={path}")
+        if not passed:
+            raise ValueError(f"Insufficient validation bin occupancy before training: "
+                f"{support['n_valid_bins']} valid bins, require {self.physics_config['min_valid_bins']}. "
+                f"Inspect {path}; increase the validation sample or explicitly revise binning/occupancy settings.")
 
     def _publish_physics_selection(self):
         selected = self.physics_history.selected
@@ -1137,6 +1204,7 @@ class DownstreamTrainer():
             self.params["trained_checkpoint_path"] = None
         payload = self.physics_history.write()
         self.params["checkpoint_selection_status"] = payload["selection_status"]
+        self._write_physics_pointer(payload["selection_status"])
         self.params["selected_physics_metrics"] = (
             {key: selected[key] for key in ("W_macro", "B_macro", "B_worst", "T_macro", "n_valid_bins")}
             if selected else None)
@@ -1366,6 +1434,9 @@ class DownstreamTrainer():
             self.last_validation_physics = summarize_native(
                 np.concatenate(predictions), np.concatenate(truths), self.regression_target_stats['task'],
                 self.physics_config, np.concatenate(truth_xyz))
+            expected = getattr(self, 'validation_truth_support_hash', None)
+            if expected is not None and self.last_validation_physics['truth_support_hash'] != expected:
+                raise ValueError('Validation truth sample changed since occupancy preflight')
         if self.log_to_screen:
             print(f"\nValidation Loss: {avg_loss:.4f}")
         return avg_loss

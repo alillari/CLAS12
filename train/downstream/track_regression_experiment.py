@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from fm4npp.utils import YParams
+from train.downstream.validation_config import configure_validation
 from train.downstream.physics_checkpoints import MOMENTUM_TASKS, resolve_config as resolve_physics_config, selection_mode
 
 try:
@@ -147,46 +148,46 @@ def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
             "'3vertex', '3vtx', 'Zvtx', 'Zvertex']"
         )
 
-    params.continue_from_best = True
-    params.batch_size = int(config.train_batch_size)
-    params.limit_data = True
-    params.limit_size = int(config.eventnumber)
-    params.valid_batch_size = params.batch_size
-    params.num_embedder_layers = 0
+    params["continue_from_best"] = True
+    params["batch_size"] = int(config.train_batch_size)
+    params["limit_data"] = True
+    params["limit_size"] = int(config.eventnumber)
+    params["num_embedder_layers"] = 0
 
     if config.checkpoint_dir is not None:
-        params.checkpoint_dir = os.path.abspath(config.checkpoint_dir)
+        params["checkpoint_dir"] = os.path.abspath(config.checkpoint_dir)
     if config.seed is not None:
-        params.seed = int(config.seed)
+        params["seed"] = int(config.seed)
 
     if config.usepretrain:
-        params.pretrained_ckpt = config.pretrained_ckpt or MODEL2CKPT.get(config.config)
+        params["pretrained_ckpt"] = config.pretrained_ckpt or MODEL2CKPT.get(config.config)
         if params.pretrained_ckpt is None:
             raise ValueError(
                 "--usepretrain was set, but no checkpoint was provided and "
                 f"config={config.config!r} is not in MODEL2CKPT."
             )
-        params.pretrained_ckpt = os.path.abspath(params.pretrained_ckpt)
+        params["pretrained_ckpt"] = os.path.abspath(params.pretrained_ckpt)
         if not os.path.isfile(params.pretrained_ckpt):
             raise FileNotFoundError(
                 f"Pretrained checkpoint does not exist: {params.pretrained_ckpt}"
             )
     else:
-        params.pretrained_ckpt = None
+        params["pretrained_ckpt"] = None
 
-    params.log_file_name = config.log_file_name or (
+    params["log_file_name"] = config.log_file_name or (
         f"{config.config}_nerf_{params.task}_d{params.limit_size}_{config.run_num}.log"
     )
     if not params.log_file_name.endswith(".log"):
-        params.log_file_name = f"{params.log_file_name}.log"
-    params.checkpoint_file_name = config.checkpoint_file_name or (
+        params["log_file_name"] = f"{params.log_file_name}.log"
+    params["checkpoint_file_name"] = config.checkpoint_file_name or (
         params.log_file_name.rsplit(".", 1)[0] + "_checkpoint.pth"
     )
     params["checkpoint_selection"] = selection_mode(params.params)
     if params.task in MOMENTUM_TASKS:
         params["physics_checkpoint"] = resolve_physics_config(params.task, getattr(params, "physics_checkpoint", None))
     if params.checkpoint_selection == "physics":
-        params["drop_last_test"] = False
+        for key, value in configure_validation(dict(params.params)).items():
+            params[key] = value
     return params
 
 
@@ -227,6 +228,9 @@ def train_experiment(
             "selected_physics_metrics": getattr(params, "selected_physics_metrics", None),
             "best_loss_step": trainer.best_loss_step,
             "best_loss_epoch": trainer.best_loss_epoch,
+            "validation_sample_limit": params.limit_test_size if getattr(params, "limit_test_data", False) else None,
+            "validation_batch_size": params.valid_batch_size,
+            "validation_support": getattr(params, "validation_support", None),
         }
         artifact_summary = {
             **selection,

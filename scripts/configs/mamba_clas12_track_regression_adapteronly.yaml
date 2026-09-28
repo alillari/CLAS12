@@ -38,8 +38,12 @@ default: &default
   clas12_band_config: calibrated12            # use legacy6 for older six-band backbones
   batch_size: 128                  # train_track_regression.py overrides this from --train_batch_size
   local_batch_size: 128
-  valid_batch_size: 128            # train_momentum_regression.py also forces this to 1
+  valid_batch_size: 128            # independent of --train_batch_size
   local_valid_batch_size: 128
+  # Fixed validation cohort, independent of the training label budget.
+  limit_test_data: true
+  limit_test_size: 50000
+  max_val_batches: null
   limit_data: true               # train script overrides using --eventnumber
   limit_size: 50000
   n_data_idx: 1000000

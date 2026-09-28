@@ -80,8 +80,12 @@ The exact four-objective Pareto frontier includes all summary-valid checkpoints,
 including ones that fail guardrails. Equal metric vectors both lie on the frontier.
 Invalid summaries are excluded. Validation truth values and order are hashed and
 must remain identical; compared checkpoints must have identical valid-bin support.
-The validation loader retains the final partial batch. `max_val_batches` still
-limits the fixed validation sample. Single-process validation is currently required;
+Validation defaults to 50,000 accepted samples with batch size 128, independently
+of the training sample/batch sizes. Set `limit_test_size` and `valid_batch_size`
+to override these defaults. `max_val_batches` defaults to null; an explicit cap
+that would truncate the requested sample is rejected. Before training, a truth-only
+pass writes `validation_support.json` and rejects insufficient bin occupancy.
+The validation loader retains the final partial batch. Single-process validation is currently required;
 DDP physics selection raises an explicit error rather than using per-rank quantiles.
 
 ## Artifacts

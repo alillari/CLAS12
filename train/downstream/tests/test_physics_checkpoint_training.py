@@ -103,11 +103,26 @@ class PhysicsTrainingTest(unittest.TestCase):
             # Second hit is padding and deliberately has a conflicting label.
             reg = torch.zeros(4, 2, 3); reg[:,0,0] = p; reg[:,1,0] = 9000
             points = torch.full((4,2,3), -100.); points[:,0,0] = p.log()
-            trainer.val_data_loader = [dict(points=points, reg_target=reg)]
+            class SeededLoader(list):
+                generator = torch.Generator().manual_seed(42)
+                def __iter__(self):
+                    torch.rand(1, generator=self.generator)
+                    return super().__iter__()
+            trainer.val_data_loader = SeededLoader([dict(points=points, reg_target=reg)])
+            generator_before = trainer.val_data_loader.generator.get_state()
             trainer.regression_loss = 'log_p_huber'
             # Use the canonical resolver to avoid duplicating the loss name contract.
             from train.downstream.regression_utils import resolve_regression_loss
             trainer.regression_loss = resolve_regression_loss('p')
+            trainer.params.update(limit_test_size=4, valid_batch_size=4)
+            rng_before = torch.random.get_rng_state()
+            trainer._preflight_validation_support()
+            torch.testing.assert_close(torch.random.get_rng_state(), rng_before)
+            torch.testing.assert_close(trainer.val_data_loader.generator.get_state(), generator_before)
+            occupancy = json.loads(Path(trainer.params.validation_support).read_text())
+            self.assertTrue(occupancy['passed'])
+            self.assertEqual(occupancy['n_samples'], 4)
+            self.assertEqual([row['n_truth'] for row in occupancy['per_bin']], [2,2])
             first = trainer.validate_end_to_end_one_epoch()
             self.assertEqual(first, 0.)
             self.assertTrue(trainer.down_model.training)
@@ -121,6 +136,22 @@ class PhysicsTrainingTest(unittest.TestCase):
             self.assertEqual(len(trainer.down_results['val']), 1)
             self.assertEqual(support, trainer.last_validation_physics['truth_support_hash'])
             self.assertAlmostEqual(trainer.last_validation_physics['B_macro'], np.expm1(.02), places=6)
+
+    def test_preflight_rejects_sparse_bins_and_saves_counts_before_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            reg = torch.zeros(4,1,3); reg[...,0] = 500
+            points = torch.zeros(4,1,3)
+            trainer.val_data_loader = [dict(points=points,reg_target=reg)]
+            with self.assertRaisesRegex(ValueError,'Insufficient validation bin occupancy'):
+                trainer._preflight_validation_support()
+            report = json.loads(Path(trainer.params.validation_support).read_text())
+            self.assertFalse(report['passed'])
+            self.assertEqual([row['n_truth'] for row in report['per_bin']], [4,0])
+            self.assertEqual(trainer.global_step, 0)
+            pointer = json.loads(trainer.physics_report_pointer.read_text())
+            self.assertEqual(pointer['selection_status'],'insufficient_validation_bins')
+            self.assertFalse(trainer.selected_checkpoint_path.exists())
 
     @patch.object(CheckpointSummary, 'plot')
     def test_final_validation_when_epoch_cap_precedes_interval(self, _):

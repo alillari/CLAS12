@@ -13,6 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import FuncFormatter, LogLocator, MaxNLocator, NullFormatter
+from campaign_util import require_entrance_evaluation
 
 PAPER, NAVY, RUST = "#F7F6F2", "#18344A", "#B85C3B"
 TEXT, MUTED, GRID = "#202428", "#6B7177", "#E8E6E1"
@@ -343,6 +344,8 @@ def fit_panel(ax, rows, metric, catalog, ordered, variant, field):
 
 def make_presentation(headline_path: Path, manifest, out: Path, *, labeled_events=None, manifest_path=None):
     raw = [json.loads(line) for line in headline_path.read_text().splitlines() if line.strip()]
+    for row in raw:
+        require_entrance_evaluation(row, headline_path)
     ids = {r.get("run_name") or r.get("run_num") for r in raw
            if r.get("method") == "adapter" and r.get("record_type") == "ml_error" and r.get("space") == "kinematic"}
     if not ids:
@@ -358,7 +361,10 @@ def make_presentation(headline_path: Path, manifest, out: Path, *, labeled_event
         if path.exists():
             sources.append(path)
             with path.open(newline="") as stream:
-                fit_rows = prepare_fits(list(csv.DictReader(stream)), selected, runs, metric[0])
+                raw_fits = list(csv.DictReader(stream))
+            for row in raw_fits:
+                require_entrance_evaluation(row, path)
+            fit_rows = prepare_fits(raw_fits, selected, runs, metric[0])
             available = {r["run_id"] for r in fit_rows if r["method"] == "adapter" and r["plotted"]}
             if available == selected:
                 fits[metric[0]] = fit_rows
@@ -429,7 +435,7 @@ def make_presentation(headline_path: Path, manifest, out: Path, *, labeled_event
         f"Resolution and bias panels use {short(budget)} labeled events, selected by budget, not performance. "
         f"{sample_note}. Physical errors are shown separately in GeV and degrees; phi residuals are wrapped by the evaluator. "
         "Scaling panels use logarithmic axes when errors are positive.\n\n"
-        "COATJAVA denotes the stored cvt method (CVT::Tracks). Repeated identical baselines are shown once, "
+        "COATJAVA uses CVT::Tracks p/theta and CVT::Trajectory entrance phi. Repeated identical baselines are shown once, "
         "without averaging or multiplying sample counts. Missing/failed fit bins break the curve. "
         "Error bars are stored fit-parameter errors. Gaussian core widths are not full-distribution RMS values. "
         "The other-backbone envelope is a min/max range, not an uncertainty interval.\n\n"

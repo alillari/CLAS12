@@ -31,16 +31,12 @@ analysis:
   target_momentum_scale_to_gev: 0.001
   auxiliary_momentum_scale_to_gev: 1.0
 
-  # Training remains against MC::True at the innermost CVT hit. Comparisons swing
-  # both MC::True and adapter output back to the DOCA/vertex frame to match CVT.
-  comparison_truth: mctrue_swingback_doca
-  swingback_enabled: true
-  swingback_r_hit_cm: 6.5
-  swingback_magnetic_field_t: 5.0
-  swingback_polarity: 1
+  # Compare MC::True and adapter output directly at the detector entrance.
+  # The conventional reference uses CVT::Tracks p/theta and CVT::Trajectory phi.
+  comparison_truth: mctrue_inner_hit
+  swingback_enabled: false
   charge_source: metadata_or_positive
   fallback_charge: 1
-  write_unswung_diagnostics: true
 
   momentum_bins_gev: [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
   delta_p_over_p_bins_gev: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0]

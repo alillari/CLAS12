@@ -8,6 +8,16 @@ The query-level no-object class and the point assignment threshold remain active
 Both `validation_ari_mode: signal` and `validation_ari_mode: inclusive` are supported;
 inclusive ARI does not require a background query.
 
+Training log columns `ARI_signal_option1` and `ARI_signal_option2` compare
+assignment policies using signal ARI. With `validation_ari_mode: inclusive`,
+the columns are `ARI_inclusive_option1` and `ARI_inclusive_option2` instead.
+Option 1 uses mask probability; option 2 uses mask probability times query
+class confidence and excludes no-object queries. Checkpoint selection uses
+option 2 in the configured ARI mode. The callback key `val/ari` is that selected
+score; explicit `val/ari_<mode>_option1` and `val/ari_<mode>_option2` keys report
+both assignment policies. Older optimizer-step logs duplicated option 2 into
+the option-1 column; this correction applies to new logs only.
+
 The retired `unified_noise_instance` training mode and
 `truth_joint_hungarian_qualified` evaluation mode raise errors when requested
 through YAML, campaign overrides, CLI options, or adapter checkpoint metadata.
@@ -70,16 +80,16 @@ After per-run evaluations finish, campaign collation writes:
 
 The analysis writes:
 
-- `predictions.csv.gz`: one row per evaluated track, including raw adapter
-  output, DOCA-space adapter output, raw innermost-hit truth, DOCA-space
-  comparison truth, CVT/CVTRec/reconstructed-particle baselines, PID, charge,
+- `predictions.csv.gz`: one row per evaluated track, including entrance adapter
+  output, innermost-hit MC truth, the `cvt_entrance_*` benchmark, explicitly
+  labelled `legacy_*` auxiliary vectors (diagnostic only), PID, charge,
   event/track identifiers, source file, and hit count;
 - `summary.json`: global component, momentum, transverse-momentum, direction,
   resolution, tail, ML-regression, training-history, and data-consistency
   metrics;
 - `ml_metrics.csv`: final evaluation-set MAE, RMSE, median absolute error,
-  95th-percentile absolute error, and bias for Adapter, `CVT::Tracks`, and
-  `CVTRec::Tracks`;
+  95th-percentile absolute error, and bias for Adapter and the CVT entrance
+  benchmark;
 - `ml_metrics_summary.json`: the same ML metrics in nested JSON form;
 - `campaign_headline_metrics.jsonl`: flat, campaign-friendly headline rows
   with run metadata, RMSE/MAE/bias/tail metrics, and component R² values;
@@ -103,7 +113,7 @@ The analysis writes:
 - `absolute_error_cdf.png`: cumulative absolute-error distributions, which
   make the median and tail behavior directly comparable across methods.
 
-`plots/physics_2d/` contains side-by-side Adapter and `CVT::Tracks` 2D residual
+`plots/physics_2d/` contains side-by-side Adapter and CVT entrance benchmark 2D residual
 figures for spherical momentum `p`, cylindrical transverse momentum `pT`,
 `theta`, wrapped `phi`, and pseudorapidity `eta`. Both methods use identical
 axes and color normalization. For every reconstructed quantity, its residual
@@ -135,15 +145,60 @@ The current CLAS12 dataset stores MC entrance momentum in MeV and auxiliary
 reconstruction momentum in GeV. Those conversions are explicit in the YAML.
 CUDA is required by the installed Mamba/causal-convolution forward kernels.
 
-The training target is still `MC::True` at the innermost CVT point. For
-evaluation, both `MC::True` and the raw Adapter output are swung back in
-transverse direction to the DOCA/vertex frame before comparison with
-`CVT::Tracks` and `CVTRec::Tracks`. The swingback keeps `pT` and `pz` fixed,
-changes only wrapped phi, and uses the charge policy and field/radius
-parameters declared in the YAML. Current datasets fall back to positive charge
-when metadata is not available. `CVT::Tracks` is the fair first-fit baseline.
-`CVTRec::Tracks` is retained only as a PID-corrected reference. The stored
-`REC::Particle` values are audited but excluded from performance plots because
-they do not currently match the corresponding `CVTRec::Tracks` rows as
-expected. `MC::Particle` is generator-level and is not used as the
-post-energy-loss target.
+All momentum evaluation now uses `MC::True` and raw adapter output at the
+innermost matched CVT hit. There is no DOCA transport or charge-dependent
+rotation. The stored conventional benchmark uses `cvt_benchmark_p` and
+`cvt_benchmark_theta` from `CVT::Tracks`, and `cvttraj_entrance_phi` from
+`atan2(cy,cx)` of the selected same-track `CVT::Trajectory` entrance row.
+The evaluator reads these fields by name from `metadata.json:aux_target_layout`
+and constructs the comparison vector using that entrance phi. It does not use
+the trajectory bank's diagnostic `phi` field or `CVT::Tracks.phi0`.
+
+This is explicitly a p/theta/entrance-phi benchmark, not a claim that all three
+values come from `CVT::Trajectory`. The current 20-column product stores the
+full trajectory momentum only in separate diagnostics. Missing entrance phi
+produces a missing CVT benchmark, with no DOCA fallback. Row selection tests
+only the three entrance benchmark columns, so missing legacy values cannot
+select a different comparison row. Momentum scaling applies to p only;
+theta and phi remain radians when constructing the vector.
+
+The `cvt` method key is retained for campaign compatibility. Legacy
+`CVTRec::Tracks` and `REC::Particle` vectors have no entrance-phi counterpart
+in this product and are excluded from all performance metrics. Their stored
+vectors, and the original CVT vector, are exported only under `legacy_*` names.
+`MC::Particle` remains generator-level diagnostic information. Charge is used
+only for differential labels; a fallback charge never changes a prediction.
+
+### Retiring historical DOCA evaluation
+
+Commit `d5afc99` (2026-07-13) introduced swingback into the evaluator. The old
+defaults used `mctrue_swingback_doca`, 6.5 cm, 5 T, positive polarity, and a
+positive-charge fallback. The evaluator consumed the first 16 auxiliary
+columns and ignored the later entrance-phi benchmark. This affected wrapped
+phi, px/py, opening-angle, vector-error, and related binned/ML metrics. Native
+target metrics remained at the entrance. Swingback nominally preserved p,
+pT, pz, and theta, but invalid transport/charge masks could change the sample
+population. The physical-loss reference statistics script already used the
+entrance tuple and needs no objective change.
+
+New summaries, headline rows, and fit tables carry
+`evaluation_contract: clas12_momentum_entrance_v1`. Old rendered analysis YAMLs
+are migrated at load time with a notice: `comparison_truth` becomes
+`mctrue_inner_hit`, `swingback_enabled` becomes false, and transport parameters
+are discarded. The retired transport code has been removed.
+
+Campaign runs automatically reevaluate completed checkpoints whose summaries
+lack the new contract; they do not need retraining. Collation and plotting
+reject legacy/unversioned outputs so DOCA and entrance results cannot be mixed.
+For an explicit evaluation-only refresh:
+
+```bash
+PY=/home/alessio/miniconda3/envs/fm4npp/bin/python
+"$PY" train/downstream/campaign/run_track_regression_campaign.py \
+  --manifest /path/to/campaign/manifest.yaml --skip-train --force-eval
+MPLCONFIGDIR=/tmp/matplotlib-cache "$PY" \
+  train/downstream/campaign/plot_track_regression_campaign.py \
+  --campaign-dir /path/to/campaign --plot-suite all
+```
+
+These changes do not rewrite historical reports until reevaluation is run.

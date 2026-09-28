@@ -8,6 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from campaign_util import require_entrance_evaluation
 
 from momentum_presentation import (
     PAPER, TEXT, VARIABLES, headline_panel, make_axes, model_catalog, number,
@@ -94,6 +95,8 @@ def render_panels(rows, panels, catalog, ordered, out, stem, subtitle, variant, 
 
 def make_ml_presentation(headline_path: Path, manifest, out: Path, *, manifest_path=None):
     raw = [json.loads(line) for line in headline_path.read_text().splitlines() if line.strip()]
+    for row in raw:
+        require_entrance_evaluation(row, headline_path)
     ids = {r.get("run_name") or r.get("run_num") for r in raw
            if (r.get("record_type"), r.get("method"), r.get("space")) == ("ml_error", "adapter", "component")}
     if not ids:
@@ -158,7 +161,7 @@ def make_ml_presentation(headline_path: Path, manifest, out: Path, *, manifest_p
                     "rmse": "sqrt((RMSE_px^2 + RMSE_py^2 + RMSE_pz^2)/3) (GeV); equal counts required",
                     "r2": "Arithmetic mean of stored px, py, pz R2 values (dimensionless)"},
         "r2_axis": "Linear, including negative values; no clipping to [0,1]",
-        "baseline": "Stored cvt method (CVT::Tracks); identical duplicates shown once",
+        "baseline": "CVT::Tracks p/theta with CVT::Trajectory entrance phi; identical duplicates shown once",
         "missing_metrics": "Kinematic R2 was not stored and is not inferred from RMSE",
     }, indent=2) + "\n")
     (out / "README.md").write_text(
@@ -176,7 +179,7 @@ def make_ml_presentation(headline_path: Path, manifest, out: Path, *, manifest_p
         "high-label regime; the main figures retain the full label range. "
         "Additional rmse_kinematic panels show p [GeV], theta [degrees] and wrapped phi [degrees] separately. "
         "R² for these kinematic quantities was not stored and is not fabricated.\n\n"
-        "COATJAVA is CVT::Tracks. Duplicate identical baselines are plotted once. "
+        "COATJAVA uses CVT::Tracks p/theta and CVT::Trajectory entrance phi. Duplicate identical baselines are plotted once. "
         "The other-backbone envelope is a min/max range, not an uncertainty interval. "
         "No seed uncertainties or confidence intervals are inferred. "
         "CSV files and provenance.json retain the plotted numbers, sample counts, model identities and source hashes. "

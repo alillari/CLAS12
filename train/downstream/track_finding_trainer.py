@@ -992,6 +992,8 @@ class DownstreamTrainer():
                     "train/loss": float(train_epoch_loss),
                     "val/loss": float(val_epoch_loss),
                     "val/ari": float(avg_ari_2),
+                    f"val/ari_{validation_ari_mode}_option1": float(avg_ari),
+                    f"val/ari_{validation_ari_mode}_option2": float(avg_ari_2),
                     "lr": float(self._current_lr()),
                     "best/val_ari": float(self.best_ARI),
                     "best/val_loss": float(self.best_loss),
@@ -1133,6 +1135,7 @@ class DownstreamTrainer():
             getattr(self.params, "early_stopping_warmup_steps", 0),
         ))
         max_epochs = int(getattr(self.params, "max_epochs", 10**9))
+        validation_ari_mode = str(getattr(self.params, "validation_ari_mode", "signal"))
 
         for epoch in range(self.startEpoch, max_epochs):
             self.down_results['epoch'] = epoch
@@ -1183,18 +1186,21 @@ class DownstreamTrainer():
                 )
                 if should_validate:
                     val_loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
-                    val_ari = float(np.mean(self.down_results["ARI_2"])) if self.down_results["ARI_2"] else 0.0
+                    # Both columns use validation_ari_mode; their suffixes
+                    # identify assignment policies, not signal/inclusive ARI.
+                    val_ari_option1 = float(np.mean(self.down_results["ARI"])) if self.down_results["ARI"] else 0.0
+                    val_ari_option2 = float(np.mean(self.down_results["ARI_2"])) if self.down_results["ARI_2"] else 0.0
                     train_loss = float(np.mean(self.down_results["train"]))
                     elapsed = time.time() - self.starttime
                     with open(log_file_path, "a") as f:
                         f.write(
                             f"{self.global_step}\t{epoch}\t{train_loss:.8f}\t"
-                            f"{val_loss:.8f}\t{val_ari:.8f}\t{val_ari:.8f}\t"
+                            f"{val_loss:.8f}\t{val_ari_option1:.8f}\t{val_ari_option2:.8f}\t"
                             f"{self._current_lr():.8e}\t{elapsed:.2f}\n"
                         )
                     self._record_validation_result(
                         val_loss,
-                        val_ari,
+                        val_ari_option2,
                         checkpoint_file_name,
                         epoch=epoch,
                         step=self.global_step,
@@ -1206,7 +1212,9 @@ class DownstreamTrainer():
                             "epoch": epoch,
                             "train/loss": train_loss,
                             "val/loss": float(val_loss),
-                            "val/ari": val_ari,
+                            "val/ari": val_ari_option2,
+                            f"val/ari_{validation_ari_mode}_option1": val_ari_option1,
+                            f"val/ari_{validation_ari_mode}_option2": val_ari_option2,
                             "lr": float(self._current_lr()),
                             "best/val_ari": float(self.best_ARI),
                             "best/val_loss": float(self.best_loss),

@@ -126,6 +126,30 @@ default: &default
 clas12_track_regression_pretrained:
   <<: *default
 
+# Single-target ablation: one output, Huber(delta=1) in log(p) or radians.
+# Generate each task-specific statistics file with the matched data selection.
+clas12_track_regression_pretrained_p_only:
+  <<: *default
+  model_version: clas12_track_regression_pretrained_p_only
+  task: p
+  regression_loss: huber
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_event_segment_mctrue_min12.json
+
+clas12_track_regression_pretrained_theta_only:
+  <<: *default
+  model_version: clas12_track_regression_pretrained_theta_only
+  task: theta
+  regression_loss: huber
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_theta_event_segment_mctrue_min12.json
+
+clas12_track_regression_pretrained_phi_only:
+  <<: *default
+  model_version: clas12_track_regression_pretrained_phi_only
+  task: phi
+  regression_loss: huber
+  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_phi_event_segment_mctrue_min12.json
+
+
 clas12_track_regression_pretrained_pt_phi_eta:
   <<: *default
   model_version: clas12_track_regression_pretrained_pt_phi_eta

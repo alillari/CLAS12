@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from campaign_util import read_yaml
+from campaign_util import read_yaml, require_entrance_evaluation
 
 
 LABEL_RE = re.compile(r"(?:^|_)label(?P<label>\d+)(?:_|$)")
@@ -88,7 +88,9 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                row = json.loads(line)
+                require_entrance_evaluation(row, f"{path}:{line_number}")
+                rows.append(row)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSON on {path}:{line_number}") from exc
     return rows
@@ -96,7 +98,10 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def read_csv_rows(path: Path) -> list[dict[str, Any]]:
     with path.open(newline="") as stream:
-        return list(csv.DictReader(stream))
+        rows = list(csv.DictReader(stream))
+    for row in rows:
+        require_entrance_evaluation(row, path)
+    return rows
 
 
 def parse_backbone_metadata(run_id: str) -> dict[str, Any]:

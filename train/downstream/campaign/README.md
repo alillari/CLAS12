@@ -4,6 +4,10 @@ This directory contains local campaign tools for training CLAS12 track-regressio
 adapters on a folder of pretrained Mamba backbones and then running the physics
 evaluation for each adapter.
 
+For one-output `p`, `theta`, and `phi` ablations, see
+[Single-target regression](../SINGLE_TARGET_REGRESSION.md) for loss definitions,
+config presets, matched statistics generation, and evaluation behavior.
+
 The runner is intentionally local-first. It does not submit SLURM jobs. It runs
 one training/evaluation job at a time and sets `CUDA_VISIBLE_DEVICES` for each
 subprocess.

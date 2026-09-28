@@ -601,7 +601,7 @@ def masked_regression_loss(
 
     if not valid.any():
         # Return a differentiable zero if a batch contains no valid targets.
-        return {"loss": pred.sum() * 0.0}
+        return {"loss": pred[valid].sum()}
 
     if option in {"physical_resolution_l1", "physical_resolution_relative_huber"}:
         relative_huber = option == "physical_resolution_relative_huber"
@@ -698,7 +698,9 @@ def masked_regression_loss(
         for pair in phi_pairs
         for index in pair
     }
-    residual = pred - truth
+    # Mask before trigonometry: a masked NaN angle otherwise produces NaN
+    # gradients even when its loss entry is later excluded.
+    residual = torch.where(valid, pred, 0.0) - torch.where(valid, truth, 0.0)
     if angular_indices:
         if target_std is None:
             raise ValueError("target_std is required when angular_indices are configured")

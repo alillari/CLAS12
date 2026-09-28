@@ -19,7 +19,14 @@ TASK_ALIASES = {
     "momentum": "mom",
 }
 
+SINGLE_TARGET_TASKS = frozenset({"p", "theta", "phi"})
+
 TARGET_COLUMNS_BY_TASK = {
+    # p uses log momentum in the stored reg_target momentum unit. Predicting
+    # log(p) makes p_pred = exp(output) positive without a clamped gradient.
+    "p": ("mc_entrance_log_p",),
+    "theta": ("mc_entrance_theta",),
+    "phi": ("mc_entrance_phi",),
     "mom": ("mc_entrance_px", "mc_entrance_py", "mc_entrance_pz"),
     "3vtx": ("mc_vx", "mc_vy", "mc_vz"),
     "zvtx": ("mc_vz",),
@@ -38,6 +45,9 @@ TARGET_COLUMNS_BY_TASK = {
 }
 
 UNSTANDARDIZED_COLUMNS_BY_TASK = {
+    "p": ("mc_entrance_log_p",),
+    "theta": ("mc_entrance_theta",),
+    "phi": ("mc_entrance_phi",),
     "pt_phi_eta": ("mc_entrance_cosphi", "mc_entrance_sinphi"),
     "p_phi_theta": ("mc_entrance_cosphi", "mc_entrance_sinphi"),
 }
@@ -82,7 +92,16 @@ def regression_output_dim(task):
 
 
 def regression_angular_indices(task):
-    return ()
+    return (0,) if canonical_regression_task(task) == "phi" else ()
+
+
+def resolve_regression_loss(task, loss=None):
+    """Keep single-target objectives in log momentum / physical radians."""
+    single = canonical_regression_task(task) in SINGLE_TARGET_TASKS
+    loss = (loss or ("huber" if single else "mse")).lower()
+    if single and loss != "huber":
+        raise ValueError(f"task={task!r} requires regression_loss: huber")
+    return loss
 
 
 def regression_unstandardized_columns(task):
@@ -135,6 +154,17 @@ def _numpy_p_phi_theta(px, py, pz, eps=1.0e-12):
 
 def transform_regression_target_torch(reg, task):
     task = canonical_regression_task(task)
+    if task in SINGLE_TARGET_TASKS:
+        px, py, pz = reg[..., 0], reg[..., 1], reg[..., 2]
+        pt = torch.hypot(px, py)
+        p = torch.hypot(pt, pz)
+        if task == "p":
+            value = torch.log(torch.where(p > 0, p, torch.full_like(p, float("nan"))))
+        elif task == "theta":
+            value = torch.where(p > 0, torch.atan2(pt, pz), torch.full_like(p, float("nan")))
+        else:
+            value = torch.where(pt > 0, torch.atan2(py, px), torch.full_like(pt, float("nan")))
+        return value.unsqueeze(-1)
     if task in {"mom", "3vtx", "zvtx"}:
         return reg[..., list(regression_column_indices(task))]
     if task == "pt_phi_eta":
@@ -147,6 +177,17 @@ def transform_regression_target_torch(reg, task):
 def transform_regression_target_numpy(reg, task):
     task = canonical_regression_task(task)
     reg = np.asarray(reg)
+    if task in SINGLE_TARGET_TASKS:
+        px, py, pz = reg[..., 0], reg[..., 1], reg[..., 2]
+        pt = np.hypot(px, py)
+        p = np.hypot(pt, pz)
+        if task == "p":
+            value = np.log(np.where(p > 0, p, np.nan))
+        elif task == "theta":
+            value = np.where(p > 0, np.arctan2(pt, pz), np.nan)
+        else:
+            value = np.where(pt > 0, np.arctan2(py, px), np.nan)
+        return value[..., None]
     if task in {"mom", "3vtx", "zvtx"}:
         return reg[..., list(regression_column_indices(task))]
     if task == "pt_phi_eta":
@@ -159,6 +200,19 @@ def transform_regression_target_numpy(reg, task):
 def project_phi_pair_numpy(cosphi, sinphi, eps=1.0e-12):
     radius = np.sqrt(cosphi * cosphi + sinphi * sinphi + eps)
     return cosphi / radius, sinphi / radius
+
+
+def single_target_to_physical_numpy(target, task):
+    """Decode a one-output head; momentum keeps the input data's units."""
+    task = canonical_regression_task(task)
+    target = np.asarray(target, dtype=float)
+    if task not in SINGLE_TARGET_TASKS or target.shape[-1] != 1:
+        raise ValueError("Expected a single-target task and final dimension 1")
+    if task == "p":
+        return np.exp(target)
+    if task == "phi":
+        return np.arctan2(np.sin(target), np.cos(target))
+    return target.copy()
 
 
 def target_to_cartesian_numpy(target, task):

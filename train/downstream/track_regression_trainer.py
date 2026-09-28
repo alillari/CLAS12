@@ -40,6 +40,7 @@ from regression_utils import (
     load_regression_loss_reference_stats,
     load_regression_target_stats,
     regression_output_dim,
+    resolve_regression_loss,
     transform_regression_target_torch,
 )
 
@@ -148,7 +149,9 @@ class DownstreamTrainer():
         # The task mapping is the source of truth for the regression head width.
         # Set it here so training and inference construct compatible heads.
         self.params["num_output_classes"] = regression_output_dim(params.task)
-        self.regression_loss = getattr(params, "regression_loss", "mse").lower()
+        self.regression_loss = resolve_regression_loss(
+            params.task, getattr(params, "regression_loss", None)
+        )
         if self.regression_loss not in {
             "mse", "mae", "huber", "physical_resolution_l1",
             "physical_resolution_relative_huber",
@@ -919,6 +922,12 @@ class DownstreamTrainer():
             valid, per_hit_target, torch.zeros_like(per_hit_target)
         ).sum(dim=1)
         target = target / counts.clamp_min(1)
+        if self.regression_target_stats["task"] == "phi":
+            # Average repeated angle labels across the branch cut correctly.
+            safe = torch.where(valid, per_hit_target, torch.zeros_like(per_hit_target))
+            sine = torch.where(valid, torch.sin(safe), 0.0).sum(dim=1)
+            cosine = torch.where(valid, torch.cos(safe), 0.0).sum(dim=1)
+            target = torch.atan2(sine, cosine)
         down_model = self.down_model
         if isinstance(down_model, torch.nn.parallel.DistributedDataParallel):
             down_model = down_model.module

@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT))
 from fm4npp.datasets.dataset import RaggedMmap, dominant_truth_segment
 from regression_utils import (
     REGRESSION_TARGET_COLUMNS,
+    canonical_regression_task,
     regression_target_columns,
     transform_regression_target_numpy,
 )
@@ -67,6 +68,12 @@ def _finite_segment_target(values, task):
     counts = finite.sum(axis=0)
     if np.any(counts == 0):
         return None
+    if canonical_regression_task(task) == "phi":
+        safe = np.where(finite, values, 0.0)
+        return np.arctan2(
+            np.where(finite, np.sin(safe), 0.0).sum(axis=0),
+            np.where(finite, np.cos(safe), 0.0).sum(axis=0),
+        )
     return np.where(finite, values, 0.0).sum(axis=0) / counts
 
 
@@ -214,7 +221,8 @@ def main():
         "--task",
         help=(
             "Optional regression task to compute target-specific stats, e.g. "
-            "mom, pt_phi_eta, or p_phi_theta. The phi modes emit cos(phi) "
+            "mom, p, theta, phi, pt_phi_eta, or p_phi_theta. Single-target p "
+            "emits log(p); theta/phi emit radians. The joint phi modes emit cos(phi) "
             "and sin(phi) target columns. Omit to preserve the legacy "
             "raw-column stats file."
         ),

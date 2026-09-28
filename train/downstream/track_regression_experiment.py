@@ -142,6 +142,7 @@ def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
     if not hasattr(params, "task"):
         raise ValueError(
             "YAML config must define task: one of ['mom', 'momentum', "
+            "'p', 'theta', 'phi', 'pt_phi_eta', 'p_phi_theta', "
             "'3vertex', '3vtx', 'Zvtx', 'Zvertex']"
         )
 

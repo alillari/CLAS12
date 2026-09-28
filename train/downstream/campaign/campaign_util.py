@@ -19,6 +19,10 @@ from ruamel.yaml import YAML
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "train" / "downstream"))
+from evaluation_contract import (
+    configure_entrance_evaluation, is_entrance_evaluation, require_entrance_evaluation,
+)
 DEFAULT_CHECKPOINT_ROOT = Path("/home/alessio/ML-work/pretrained-FMs/campaign_1")
 DEFAULT_ARTIFACT_ROOT = Path("/home/alessio/ML-work/result_deep_storage")
 DEFAULT_CAMPAIGN_NAME = "campaign_1_track_regression"
@@ -287,6 +291,7 @@ def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     base_analysis_yaml = resolve_repo_path(manifest["base_analysis_yaml"])
     data = read_yaml(base_analysis_yaml)
     analysis = dict(data["analysis"])
+    configure_entrance_evaluation(analysis)
     analysis.update({
         "artifact_root": str(Path(manifest["artifact_root"]).resolve()),
         "run_name": run["run_id"],
@@ -511,6 +516,21 @@ def run_current_status(status_data: dict[str, Any], run: dict[str, Any]) -> str:
 
 
 def collate_summary(manifest: dict[str, Any]) -> None:
+    # Validate before opening aggregate outputs, so stale DOCA runs cannot be
+    # silently mixed with corrected entrance metrics or truncate a good summary.
+    for run in manifest.get("runs", []):
+        evaluation_dir = Path(run["evaluation_dir"])
+        summary_path = evaluation_dir / "summary.json"
+        if summary_path.exists():
+            require_entrance_evaluation(read_json(summary_path), summary_path)
+        for filename in ("campaign_headline_metrics.jsonl", "delta_p_over_p_fits.csv", "delta_theta_fits.csv"):
+            path = evaluation_dir / filename
+            if not path.exists():
+                continue
+            with path.open() as stream:
+                rows = (json.loads(line) for line in stream if line.strip()) if path.suffix == ".jsonl" else csv.DictReader(stream)
+                for row in rows:
+                    require_entrance_evaluation(row, path)
     base_dir = Path(manifest["campaign_dir"]).resolve()
     summary_dir = base_dir / "summary"
     summary_dir.mkdir(parents=True, exist_ok=True)
@@ -560,6 +580,8 @@ def collate_summary(manifest: dict[str, Any]) -> None:
                 adapter = summary_data.get("methods", {}).get("adapter", {})
                 momentum = adapter.get("momentum", {})
                 table_row.update({
+                    "evaluation_contract": summary_data.get("evaluation_contract"),
+                    "comparison_truth": summary_data.get("comparison_truth"),
                     "best_val_loss": summary_data.get("training_history", {}).get("best_val_loss"),
                     "adapter_relative_resolution_68": momentum.get("relative_resolution_68"),
                     "adapter_relative_bias": momentum.get("relative_bias"),

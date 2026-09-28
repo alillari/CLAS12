@@ -28,11 +28,16 @@ sys.path.insert(0, str(DOWNSTREAM_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
 from fm4npp.utils import YParams  # noqa: E402
+from evaluation_contract import (  # noqa: E402
+    EVALUATION_CONTRACT, CVT_REFERENCE_DEFINITION, configure_entrance_evaluation,
+)
 from model import MambaTrackRegressionHead  # noqa: E402
 from regression_utils import (  # noqa: E402
+    SINGLE_TARGET_TASKS,
     project_phi_pair_numpy,
     regression_phi_pairs,
     regression_target_columns,
+    single_target_to_physical_numpy,
     target_to_cartesian_numpy,
 )
 from track_regression_trainer import DownstreamTrainer  # noqa: E402
@@ -44,7 +49,8 @@ AUX_LAYOUT = (
     "cvtrec_px", "cvtrec_py", "cvtrec_pz", "cvtrec_p",
     "rec_particle_px", "rec_particle_py", "rec_particle_pz", "rec_particle_p",
 )
-METHODS = ("adapter", "cvt", "cvtrec")
+METHODS = ("adapter", "cvt")
+CVT_ENTRANCE_COLUMNS = ("cvt_benchmark_p", "cvt_benchmark_theta", "cvttraj_entrance_phi")
 PHYSICS_PLOT_METHODS = ("adapter", "cvt")
 KINEMATIC_LABELS = {
     "p_gev": r"p [GeV]",
@@ -68,6 +74,8 @@ NATIVE_TARGET_LABELS = {
     "mc_entrance_sinphi": r"native sin(phi)",
     "mc_entrance_eta": r"native eta",
     "mc_entrance_theta": r"native theta",
+    "mc_entrance_phi": r"native phi",
+    "mc_entrance_log_p": r"log(p)",
     "phi_direction": r"native phi direction",
 }
 ML_METRIC_LABELS = {
@@ -154,14 +162,9 @@ def load_analysis_config(args):
     config_path = Path(args.analysis_config).resolve()
     with config_path.open() as stream:
         config = expand_config_strings(YAML(typ="safe").load(stream)["analysis"])
-    config.setdefault("comparison_truth", "mctrue_swingback_doca")
-    config.setdefault("swingback_enabled", True)
-    config.setdefault("swingback_r_hit_cm", 6.5)
-    config.setdefault("swingback_magnetic_field_t", 5.0)
-    config.setdefault("swingback_polarity", 1)
+    configure_entrance_evaluation(config)
     config.setdefault("charge_source", "metadata_or_positive")
     config.setdefault("fallback_charge", 1)
-    config.setdefault("write_unswung_diagnostics", True)
     config.setdefault(
         "delta_p_over_p_bins_gev",
         DEFAULT_DELTA_P_OVER_P_BINS_GEV,
@@ -233,11 +236,12 @@ def build_head(trainer):
     ).to(trainer.device)
 
 
-def first_valid_row(array):
+def first_valid_row(array, valid_columns=None):
     array = np.asarray(array)
     if array.ndim == 1:
         return array
-    valid = np.all(np.isfinite(array), axis=1)
+    selection = array if valid_columns is None else array[:, list(valid_columns)]
+    valid = np.all(np.isfinite(selection), axis=1)
     return array[np.flatnonzero(valid)[0]] if valid.any() else array[0]
 
 
@@ -274,10 +278,11 @@ def _segment_labels_for_dataset(dataset, real_index, truth=False):
     return None
 
 
-def aux_row_for_sample(dataset, aux, real_index, segment_label, truth_segment_label=None):
+def aux_row_for_sample(dataset, aux, real_index, segment_label, truth_segment_label=None,
+                       valid_columns=None):
     aux_values = np.asarray(aux[real_index])
     if segment_label is None:
-        return first_valid_row(aux_values)
+        return first_valid_row(aux_values, valid_columns)
 
     segment_labels = _segment_labels_for_dataset(
         dataset, real_index, truth=truth_segment_label is not None
@@ -297,7 +302,41 @@ def aux_row_for_sample(dataset, aux, real_index, segment_label, truth_segment_la
         raise ValueError(
             f"No aux_target entries for event {real_index}, truth segment {selected_label}"
         )
-    return first_valid_row(selected)
+    return first_valid_row(selected, valid_columns)
+
+
+def load_aux_layout(data_root):
+    """Require named entrance fields; old 16-column/Cartesian tails are unsafe."""
+    path = Path(data_root) / "metadata.json"
+    with path.open() as stream:
+        layout = json.load(stream).get("aux_target_layout")
+    if not isinstance(layout, list) or len(set(layout)) != len(layout):
+        raise ValueError(f"{path} must declare a unique aux_target_layout")
+    missing = set(CVT_ENTRANCE_COLUMNS) - set(layout)
+    if missing:
+        raise ValueError(f"{path} lacks entrance benchmark fields {sorted(missing)}; no DOCA fallback is allowed")
+    return layout
+
+
+def cvt_entrance_vector(aux_row, layout, momentum_scale=1.0):
+    """Build the stored p/theta/entrance-phi benchmark without reading phi0."""
+    row = np.asarray(aux_row, dtype=float)
+    if row.shape != (len(layout),):
+        raise ValueError(f"aux_target row shape {row.shape} does not match metadata width {len(layout)}")
+    p, theta, phi = [row[layout.index(name)] for name in CVT_ENTRANCE_COLUMNS]
+    p *= momentum_scale
+    if not (np.all(np.isfinite([p, theta, phi])) and p > 0 and 0 <= theta <= np.pi):
+        return np.full(3, np.nan)
+    pt = p * np.sin(theta)
+    return np.array([pt * np.cos(phi), pt * np.sin(phi), p * np.cos(theta)])
+
+
+def entrance_comparison_arrays(records):
+    """Only explicitly named entrance vectors can feed performance metrics."""
+    def vectors(prefix):
+        return np.asarray([[row[f"{prefix}_{axis}_gev"] for axis in ("px", "py", "pz")]
+                           for row in records], dtype=float)
+    return vectors("true"), {"adapter": vectors("adapter"), "cvt": vectors("cvt_entrance")}
 
 
 def vector_kinematics(vector):
@@ -310,6 +349,9 @@ def vector_kinematics(vector):
 
 
 def target_definition(regression_task):
+    if regression_task in SINGLE_TARGET_TASKS:
+        quantity = {"p": "log(p)", "theta": "theta [rad]", "phi": "phi [rad]"}[regression_task]
+        return f"Single-target {quantity} from MC::True momentum at innermost matched CVT hit"
     if regression_task == "pt_phi_eta":
         return (
             "Derived cylindrical (pT, cos(phi), sin(phi), eta) from MC::True Cartesian "
@@ -321,61 +363,6 @@ def target_definition(regression_task):
             "momentum at innermost matched CVT hit"
         )
     return "MC::True momentum at innermost matched CVT hit"
-
-
-def wrap_phi_rad(phi):
-    return (phi + np.pi) % (2.0 * np.pi) - np.pi
-
-
-def swingback_phi_to_doca(
-    px_gev,
-    py_gev,
-    charge,
-    r_hit_cm=6.5,
-    magnetic_field_t=5.0,
-    polarity=1,
-):
-    """Swim transverse MC::True momentum direction from CVT entrance to DOCA."""
-    px_gev = np.asarray(px_gev, dtype=float)
-    py_gev = np.asarray(py_gev, dtype=float)
-    charge = np.asarray(charge, dtype=float)
-    pt = np.hypot(px_gev, py_gev)
-    phi_hit = np.arctan2(py_gev, px_gev)
-
-    valid = (
-        (pt > 0)
-        & (charge != 0)
-        & np.isfinite(pt)
-        & np.isfinite(charge)
-        & np.isfinite(phi_hit)
-    )
-    phi_doca = np.full_like(phi_hit, np.nan, dtype=float)
-
-    radius_cm = np.full_like(pt, np.nan, dtype=float)
-    radius_cm[valid] = pt[valid] / (0.3 * float(magnetic_field_t)) * 100.0
-
-    arg = np.full_like(pt, np.nan, dtype=float)
-    arg[valid] = float(r_hit_cm) / (2.0 * radius_cm[valid])
-    arg = np.clip(arg, -1.0, 1.0)
-
-    dphi = int(polarity) * np.sign(charge) * 2.0 * np.arcsin(arg)
-    phi_doca[valid] = wrap_phi_rad(phi_hit[valid] - dphi[valid])
-    return phi_doca
-
-
-def swingback_vector_to_doca(vector_gev, charge, config):
-    vector_gev = np.asarray(vector_gev, dtype=float)
-    px, py, pz = np.moveaxis(vector_gev, -1, 0)
-    pt = np.hypot(px, py)
-    phi_doca = swingback_phi_to_doca(
-        px,
-        py,
-        charge,
-        r_hit_cm=float(config["swingback_r_hit_cm"]),
-        magnetic_field_t=float(config["swingback_magnetic_field_t"]),
-        polarity=int(config["swingback_polarity"]),
-    )
-    return np.stack((pt * np.cos(phi_doca), pt * np.sin(phi_doca), pz), axis=-1)
 
 
 def kinematic_variables(vector):
@@ -979,44 +966,6 @@ def attach_vector_kinematics(record, prefix, vector):
     })
 
 
-def make_swingback_diagnostics(raw_truth, doca_truth, charge, config):
-    result = {
-        "enabled": bool(config.get("swingback_enabled", True)),
-        "comparison_truth": config.get("comparison_truth", "mctrue_swingback_doca"),
-        "r_hit_cm": safe_float(config["swingback_r_hit_cm"]),
-        "magnetic_field_t": safe_float(config["swingback_magnetic_field_t"]),
-        "polarity": int(config["swingback_polarity"]),
-        "n": int(len(raw_truth)),
-        "write_unswung_diagnostics": bool(
-            config.get("write_unswung_diagnostics", True)
-        ),
-        "charge_counts": {
-            "positive": int(np.sum(charge > 0)),
-            "negative": int(np.sum(charge < 0)),
-            "neutral": int(np.sum(charge == 0)),
-        },
-    }
-    if not result["write_unswung_diagnostics"]:
-        return result
-
-    raw_p, raw_pt, _, raw_phi = vector_kinematics(raw_truth)
-    doca_p, doca_pt, _, doca_phi = vector_kinematics(doca_truth)
-    dphi = wrapped_angle_residual_deg(doca_phi, raw_phi)
-    vector_delta = np.linalg.norm(doca_truth - raw_truth, axis=1)
-    finite_dphi = dphi[np.isfinite(dphi)]
-    finite_delta = vector_delta[np.isfinite(vector_delta)]
-    result.update({
-        "pt_preserved_max_abs_gev": safe_float(np.nanmax(np.abs(doca_pt - raw_pt))),
-        "p_preserved_max_abs_gev": safe_float(np.nanmax(np.abs(doca_p - raw_p))),
-        "pz_preserved_max_abs_gev": safe_float(
-            np.nanmax(np.abs(doca_truth[:, 2] - raw_truth[:, 2]))
-        ),
-        "doca_phi_minus_inner_phi_deg": scalar_error_metrics(finite_dphi),
-        "vector_delta_gev": scalar_error_metrics(finite_delta),
-    })
-    return result
-
-
 def attach_sample_metadata(records, path):
     """Attach JSONL metadata by the original RaggedMmap row index."""
     by_index = {}
@@ -1046,44 +995,6 @@ def attach_sample_metadata(records, path):
         raise ValueError(
             f"Sample metadata {path} is missing {len(remaining)} evaluated indices"
         )
-
-
-def audit_cvtrec_rec_particle(records):
-    """Check the expected CVTRec::Tracks -> REC::Particle momentum copy."""
-    cvtrec = np.asarray([
-        [record[f"cvtrec_{component}_gev"] for component in ("px", "py", "pz")]
-        for record in records
-    ])
-    rec_particle = np.asarray([
-        [record[f"rec_particle_{component}_gev"] for component in ("px", "py", "pz")]
-        for record in records
-    ])
-    finite = np.all(np.isfinite(cvtrec), axis=1) & np.all(
-        np.isfinite(rec_particle), axis=1
-    )
-    cvtrec = cvtrec[finite]
-    rec_particle = rec_particle[finite]
-    if not len(cvtrec):
-        return {"n_finite_pairs": 0, "consistent": False}
-    difference = rec_particle - cvtrec
-    exact = np.all(difference == 0, axis=1)
-    close = np.all(np.isclose(rec_particle, cvtrec, rtol=1e-5, atol=1e-7), axis=1)
-    cvtrec_p = np.linalg.norm(cvtrec, axis=1)
-    rec_p = np.linalg.norm(rec_particle, axis=1)
-    correlation = np.corrcoef(cvtrec_p, rec_p)[0, 1] if len(cvtrec) > 1 else np.nan
-    return {
-        "n_finite_pairs": int(len(cvtrec)),
-        "exact_match_fraction": safe_float(np.mean(exact)),
-        "close_match_fraction": safe_float(np.mean(close)),
-        "median_vector_difference_gev": safe_float(
-            np.median(np.linalg.norm(difference, axis=1))
-        ),
-        "momentum_magnitude_correlation": safe_float(correlation),
-        "consistent": bool(np.all(close)),
-        "action": (
-            "REC::Particle excluded from performance comparisons unless this audit is consistent"
-        ),
-    }
 
 
 def infer_training_log_path(config):
@@ -1191,7 +1102,7 @@ def native_target_unit(column):
         "mc_entrance_p",
     }:
         return "GeV"
-    if column == "mc_entrance_theta":
+    if column in {"mc_entrance_theta", "mc_entrance_phi"}:
         return "rad"
     return ""
 
@@ -1236,6 +1147,8 @@ def append_native_target_metrics(rows, nested, task, columns, truth_native, adap
             continue
         variable = native_target_variable(column)
         errors = adapter_native[:, index] - truth_native[:, index]
+        if column == "mc_entrance_phi":
+            errors = np.arctan2(np.sin(errors), np.cos(errors))
         metrics = scalar_error_metrics(errors)
         rows.append({
             "method": "adapter",
@@ -1350,6 +1263,9 @@ def calculate_ml_metrics(
 
 def campaign_metadata(config, summary):
     metadata = {
+        "evaluation_contract": summary.get("evaluation_contract"),
+        "swingback_enabled": summary.get("swingback_enabled", False),
+        "cvt_comparison_definition": summary.get("cvt_comparison_definition"),
         "run_name": config.get("run_name"),
         "analysis_tag": config.get("analysis_tag"),
         "run_num": config.get("run_num"),
@@ -1558,12 +1474,12 @@ def make_physics_residual_plots(output_dir, truth, predictions, config):
                 axis.axhline(0.0, color="white", linewidth=0.8, alpha=0.8)
                 axis.set_xlabel(f"True {KINEMATIC_LABELS[truth_name]}")
                 if column == 0:
-                    title_method = "Adapter" if method == "adapter" else "CVT::Tracks"
+                    title_method = "Adapter" if method == "adapter" else "CVT entrance benchmark"
                     axis.set_ylabel(
                         f"{title_method}\nReco - true {KINEMATIC_LABELS[residual_name]}"
                     )
         fig.suptitle(
-            f"Adapter and CVT::Tracks: {KINEMATIC_LABELS[residual_name]} residual",
+            f"Adapter and CVT entrance benchmark: {KINEMATIC_LABELS[residual_name]} residual",
             fontsize=16,
         )
         fig.colorbar(image, ax=axes.ravel().tolist(), label="Tracks per bin")
@@ -1603,7 +1519,7 @@ def make_direct_error_comparison_plots(plot_dir, method_results, bins, quantile)
         ax.plot([0, limit], [0, limit], color="red", linewidth=1.3,
                 label="Equal absolute error")
         ax.set(
-            xlabel=f"CVT::Tracks absolute error in {KINEMATIC_LABELS[name]}",
+            xlabel=f"CVT entrance benchmark absolute error in {KINEMATIC_LABELS[name]}",
             ylabel=f"Adapter absolute error in {KINEMATIC_LABELS[name]}",
             title=f"Direct per-track comparison: {KINEMATIC_LABELS[name]}",
             xlim=(0, limit), ylim=(0, limit),
@@ -1778,7 +1694,7 @@ def make_delta_p_over_p_plot(output_dir, rows):
         return
 
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
-    labels = {"adapter": "Adapter", "cvt": "CVT::Tracks"}
+    labels = {"adapter": "Adapter", "cvt": "CVT entrance benchmark"}
     for method in methods:
         method_rows = [
             row for row in rows
@@ -1878,7 +1794,7 @@ def make_delta_theta_plot(output_dir, rows):
     if not methods:
         return
 
-    labels = {"adapter": "Adapter", "cvt": "CVT::Tracks"}
+    labels = {"adapter": "Adapter", "cvt": "CVT entrance benchmark"}
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     for method in methods:
         method_rows = [
@@ -2006,6 +1922,74 @@ def make_plots(
     make_physics_residual_plots(output_dir, truth, predictions, config)
 
 
+def write_single_target_evaluation(config, task, records, truth_native, prediction_native):
+    """Report only the learned quantity; a scalar cannot reconstruct a vector."""
+    output_dir = config["output_dir"]
+    target_scale = float(config["target_momentum_scale_to_gev"])
+    rows, nested = [], {}
+    columns = regression_target_columns(task)
+    append_native_target_metrics(
+        rows, nested, task, columns, truth_native, prediction_native, target_scale
+    )
+    truth = single_target_to_physical_numpy(truth_native, task)[:, 0]
+    prediction = single_target_to_physical_numpy(prediction_native, task)[:, 0]
+    if task == "p":
+        truth, prediction = truth * target_scale, prediction * target_scale
+    residual = prediction - truth
+    if task == "phi":
+        residual = np.arctan2(np.sin(residual), np.cos(residual))
+    variable = "p_gev" if task == "p" else f"{task}_rad"
+    unit = "GeV" if task == "p" else "rad"
+    metrics = scalar_error_metrics(residual)
+    rows.append({
+        "method": "adapter", "space": "kinematic", "variable": variable,
+        "label": f"{task} [{unit}]", "unit": unit, **metrics,
+    })
+    nested["adapter"]["kinematic"] = {variable: metrics}
+    loss_residual = prediction_native[:, 0] - truth_native[:, 0]
+    if task == "phi":
+        loss_residual = np.arctan2(np.sin(loss_residual), np.cos(loss_residual))
+    finite_residual = loss_residual[np.isfinite(loss_residual)]
+    absolute = np.abs(finite_residual)
+    huber = np.where(absolute <= 1.0, 0.5 * finite_residual**2, absolute - 0.5)
+    history, training_summary = read_training_history(infer_training_log_path(config))
+    summary = {
+        "evaluation_contract": EVALUATION_CONTRACT,
+        "checkpoint": str(config["checkpoint"]), "model_config": config["model_config"],
+        "training_target_task": task, "training_target_columns": list(columns),
+        "training_target_definition": target_definition(task),
+        "comparison_truth": "mctrue_inner_hit",
+        "comparison_truth_definition": target_definition(task),
+        "adapter_comparison_definition": "Single predicted quantity at the innermost matched CVT hit",
+        "swingback_enabled": False,
+        "n_records": len(records), "n_valid_targets": int(len(finite_residual)),
+        "huber_loss": safe_float(huber.mean()) if len(huber) else None,
+        "huber_delta": 1.0, "methods": {"adapter": {"n": metrics["n"], **nested["adapter"]}},
+        "training_history": training_summary,
+    }
+    write_predictions(output_dir / "predictions.csv.gz", records)
+    write_csv(output_dir / "ml_metrics.csv", rows)
+    for filename, payload in (("summary.json", summary), ("ml_metrics_summary.json", nested)):
+        with (output_dir / filename).open("w") as stream:
+            json.dump(payload, stream, indent=2, allow_nan=False)
+    # Do not emit the joint evaluator's unlearned momentum/angle summaries.
+    headlines = build_campaign_headline_rows(config, {**summary, "methods": {}}, rows)
+    write_jsonl(
+        output_dir / "campaign_headline_metrics.jsonl",
+        [row for row in headlines if row["record_type"] == "ml_error"],
+    )
+    write_training_history(output_dir / "training_history.csv", history)
+    plot_dir = output_dir / "plots" / "ml"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    make_training_curve_plot(output_dir, history)
+    for space in ("native_target", "kinematic"):
+        make_ml_error_bar_plot(
+            plot_dir, rows, space, f"ml_error_bars_{space}.png",
+            f"Single-target {task} evaluation",
+        )
+    return summary
+
+
 def main():
     cli = parse_args()
     config = load_analysis_config(cli)
@@ -2051,7 +2035,10 @@ def main():
     regression_task = trainer.regression_target_stats["task"]
 
     dataset = trainer.val_data_loader.dataset
-    aux = RaggedMmap(str(Path(params.data_root_test) / "aux_target_test"))
+    single_target = regression_task in SINGLE_TARGET_TASKS
+    aux = None if single_target else RaggedMmap(str(Path(params.data_root_test) / "aux_target_test"))
+    aux_layout = None if single_target else load_aux_layout(params.data_root_test)
+    entrance_indices = None if single_target else [aux_layout.index(name) for name in CVT_ENTRANCE_COLUMNS]
     target_scale = float(config["target_momentum_scale_to_gev"])
     aux_scale = float(config["auxiliary_momentum_scale_to_gev"])
     max_samples = int(config["max_samples"])
@@ -2088,13 +2075,19 @@ def main():
             target_segment_mask = batch.get("target_segment_mask")
             if target_segment_mask is not None:
                 target_segment_mask = target_segment_mask.to(trainer.device).bool()
-            normalized_truth = trainer.build_regression_targets(
+            target_batch = trainer.build_regression_targets(
                 regression, mask, target_segment_mask
-            )["target"]
+            )
+            normalized_truth = target_batch["target"]
             prediction_native = trainer.down_model.target_normalizer.denormalize(prediction).cpu().numpy()
             truth_native = trainer.down_model.target_normalizer.denormalize(normalized_truth).cpu().numpy()
-            prediction = target_to_cartesian_numpy(prediction_native, regression_task)
-            truth = target_to_cartesian_numpy(truth_native, regression_task)
+            if single_target:
+                truth_native[~target_batch["target_valid"].cpu().numpy()] = np.nan
+                physical_prediction = single_target_to_physical_numpy(prediction_native, regression_task)
+                physical_truth = single_target_to_physical_numpy(truth_native, regression_task)
+            else:
+                prediction = target_to_cartesian_numpy(prediction_native, regression_task)
+                truth = target_to_cartesian_numpy(truth_native, regression_task)
 
             take = min(batch_size, remaining)
             for local_index in range(take):
@@ -2105,9 +2098,28 @@ def main():
                 truth_segment_label = _batch_int(
                     batch, "truth_segment_label", local_index, default=segment_label
                 )
+                if single_target:
+                    variable = "p_gev" if regression_task == "p" else f"{regression_task}_rad"
+                    scale = target_scale if regression_task == "p" else 1.0
+                    records.append({
+                        "real_index": real_index, "source_event_index": real_index,
+                        "segment_label": "" if segment_label is None else int(segment_label),
+                        "truth_segment_label": "" if truth_segment_label is None else int(truth_segment_label),
+                        "adapter_sample_mode": adapter_sample_mode,
+                        "n_hits": int(mask[local_index].sum().item()),
+                        "true_native": truth_native[local_index, 0],
+                        "adapter_native": prediction_native[local_index, 0],
+                        f"true_{variable}": physical_truth[local_index, 0] * scale,
+                        f"adapter_{variable}": physical_prediction[local_index, 0] * scale,
+                    })
+                    native_truth_rows.append(truth_native[local_index].copy())
+                    native_adapter_rows.append(prediction_native[local_index].copy())
+                    continue
                 aux_row = aux_row_for_sample(
-                    dataset, aux, real_index, segment_label, truth_segment_label
-                ).astype(float) * aux_scale
+                    dataset, aux, real_index, segment_label, truth_segment_label,
+                    valid_columns=entrance_indices,
+                ).astype(float)
+                cvt_vector = cvt_entrance_vector(aux_row, aux_layout, aux_scale)
                 if "pid_target" in batch:
                     pid_values = np.asarray(
                         batch["pid_target"][local_index].detach().cpu()
@@ -2190,7 +2202,12 @@ def main():
                         "adapter_native_theta_rad": pred_native[3],
                         "adapter_native_theta_deg": np.degrees(pred_native[3]),
                     })
-                record.update({name + "_gev": value for name, value in zip(AUX_LAYOUT, aux_row)})
+                # Retain original vectors only as explicitly labelled diagnostics.
+                # Angular auxiliary fields are radians and must never be scaled to GeV.
+                for name in AUX_LAYOUT:
+                    if name in aux_layout:
+                        record[f"legacy_{name}_gev"] = aux_row[aux_layout.index(name)] * aux_scale
+                attach_vector_kinematics(record, "cvt_entrance", cvt_vector)
                 records.append(record)
             cursor += batch_size
 
@@ -2207,58 +2224,23 @@ def main():
             )
         attach_sample_metadata(records, metadata_path)
 
-    raw_truth = np.asarray([
-        [r["true_px_gev"], r["true_py_gev"], r["true_pz_gev"]]
-        for r in records
-    ])
+    if single_target:
+        write_single_target_evaluation(
+            config, regression_task, records,
+            np.asarray(native_truth_rows), np.asarray(native_adapter_rows),
+        )
+        trainer.cleanup()
+        return
+
+    truth, predictions = entrance_comparison_arrays(records)
+    comparison_truth = "mctrue_inner_hit"
+    truth_definition = "MC::True momentum at innermost matched CVT hit"
+    truth_prefix = "true"
+    # Charge is retained only as a differential label, never for transport.
     charge, charge_summary = resolve_charge(records, config)
     for record, value in zip(records, charge):
         record["comparison_charge"] = int(value)
-
-    raw_adapter = np.asarray([
-        [r["adapter_px_gev"], r["adapter_py_gev"], r["adapter_pz_gev"]]
-        for r in records
-    ])
-
-    if bool(config.get("swingback_enabled", True)):
-        truth_doca = swingback_vector_to_doca(raw_truth, charge, config)
-        adapter_doca = swingback_vector_to_doca(raw_adapter, charge, config)
-    else:
-        truth_doca = raw_truth.copy()
-        adapter_doca = raw_adapter.copy()
-    for record, vector in zip(records, truth_doca):
-        attach_vector_kinematics(record, "truth_doca", vector)
-    for record, vector in zip(records, adapter_doca):
-        attach_vector_kinematics(record, "adapter_doca", vector)
-
     write_predictions(output_dir / "predictions.csv.gz", records)
-    comparison_truth = str(config.get("comparison_truth", "mctrue_swingback_doca"))
-    if comparison_truth == "mctrue_swingback_doca":
-        truth = truth_doca
-        truth_definition = (
-            "MC::True at innermost matched CVT hit, transversely swung back to DOCA"
-        )
-        truth_prefix = "truth_doca"
-    elif comparison_truth == "mctrue_inner_hit":
-        truth = raw_truth
-        truth_definition = "MC::True momentum at innermost matched CVT hit"
-        truth_prefix = "true"
-    else:
-        raise ValueError(
-            "comparison_truth must be mctrue_swingback_doca or mctrue_inner_hit; "
-            f"got {comparison_truth!r}"
-        )
-    predictions = {
-        "adapter": adapter_doca,
-        "cvt": np.asarray([
-            [r[f"cvt_{component}_gev"] for component in ("px", "py", "pz")]
-            for r in records
-        ]),
-        "cvtrec": np.asarray([
-            [r[f"cvtrec_{component}_gev"] for component in ("px", "py", "pz")]
-            for r in records
-        ]),
-    }
     native_target_columns = list(trainer.regression_target_stats["columns"])
     if native_target_columns != list(regression_target_columns(regression_task)):
         raise ValueError(
@@ -2286,24 +2268,16 @@ def main():
         "training_target_definition": target_definition(regression_task),
         "comparison_truth": comparison_truth,
         "comparison_truth_definition": truth_definition,
-        "adapter_comparison_definition": (
-            "Adapter output swung back to DOCA with the same charge and geometry "
-            "as comparison truth"
-            if bool(config.get("swingback_enabled", True))
-            else "Raw adapter output; swingback disabled"
-        ),
-        "raw_truth_definition": "MC::True momentum at innermost matched CVT hit",
-        "swingback": make_swingback_diagnostics(
-            raw_truth, truth_doca, charge, config
-        ),
+        "evaluation_contract": EVALUATION_CONTRACT,
+        "swingback_enabled": False,
+        "adapter_comparison_definition": "Raw adapter output at the innermost matched CVT hit",
+        "cvt_comparison_definition": CVT_REFERENCE_DEFINITION,
         "charge_resolution": charge_summary,
         "reference_hierarchy": {
-            "fair_baseline": "CVT::Tracks first fit without PID-dependent energy-loss correction",
-            "pid_corrected_reference": "CVTRec::Tracks second fit with PID-dependent energy-loss correction",
-            "rec_particle_expectation": "REC::Particle should copy CVTRec::Tracks, subject to the consistency audit below",
+            "fair_baseline": CVT_REFERENCE_DEFINITION,
+            "excluded_legacy_references": "CVT/CVTRec/REC::Particle DOCA vectors are diagnostic only",
             "generator_reference": "MC::Particle is generator momentum before transport energy loss",
         },
-        "cvtrec_rec_particle_consistency": audit_cvtrec_rec_particle(records),
         "units": "GeV and degrees",
         "methods": {method: calculate_metrics(truth, prediction, tolerances) for method, prediction in predictions.items()},
         "ml_metrics": ml_metric_summary,
@@ -2344,11 +2318,15 @@ def main():
     delta_p_over_p_rows = calculate_delta_p_over_p_fit_rows(
         truth, predictions, delta_p_over_p_bins, config
     )
+    for row in delta_p_over_p_rows:
+        row.update(evaluation_contract=EVALUATION_CONTRACT, comparison_truth=comparison_truth)
     write_csv(output_dir / "delta_p_over_p_fits.csv", delta_p_over_p_rows)
     delta_theta_bins = np.asarray(config["delta_theta_bins_gev"], dtype=float)
     delta_theta_rows = calculate_delta_theta_fit_rows(
         truth, predictions, delta_theta_bins, config
     )
+    for row in delta_theta_rows:
+        row.update(evaluation_contract=EVALUATION_CONTRACT, comparison_truth=comparison_truth)
     write_csv(output_dir / "delta_theta_fits.csv", delta_theta_rows)
     make_binned_residual_fit_diagnostic_plots(
         output_dir,

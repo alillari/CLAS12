@@ -8,12 +8,14 @@ from pathlib import Path
 from collections import Counter
 
 from campaign_util import (
+    is_entrance_evaluation,
     collate_summary,
     command_env,
     eval_command,
     format_command,
     load_status,
     normalize_manifest_paths,
+    read_json,
     read_yaml,
     render_analysis_yaml,
     render_model_yaml,
@@ -41,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Print planned commands without writing configs or running jobs.")
     parser.add_argument("--force-train", action="store_true", help="Train even if the adapter checkpoint/status already exists.")
     parser.add_argument("--force-eval", action="store_true", help="Evaluate even if evaluation outputs/status already exist.")
+    parser.add_argument("--skip-train", action="store_true", help="Evaluate existing adapter checkpoints without training; fail if a checkpoint is missing.")
     parser.add_argument("--skip-eval", action="store_true", help="Train selected runs but do not evaluate.")
     parser.add_argument("--collate-only", action="store_true", help="Only rebuild campaign summary files from existing evaluations.")
     parser.add_argument("--status", action="store_true", help="Print campaign progress from status.yaml and expected outputs.")
@@ -131,6 +134,11 @@ def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
 def train_if_needed(args: argparse.Namespace, manifest: dict, status_path: Path, status_data: dict, run: dict) -> None:
     current_status = run_current_status(status_data, run)
     checkpoint = Path(run["adapter_checkpoint"])
+    if getattr(args, "skip_train", False):
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"--skip-train requires an existing adapter checkpoint: {checkpoint}")
+        print(f"[{run['run_id']}] using existing checkpoint; training disabled")
+        return
     if (
         not args.force_train
         and current_status in TRAIN_DONE_STATUSES
@@ -177,6 +185,7 @@ def eval_if_needed(args: argparse.Namespace, manifest: dict, status_path: Path, 
         not args.force_eval
         and current_status in DONE_STATUSES
         and summary.is_file()
+        and is_entrance_evaluation(read_json(summary))
     ):
         print(f"[{run['run_id']}] evaluation already complete; skipping")
         return

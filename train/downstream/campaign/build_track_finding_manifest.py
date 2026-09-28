@@ -4,14 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from train.downstream.track_finding_contract import validate_track_finding_modes
 
 from campaign_util import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_CHECKPOINT_ROOT,
     campaign_dir,
     discover_checkpoint,
+    load_base_model_config,
+    read_yaml,
     parse_run_name,
     run_paths,
     utc_now,
@@ -82,8 +88,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-data-workers", type=int, help="DataLoader worker count.")
     parser.add_argument(
         "--track-target-mode",
-        choices=("signal_only", "unified_noise_instance"),
-        help="Hungarian target construction; unified_noise_instance restores raw -1 as one object target.",
+        choices=("signal_only",),
+        help="Hungarian targets contain only signal tracks; aggregate background queries were removed.",
     )
     parser.add_argument(
         "--validation-ari-mode",
@@ -150,6 +156,7 @@ def parse_training_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "assignment_threshold": args.assignment_threshold,
     }
     overrides = {key: value for key, value in direct.items() if value is not None}
+    validate_track_finding_modes(overrides, source="campaign arguments")
     for item in args.training_override:
         if "=" not in item:
             raise ValueError(f"--training-override must be KEY=VALUE; got {item!r}")
@@ -157,7 +164,9 @@ def parse_training_overrides(args: argparse.Namespace) -> dict[str, Any]:
         key = key.strip()
         if not key:
             raise ValueError(f"--training-override has an empty key: {item!r}")
-        overrides[key] = parse_scalar(value.strip())
+        parsed = parse_scalar(value.strip())
+        validate_track_finding_modes({key: parsed}, source="--training-override")
+        overrides[key] = parsed
     return overrides
 
 
@@ -224,6 +233,13 @@ def main() -> None:
     manifest_path = Path(args.manifest).resolve() if args.manifest else base_dir / "manifest.yaml"
     eventnumbers = parse_eventnumbers(args.eventnumber)
     training_overrides = parse_training_overrides(args)
+    validate_track_finding_modes(
+        load_base_model_config(Path(args.base_model_yaml), "clas12_track_finding_adapteronly"),
+        source=args.base_model_yaml,
+    )
+    validate_track_finding_modes(
+        read_yaml(Path(args.base_analysis_yaml))["analysis"], source=args.base_analysis_yaml,
+    )
 
     runs = []
     if not args.no_adapter_only:
@@ -300,9 +316,6 @@ def main() -> None:
         "analysis_overrides": {
             key: value for key, value in {
                 "assignment_threshold": args.assignment_threshold,
-                # Thresholding is an inference policy: primary campaign results must never
-                # choose an oracle noise-attribution view.
-                "noise_attribution_mode": "native" if args.assignment_threshold is not None else None,
             }.items() if value is not None
         },
         "runs": runs,

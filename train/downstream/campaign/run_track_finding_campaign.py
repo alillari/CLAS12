@@ -13,6 +13,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from train.downstream.track_finding_contract import validate_track_finding_modes
+
 import numpy as np
 from mmap_ninja import RaggedMmap
 
@@ -95,6 +98,9 @@ def ensure_run_dirs(run: dict[str, Any]) -> None:
 
 def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     params = load_base_model_config(Path(run.get("base_model_yaml", manifest["base_model_yaml"])), run.get("base_model_config", "clas12_track_finding_adapteronly"))
+    validate_track_finding_modes(params, source="base model")
+    validate_track_finding_modes(manifest.get("training_overrides", {}), source="manifest training_overrides")
+    validate_track_finding_modes(run.get("training_overrides", {}), source="run training_overrides")
     for key in ("preflight_max_events", "min_multitrack_fraction"):
         params.pop(key, None)
     params.update({
@@ -119,6 +125,9 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
 def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     data = read_yaml(Path(manifest["base_analysis_yaml"]))
     analysis = dict(data["analysis"])
+    validate_track_finding_modes(analysis, source="base analysis")
+    validate_track_finding_modes(manifest.get("analysis_overrides", {}), source="manifest analysis_overrides")
+    validate_track_finding_modes(run.get("analysis_overrides", {}), source="run analysis_overrides")
     final_evaluation_events = int(
         run.get(
             "final_evaluation_events",
@@ -612,6 +621,14 @@ def main() -> None:
     runs = selected_runs(manifest, args.only, args.limit)
     status_path = Path(manifest["campaign_dir"]).resolve() / "status.yaml"
 
+    validate_track_finding_modes(manifest, source="manifest")
+    for key in ("training_overrides", "analysis_overrides"):
+        validate_track_finding_modes(manifest.get(key, {}), source=f"manifest {key}")
+    for run in runs:
+        validate_track_finding_modes(run, source=run["run_id"])
+        for key in ("training_overrides", "analysis_overrides"):
+            validate_track_finding_modes(run.get(key, {}), source=f"{run['run_id']} {key}")
+
     if args.collate_only:
         collate_summary(
             manifest,
@@ -623,6 +640,18 @@ def main() -> None:
     if args.status:
         print_status(manifest, runs, status_path)
         return
+
+    # Validate every selected source before dataset preflight, writes, or launches.
+    validate_track_finding_modes(
+        read_yaml(Path(manifest["base_analysis_yaml"]))["analysis"], source="base analysis",
+    )
+    for run in runs:
+        validate_track_finding_modes(
+            load_base_model_config(
+                Path(run.get("base_model_yaml", manifest["base_model_yaml"])),
+                run.get("base_model_config", "clas12_track_finding_adapteronly"),
+            ), source=f"{run['run_id']} base model",
+        )
 
     if args.dry_run:
         print_dry_run(manifest, runs)

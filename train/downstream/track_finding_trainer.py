@@ -37,6 +37,7 @@ from trackinghead import *
 from loss import *
 from downstream_util import get_early_stopping_config
 from track_finding_metrics import MatchConfig, event_track_metrics, summarize_event_metrics
+from train.downstream.track_finding_contract import validate_track_finding_modes
 from track_finding_targets import (
     SIGNAL_ONLY,
     build_track_instance_targets,
@@ -57,7 +58,7 @@ class DownstreamTrainer():
 
     """ trainer class """
     def __init__(self, params, args):
-        
+        validate_track_finding_modes(vars(params), source="track-finding model")
         ''' init vars for distributed training (ddp) and logging'''
         self.root_dir = args.root_dir
         self.global_log_dir = os.path.join(args.root_dir, args.global_log_dir)
@@ -1523,6 +1524,7 @@ class DownstreamTrainer():
 
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
 
         # 3. Handle DDP keys
         state_dict = checkpoint['model_state_dict']
@@ -1591,6 +1593,7 @@ class DownstreamTrainer():
         else:
             device_str = str(self.device)
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}
         #try:
             #self.model.load_state_dict(checkpoint['model_state'])

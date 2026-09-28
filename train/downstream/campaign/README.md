@@ -504,13 +504,80 @@ python train/downstream/campaign/plot_track_regression_campaign.py \
   --campaign-dir /home/alessio/ML-work/result_deep_storage/campaigns/campaign_1_track_regression_label_sweep
 ```
 
-The plotting script has three plot suites:
+The plotting script has five plot-suite choices:
 
 ```bash
 --plot-suite standard              # existing MAE/RMSE/R2 scaling plots
 --plot-suite momentum-resolution   # fitted delta-p/p momentum-resolution plots
---plot-suite all                   # both suites
+--plot-suite presentation          # slide-ready physical error, resolution and bias panels
+--plot-suite presentation-ml       # only slide-ready MAE/RMSE/R2 metrics
+--plot-suite all                   # all suites, including presentation exports
 ```
+
+### Slide-ready momentum figures
+
+The presentation suite uses the track-finding figures' cream/navy/rust palette,
+with vector PDF and 300-dpi PNG exports, horizontal and vertical combined panels,
+and standalone panels under `presentation/individual/`. It reads stored summaries
+only: it does not retrain, load checkpoints, rerun evaluation, or refit residuals.
+
+`presentation` also includes a `presentation/ml_metrics/` figure set. Use
+`--plot-suite presentation-ml` to generate only this set:
+
+- `regression_metrics_*_{1x3,3x1}` compares mean component MAE, pooled component
+  RMSE and mean component R² across label budgets, with COATJAVA as the reference.
+- `{mae,rmse,r2}_components_*` shows px, py and pz separately, with corresponding
+  standalone panels under `ml_metrics/individual/`.
+- `rmse_kinematic_*` adds p/theta/wrapped-phi RMSE panels. These quantities have
+  no stored R² in the campaign summaries; their R² is not inferred or fabricated.
+- `individual/r2_cartesian_10k_plus_*` explicitly zooms the high-label regime;
+  the main R² figures still show all budgets and preserve negative values.
+
+The aggregate MAE and R² are arithmetic means of the three Cartesian component
+values. Pooled RMSE is `sqrt((RMSE_px² + RMSE_py² + RMSE_pz²) / 3)`, requiring
+equal component sample counts. It is not the arithmetic mean of component RMSEs
+or the per-track 3D vector-error RMSE. CSV exports and a separate provenance file
+record all values and definitions. Existing `standard` plots are unchanged.
+
+```bash
+PY=/home/alessio/miniconda3/envs/fm4npp/bin/python
+export MPLCONFIGDIR=/tmp/matplotlib-cache
+CAMPAIGN_DIR=/path/to/completed/campaign
+"$PY" train/downstream/campaign/plot_track_regression_campaign.py \
+  --campaign-dir "$CAMPAIGN_DIR" \
+  --plot-suite presentation
+```
+
+Use `--output-dir /path/to/local/plots` when reading a mounted, read-only campaign.
+The suite writes into `<output-dir>/presentation/`. Optional
+`--presentation-labels 100000` selects a common training-label budget for the
+resolution and bias figures; by default it uses the largest budget available for
+every evaluated model, without choosing by performance.
+
+- `momentum_scaling_*_{1x3,3x1}`: physical MAE in momentum, theta and wrapped phi
+  versus labeled events, with logarithmic axes for positive errors. Single-budget
+  campaigns instead produce categorical `momentum_errors_*` comparisons.
+- `momentum_resolution_*_{1x2,2x1}` and `momentum_bias_*_{1x2,2x1}`: fitted width
+  and mean of delta-p/p (percent) and delta-theta (degrees), versus true momentum.
+  A campaign with only one fit table produces single-panel outputs.
+- `all_models`, `focus`, `other_pretrained_lines` and
+  `other_pretrained_envelope` variants are produced where applicable. Focus uses
+  adapter-only, the largest available pretrained backbone, and COATJAVA.
+  The envelope is a min/max range across other backbones, **not an uncertainty
+  interval**. Fixed-budget categorical comparisons do not draw envelopes.
+- `model_labels.csv`, `selected_runs.csv`, `*_plot_data.csv`, and
+  `provenance.json` retain source identities, sample counts and source checksums.
+  `m1`, `m2`, etc. are assigned by width/depth/source ID within the campaign;
+  consult the mapping before comparing labels across campaigns.
+
+COATJAVA denotes the stored `cvt` method (`CVT::Tracks`). Identical repeated
+baseline results are shown once; differing baseline values/counts cause an error
+rather than being averaged. Duplicate model/budget runs also require an explicit
+subset. Physical quantities are taken from `ml_error / kinematic`, never averaged
+across mixed-unit native losses. Only `fit_status=ok` bins enter resolution/bias
+curves; failed and sparse bins leave gaps. Error bars are stored fit-parameter
+errors, not residual widths or seed uncertainties. Missing fit tables are reported
+and skipped, while physical MAE figures remain available.
 
 For campaigns evaluated before `delta_p_over_p_fits.csv` or
 `delta_theta_fits.csv` existed, rerun evaluation before making the corresponding

@@ -6,9 +6,7 @@ import torch
 import torch.nn.functional as F
 
 
-SIGNAL_ONLY = "signal_only"
-UNIFIED_NOISE_INSTANCE = "unified_noise_instance"
-VALID_TARGET_MODES = frozenset({SIGNAL_ONLY, UNIFIED_NOISE_INSTANCE})
+from train.downstream.track_finding_contract import SIGNAL_ONLY, validate_track_finding_modes
 
 
 def validation_ari_metric(mode: str) -> str:
@@ -31,16 +29,8 @@ def build_track_instance_targets(
     background_label: int = -1,
     padding_label: int = -100,
 ) -> tuple[list[dict[str, torch.Tensor]], list[torch.Tensor]]:
-    """Build per-event Hungarian targets without ever promoting padding.
-
-    ``unified_noise_instance`` follows the published FM4NPP target intent: the
-    raw background label is one ordinary instance mask with object class 1.
-    ``signal_only`` preserves the earlier CLAS12 compatibility behavior.
-    """
-    if mode not in VALID_TARGET_MODES:
-        raise ValueError(
-            f"Unknown track_target_mode {mode!r}; expected one of {sorted(VALID_TARGET_MODES)}"
-        )
+    """Build signal-track targets; background and padding are never instances."""
+    validate_track_finding_modes({"track_target_mode": mode})
     if labels.ndim != 2 or valid_mask.shape != labels.shape:
         raise ValueError("labels and valid_mask must be matching (batch, points) tensors")
 
@@ -51,8 +41,7 @@ def build_track_instance_targets(
         # Point geometry defines validity; the label guard makes the padding
         # boundary explicit even if a malformed batch marks a padded row valid.
         selected = valid_mask[batch_idx].bool() & (sample_labels != int(padding_label))
-        if mode == SIGNAL_ONLY:
-            selected &= sample_labels != int(background_label)
+        selected &= sample_labels != int(background_label)
 
         selected_labels = sample_labels[selected]
         if selected_labels.numel() == 0:

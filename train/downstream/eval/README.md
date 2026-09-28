@@ -1,4 +1,29 @@
-# Track-regression evaluation
+# Downstream evaluation
+
+## Track-finding background policy
+
+Track finding supports `track_target_mode: signal_only`. Background clusters
+are negative members of every signal-track mask, never a separate query target.
+The query-level no-object class and the point assignment threshold remain active.
+Both `validation_ari_mode: signal` and `validation_ari_mode: inclusive` are supported;
+inclusive ARI does not require a background query.
+
+The retired `unified_noise_instance` training mode and
+`truth_joint_hungarian_qualified` evaluation mode raise errors when requested
+through YAML, campaign overrides, CLI options, or adapter checkpoint metadata.
+Explicit unsupported values are never silently converted to defaults. Old
+configurations declaring `noise_attribution_mode: native` remain accepted; new
+configurations can omit that field. Checkpoints without mode metadata retain
+the historical signal-only/native default.
+
+Evaluation and threshold sweeps now score only native predictions, without
+truth-assisted query relabeling. New outputs use `metric_view: native` and stop
+writing noise-attribution reports or duplicate `*_native.csv` files. The standard
+CSV filenames remain. Summary JSON retains `native_metrics`, `native_baselines`,
+and `native_comparisons` as aliases for existing campaign plots. Existing
+checkpoints and campaign artifacts are not rewritten by this cleanup.
+
+## Track-regression evaluation
 
 Run the standalone adapter-only campaign example from any working directory:
 

@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from fm4npp.utils import YParams
+from train.downstream.track_finding_contract import validate_track_finding_modes
 
 try:
     from .track_finding_trainer import DownstreamTrainer
@@ -104,6 +105,7 @@ def _write_json(path: str, payload: dict[str, Any]) -> None:
 
 def resolve_params(config: TrackFindingExperimentConfig) -> YParams:
     params = YParams(os.path.abspath(config.yaml_config), config.config)
+    validate_track_finding_modes(vars(params), source=config.yaml_config)
     batch_size = int(config.train_batch_size)
     params.update_params({
         "continue_from_best": True,

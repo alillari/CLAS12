@@ -30,16 +30,13 @@ from loss import assign_points_to_masks  # noqa: E402
 from trackinghead import MambaAttentionHead  # noqa: E402
 from track_finding_metrics import (  # noqa: E402
     MatchConfig,
-    NOISE_ATTRIBUTION_NATIVE,
-    NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
-    canonicalize_noise_query,
     compare_metric_summaries,
     event_track_metrics,
     finite_or_none,
-    summarize_noise_attribution,
     summarize_event_metrics,
     track_momentum_by_label,
 )
+from train.downstream.track_finding_contract import validate_track_finding_modes
 from track_finding_trainer import DownstreamTrainer  # noqa: E402
 
 
@@ -87,6 +84,7 @@ def read_analysis(path: Path) -> dict[str, Any]:
     with path.open() as stream:
         data = YAML(typ="safe").load(stream) or {}
     analysis = expand_env_defaults(data.get("analysis", data))
+    validate_track_finding_modes(analysis, source=str(path))
     context = dict(analysis)
     analysis = format_placeholders(analysis, context)
     return analysis
@@ -134,8 +132,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-per-point-predictions", action="store_true")
     parser.add_argument(
         "--noise-attribution-mode",
-        choices=(NOISE_ATTRIBUTION_NATIVE, NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED),
-        help="Evaluation-only handling of a possible aggregate truth-noise query.",
+        choices=("native",),
+        help="Legacy compatibility option; only native predictions are supported.",
     )
     parser.add_argument(
         "--assignment-thresholds",
@@ -310,52 +308,19 @@ def evaluate_event_method(
     reg: np.ndarray | None,
     match_config: MatchConfig,
     momentum_scale: float,
-    noise_attribution_mode: str,
 ) -> dict[str, Any]:
-    """Return primary canonical and untouched native event evaluations."""
-    native_result = event_track_metrics(
-        truth,
-        pred,
-        valid_mask=valid,
-        pred_signal_mask=pred_signal,
-        config=match_config,
+    """Evaluate predictions directly, without truth-assisted relabeling."""
+    pred_signal = np.asarray(pred_signal, dtype=bool) & (pred >= 0) & valid
+    pred = pred.copy()
+    pred[~pred_signal] = match_config.background_label
+    result = event_track_metrics(
+        truth, pred, valid_mask=valid, pred_signal_mask=pred_signal, config=match_config,
     )
-    canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
-        truth,
-        pred,
-        valid_mask=valid,
-        pred_signal_mask=pred_signal,
-        config=match_config,
-        mode=noise_attribution_mode,
-    )
-    canonical_result = event_track_metrics(
-        truth,
-        canonical_pred,
-        valid_mask=valid,
-        pred_signal_mask=canonical_signal,
-        config=match_config,
-    )
-    canonical = _event_rows_for_result(
-        method, event_id, batch_index, sample_index, truth, canonical_pred,
-        canonical_signal, valid, reg, match_config, momentum_scale, "canonical", canonical_result,
-    )
-    native = _event_rows_for_result(
+    rows = _event_rows_for_result(
         method, event_id, batch_index, sample_index, truth, pred,
-        pred_signal, valid, reg, match_config, momentum_scale, "native", native_result,
+        pred_signal, valid, reg, match_config, momentum_scale, "native", result,
     )
-    attribution.update({
-        "method": method,
-        "event_id": event_id,
-        "batch_index": batch_index,
-        "sample_index": sample_index,
-    })
-    return {
-        "canonical": canonical,
-        "native": native,
-        "attribution": attribution,
-        "canonical_pred": canonical_pred,
-        "canonical_signal": canonical_signal,
-    }
+    return {"rows": rows, "pred": pred, "signal": pred_signal}
 
 
 EVENT_MEAN_METRICS = (
@@ -416,56 +381,6 @@ class EventMetricAccumulator:
             self.counts["n_matched_tracks"] / self.counts["n_pred_tracks"]
             if self.counts["n_pred_tracks"] else None
         )
-        return out
-
-
-class NoiseAttributionAccumulator:
-    """Streaming summary for attribution records produced during a sweep."""
-
-    def __init__(self, mode: str) -> None:
-        self.mode = mode
-        self.n_events = 0
-        self.n_truth_noise = 0
-        self.n_candidates = 0
-        self.n_qualified = 0
-        self.sums = {key: 0.0 for key in (
-            "noise_match_iou", "noise_match_purity", "noise_match_efficiency",
-        )}
-
-    def add(self, row: dict[str, Any]) -> None:
-        self.n_events += 1
-        if not row.get("noise_truth_present"):
-            return
-        self.n_truth_noise += 1
-        if row.get("noise_pred_id") is not None:
-            self.n_candidates += 1
-        if row.get("noise_match_qualified"):
-            self.n_qualified += 1
-            for key in self.sums:
-                if row.get(key) is not None:
-                    self.sums[key] += float(row[key])
-
-    def summary(self) -> dict[str, Any]:
-        out = {
-            "n_events": self.n_events,
-            "noise_attribution_mode": self.mode,
-            "n_events_with_truth_noise": self.n_truth_noise,
-            "n_events_with_joint_noise_candidate": self.n_candidates,
-            "n_events_with_qualified_noise_query": self.n_qualified,
-            "noise_query_candidate_rate": (
-                self.n_candidates / self.n_truth_noise if self.n_truth_noise else None
-            ),
-            "noise_query_match_rate": (
-                self.n_qualified / self.n_truth_noise if self.n_truth_noise else None
-            ),
-        }
-        for key, value in self.sums.items():
-            out[f"qualified_{key}_mean"] = (
-                value / self.n_qualified if self.n_qualified else None
-            )
-        if self.mode == NOISE_ATTRIBUTION_NATIVE:
-            out["noise_query_candidate_rate"] = None
-            out["noise_query_match_rate"] = None
         return out
 
 
@@ -541,23 +456,10 @@ def run_threshold_sweep(
         raise ValueError("--min-efficiency-retention must be in (0, 1]")
 
     thresholds = normalize_thresholds(args.assignment_thresholds)
-    noise_attribution_mode = str(
-        analysis.get("noise_attribution_mode", NOISE_ATTRIBUTION_NATIVE)
-    )
+    validate_track_finding_modes(analysis, source="threshold sweep")
     partitions = ("calibration", "heldout")
     adapter_accumulators = {
         threshold: {partition: EventMetricAccumulator() for partition in partitions}
-        for threshold in thresholds
-    }
-    adapter_native_accumulators = {
-        threshold: {partition: EventMetricAccumulator() for partition in partitions}
-        for threshold in thresholds
-    }
-    attribution_accumulators = {
-        threshold: {
-            partition: NoiseAttributionAccumulator(noise_attribution_mode)
-            for partition in partitions
-        }
         for threshold in thresholds
     }
     coatjava_accumulators = {
@@ -613,31 +515,14 @@ def run_threshold_sweep(
                 for threshold, (assignments, classes) in thresholded.items():
                     native_pred = assignments[sample_index].detach().cpu().numpy()
                     native_signal = (classes[sample_index] != 0).detach().cpu().numpy()
-                    native_result = event_track_metrics(
-                        truth,
-                        native_pred,
-                        valid_mask=valid,
-                        pred_signal_mask=native_signal,
-                        config=match_config,
-                    )
-                    canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
-                        truth,
-                        native_pred,
-                        valid_mask=valid,
-                        pred_signal_mask=native_signal,
-                        config=match_config,
-                        mode=noise_attribution_mode,
-                    )
                     result = event_track_metrics(
                         truth,
-                        canonical_pred,
+                        native_pred,
                         valid_mask=valid,
-                        pred_signal_mask=canonical_signal,
+                        pred_signal_mask=native_signal,
                         config=match_config,
                     )
                     adapter_accumulators[threshold][partition].add(result)
-                    adapter_native_accumulators[threshold][partition].add(native_result)
-                    attribution_accumulators[threshold][partition].add(attribution)
                 if evaluate_coatjava:
                     coatjava_pred = coatjava_batch[sample_index].detach().cpu().numpy()
                     coatjava_background = int(analysis.get("coatjava_background_label", -1))
@@ -657,20 +542,6 @@ def run_threshold_sweep(
             for partition, accumulator in partition_map.items()
         }
         for threshold, partition_map in adapter_accumulators.items()
-    }
-    adapter_native_summaries = {
-        threshold: {
-            partition: accumulator.summary()
-            for partition, accumulator in partition_map.items()
-        }
-        for threshold, partition_map in adapter_native_accumulators.items()
-    }
-    attribution_summaries = {
-        threshold: {
-            partition: accumulator.summary()
-            for partition, accumulator in partition_map.items()
-        }
-        for threshold, partition_map in attribution_accumulators.items()
     }
     coatjava_summaries = {
         partition: accumulator.summary()
@@ -699,28 +570,12 @@ def run_threshold_sweep(
                 "partition": partition,
                 "selected": threshold == selected_threshold,
                 "method": "adapter",
-                "metric_view": "canonical",
+                "metric_view": "native",
                 **adapter_summary,
             }
             row.update({f"adapter_minus_coatjava_{key}": value for key, value in comparison.items()})
             rows.append(row)
-            rows.append({
-                "threshold": threshold,
-                "partition": partition,
-                "selected": threshold == selected_threshold,
-                "method": "adapter",
-                "metric_view": "native",
-                **adapter_native_summaries[threshold][partition],
-            })
             if coatjava_summary is not None:
-                rows.append({
-                    "threshold": threshold,
-                    "partition": partition,
-                    "selected": threshold == selected_threshold,
-                    "method": "coatjava",
-                    "metric_view": "canonical",
-                    **coatjava_summary,
-                })
                 rows.append({
                     "threshold": threshold,
                     "partition": partition,
@@ -729,7 +584,6 @@ def run_threshold_sweep(
                     "metric_view": "native",
                     **coatjava_summary,
                 })
-
     selected_adapter = adapter_summaries[selected_threshold]["heldout"]
     selected_coatjava = coatjava_summaries.get("heldout") if evaluate_coatjava else None
     selected_comparison = (
@@ -744,7 +598,7 @@ def run_threshold_sweep(
         "assignment_option": assignment_option,
         "track_target_mode": str(getattr(trainer.params, "track_target_mode", "signal_only")),
         "validation_ari_mode": str(getattr(trainer.params, "validation_ari_mode", "signal")),
-        "noise_attribution_mode": noise_attribution_mode,
+        "noise_attribution_mode": "native",
         "thresholds": thresholds,
         "calibration_modulus": args.calibration_modulus,
         "calibration_remainder": args.calibration_remainder,
@@ -758,15 +612,14 @@ def run_threshold_sweep(
     write_json(output_dir / "threshold_sweep.json", {
         **provenance,
         "adapter": adapter_summaries,
-        "adapter_native": adapter_native_summaries,
-        "noise_attribution": attribution_summaries,
+        "adapter_native": adapter_summaries,
         "coatjava": coatjava_summaries if evaluate_coatjava else None,
     })
     write_json(output_dir / "selected_heldout_summary.json", {
         **provenance,
         "partition": "heldout",
         "metrics": selected_adapter,
-        "native_metrics": adapter_native_summaries[selected_threshold]["heldout"],
+        "native_metrics": selected_adapter,
         "baselines": ({"coatjava": selected_coatjava} if selected_coatjava is not None else {}),
         "native_baselines": ({"coatjava": selected_coatjava} if selected_coatjava is not None else {}),
         "comparisons": (
@@ -775,11 +628,10 @@ def run_threshold_sweep(
         ),
         "native_comparisons": (
             {"adapter_minus_coatjava": compare_metric_summaries(
-                adapter_native_summaries[selected_threshold]["heldout"], selected_coatjava
+                selected_adapter, selected_coatjava
             )}
             if selected_coatjava is not None else {}
         ),
-        "noise_attribution": attribution_summaries[selected_threshold]["heldout"],
     })
     print(f"Wrote threshold-sweep outputs to {output_dir}")
 
@@ -797,7 +649,9 @@ def main() -> None:
     if args.noise_attribution_mode is not None:
         analysis["noise_attribution_mode"] = args.noise_attribution_mode
 
+    validate_track_finding_modes(analysis, source="evaluation analysis")
     params = YParams(os.path.abspath(analysis["model_yaml"]), analysis["model_config"])
+    validate_track_finding_modes(vars(params), source="evaluation model")
     evaluate_coatjava = bool(analysis.get("evaluate_coatjava", True))
     params.limit_data = True
     requested_final_evaluation_events = final_evaluation_events(analysis)
@@ -831,13 +685,9 @@ def main() -> None:
     output_dir = Path(analysis["output_dir"]).resolve()
     checkpoint = Path(analysis["checkpoint"]).resolve()
     event_rows: list[dict[str, Any]] = []
-    native_event_rows: list[dict[str, Any]] = []
     track_rows: list[dict[str, Any]] = []
-    native_track_rows: list[dict[str, Any]] = []
     point_rows: list[dict[str, Any]] = []
     per_track_metric_rows: list[dict[str, Any]] = []
-    native_per_track_metric_rows: list[dict[str, Any]] = []
-    noise_attribution_rows: list[dict[str, Any]] = []
     try:
         trainer.launch()
         load_checkpoint(trainer, checkpoint)
@@ -849,10 +699,6 @@ def main() -> None:
         )
         assignment_option = int(analysis.get("assignment_option", getattr(params, "assignment_option", 2)))
         assignment_threshold = float(analysis.get("assignment_threshold", getattr(params, "assignment_threshold", 0.0)))
-        noise_attribution_mode = str(
-            args.noise_attribution_mode
-            or analysis.get("noise_attribution_mode", NOISE_ATTRIBUTION_NATIVE)
-        )
         momentum_scale = float(analysis.get("target_momentum_scale_to_gev", 0.001))
         save_points = bool(analysis.get("save_per_point_predictions", False)) or args.save_per_point_predictions
 
@@ -915,7 +761,7 @@ def main() -> None:
                         reg_np = reg[sample_index].detach().cpu().numpy()
                     event_id = event_offset + sample_index
                     method_predictions = {
-                        "adapter": (pred, pred_signal, noise_attribution_mode),
+                        "adapter": (pred, pred_signal),
                     }
                     if evaluate_coatjava:
                         coatjava_pred = coatjava_batch[sample_index].detach().cpu().numpy()
@@ -923,11 +769,10 @@ def main() -> None:
                         method_predictions["coatjava"] = (
                             coatjava_pred,
                             (coatjava_pred != coatjava_background) & valid,
-                            NOISE_ATTRIBUTION_NATIVE,
                         )
 
                     evaluated_methods = {}
-                    for method, (method_pred, method_pred_signal, method_noise_mode) in method_predictions.items():
+                    for method, (method_pred, method_pred_signal) in method_predictions.items():
                         evaluated = evaluate_event_method(
                             method=method,
                             event_id=event_id,
@@ -940,33 +785,27 @@ def main() -> None:
                             reg=reg_np,
                             match_config=match_config,
                             momentum_scale=momentum_scale,
-                            noise_attribution_mode=method_noise_mode,
                         )
-                        canonical_row, canonical_matches, canonical_truth_tracks = evaluated["canonical"]
-                        native_row, native_matches, native_truth_tracks = evaluated["native"]
-                        event_rows.append(canonical_row)
-                        native_event_rows.append(native_row)
-                        track_rows.extend(canonical_matches)
-                        native_track_rows.extend(native_matches)
-                        per_track_metric_rows.extend(canonical_truth_tracks)
-                        native_per_track_metric_rows.extend(native_truth_tracks)
-                        noise_attribution_rows.append(evaluated["attribution"])
+                        event_row, matches, truth_tracks = evaluated["rows"]
+                        event_rows.append(event_row)
+                        track_rows.extend(matches)
+                        per_track_metric_rows.extend(truth_tracks)
                         evaluated_methods[method] = evaluated
 
                     if save_points:
                         coords = grouped[sample_index].detach().cpu().numpy()
-                        for method, (method_pred, method_pred_signal, _method_noise_mode) in method_predictions.items():
+                        for method, (method_pred, method_pred_signal) in method_predictions.items():
                             evaluated = evaluated_methods[method]
-                            canonical_pred = evaluated["canonical_pred"]
-                            canonical_signal = evaluated["canonical_signal"]
+                            evaluated_pred = evaluated["pred"]
+                            evaluated_signal = evaluated["signal"]
                             for point_idx in np.where(valid)[0]:
                                 point_rows.append({
                                     "method": method,
                                     "event_id": event_id,
                                     "point_idx": int(point_idx),
                                     "truth_label": int(truth[point_idx]),
-                                    "pred_label": int(canonical_pred[point_idx]),
-                                    "pred_signal": bool(canonical_signal[point_idx]),
+                                    "pred_label": int(evaluated_pred[point_idx]),
+                                    "pred_signal": bool(evaluated_signal[point_idx]),
                                     "native_pred_label": int(method_pred[point_idx]),
                                     "native_pred_signal": bool(method_pred_signal[point_idx]),
                                     "eta": float(coords[point_idx, 0]),
@@ -983,46 +822,23 @@ def main() -> None:
             ])
             for method in methods
         }
-        native_method_summaries = {
-            method: summarize_event_metrics([
-                {key: value for key, value in row.items() if key != "method"}
-                for row in native_event_rows if row["method"] == method
-            ])
-            for method in methods
-        }
         global_summary = method_summaries["adapter"]
         coatjava_summary = method_summaries.get("coatjava")
-        native_global_summary = native_method_summaries["adapter"]
-        native_coatjava_summary = native_method_summaries.get("coatjava")
         metric_deltas = (
             compare_metric_summaries(global_summary, coatjava_summary)
             if coatjava_summary is not None else {}
         )
-        native_metric_deltas = (
-            compare_metric_summaries(native_global_summary, native_coatjava_summary)
-            if native_coatjava_summary is not None else {}
-        )
         p_bins = [float(x) for x in analysis.get("momentum_bins_gev", [])]
         pt_bins = [float(x) for x in analysis.get("pt_bins_gev", p_bins)]
         binned_rows = []
-        native_binned_rows = []
         for method in methods:
             method_track_rows = [row for row in per_track_metric_rows if row["method"] == method]
             method_bins = bin_track_rows(method_track_rows, p_bins, "p_gev")
             method_bins.extend(bin_track_rows(method_track_rows, pt_bins, "pt_gev"))
             for row in method_bins:
                 row["method"] = method
-                row["metric_view"] = "canonical"
-            binned_rows.extend(method_bins)
-            method_native_track_rows = [
-                row for row in native_per_track_metric_rows if row["method"] == method
-            ]
-            method_native_bins = bin_track_rows(method_native_track_rows, p_bins, "p_gev")
-            method_native_bins.extend(bin_track_rows(method_native_track_rows, pt_bins, "pt_gev"))
-            for row in method_native_bins:
-                row["method"] = method
                 row["metric_view"] = "native"
-            native_binned_rows.extend(method_native_bins)
+            binned_rows.extend(method_bins)
 
         summary = {
             "run_name": analysis.get("run_name"),
@@ -1033,8 +849,8 @@ def main() -> None:
             "use_pretrained_backbone": bool(analysis.get("use_pretrained_backbone", False)),
             "track_target_mode": str(getattr(params, "track_target_mode", "signal_only")),
             "validation_ari_mode": str(getattr(params, "validation_ari_mode", "signal")),
-            "metric_view": "canonical",
-            "noise_attribution_mode": noise_attribution_mode,
+            "metric_view": "native",
+            "noise_attribution_mode": "native",
             "assignment_option": assignment_option,
             "assignment_threshold": assignment_threshold,
             "max_samples": requested_final_evaluation_events,
@@ -1044,33 +860,21 @@ def main() -> None:
             "match_min_purity": match_config.min_purity,
             "match_min_efficiency": match_config.min_efficiency,
             "metrics": global_summary,
-            "native_metrics": native_global_summary,
+            # Preserve summary aliases consumed by existing campaign plots.
+            "native_metrics": global_summary,
             "baselines": ({"coatjava": coatjava_summary} if coatjava_summary is not None else {}),
-            "native_baselines": ({"coatjava": native_coatjava_summary} if native_coatjava_summary is not None else {}),
+            "native_baselines": ({"coatjava": coatjava_summary} if coatjava_summary is not None else {}),
             "comparisons": ({"adapter_minus_coatjava": metric_deltas} if metric_deltas else {}),
-            "native_comparisons": ({"adapter_minus_coatjava": native_metric_deltas} if native_metric_deltas else {}),
-            "noise_attribution": {
-                method: summarize_noise_attribution([
-                    row for row in noise_attribution_rows if row["method"] == method
-                ])
-                for method in methods
-            },
+            "native_comparisons": ({"adapter_minus_coatjava": metric_deltas} if metric_deltas else {}),
             "evaluate_coatjava": evaluate_coatjava,
             "coatjava_background_label": int(analysis.get("coatjava_background_label", -1)),
             "momentum_binned_metrics_available": bool(per_track_metric_rows),
         }
         write_json(output_dir / "summary.json", summary)
         write_csv(output_dir / "per_event_metrics.csv", event_rows)
-        write_csv(output_dir / "per_event_metrics_native.csv", native_event_rows)
-        write_csv(output_dir / "per_event_noise_attribution.csv", noise_attribution_rows)
         write_csv(
             output_dir / "per_track_matches.csv",
             track_rows,
-            fields=["method", "metric_view", "event_id", "pred_id", "true_id", "iou", "purity", "efficiency"],
-        )
-        write_csv(
-            output_dir / "per_track_matches_native.csv",
-            native_track_rows,
             fields=["method", "metric_view", "event_id", "pred_id", "true_id", "iou", "purity", "efficiency"],
         )
         write_csv(
@@ -1092,25 +896,14 @@ def main() -> None:
                 "event_track_purity",
             ],
         )
-        write_csv(
-            output_dir / "per_truth_track_metrics_native.csv",
-            native_per_track_metric_rows,
-            fields=[
-                "method", "metric_view", "event_id", "true_id", "p_gev", "pt_gev", "matched",
-                "match_iou", "match_purity", "match_efficiency", "event_ari_signal",
-                "event_track_efficiency", "event_track_purity",
-            ],
-        )
         write_csv(output_dir / "binned_metrics.csv", binned_rows)
-        write_csv(output_dir / "binned_metrics_native.csv", native_binned_rows)
         if save_points:
             write_csv(output_dir / "per_point_predictions.csv", point_rows)
 
         headline_path = output_dir / "campaign_headline_metrics.jsonl"
         with headline_path.open("w") as stream:
             for metric_view, summaries, deltas in (
-                ("canonical", method_summaries, metric_deltas),
-                ("native", native_method_summaries, native_metric_deltas),
+                ("native", method_summaries, metric_deltas),
             ):
                 for method, method_summary in summaries.items():
                     for key, value in method_summary.items():

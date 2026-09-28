@@ -1,4 +1,9 @@
 import unittest
+import tempfile
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -8,22 +13,24 @@ from fm4npp.datasets.dataset import MyCollator
 from train.downstream.loss import PointHungarianMatcher, compute_point_loss
 from train.downstream.track_finding_metrics import (
     MatchConfig,
-    NOISE_ATTRIBUTION_NATIVE,
-    NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
-    canonicalize_noise_query,
     compare_metric_summaries,
     event_track_metrics,
     summarize_event_metrics,
     track_momentum_by_label,
 )
+from train.downstream.track_finding_contract import validate_track_finding_modes
+from train.downstream.track_finding_experiment import TrackFindingExperimentConfig, resolve_params
+from train.downstream.track_finding_trainer import DownstreamTrainer
 from train.downstream.track_finding_targets import (
     SIGNAL_ONLY,
-    UNIFIED_NOISE_INSTANCE,
     build_track_instance_targets,
     validation_ari_metric,
 )
 from train.downstream.eval.evaluate_track_finding import (
     EventMetricAccumulator,
+    evaluate_event_method,
+    read_analysis,
+    parse_args as evaluation_args,
     apply_assignment_threshold,
     select_threshold,
     threshold_partition,
@@ -61,40 +68,69 @@ class TrackFindingMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(row["ari_signal"], 1.0)
         self.assertLess(row["background_rejection"], 1.0)
 
-    def test_unified_noise_instance_is_an_object_target_without_padding(self):
-        labels = torch.tensor([[-1, -1, 0, 0, -100]])
-        valid = torch.tensor([[True, True, True, True, False]])
-        targets, inverse = build_track_instance_targets(
-            labels,
-            valid,
-            mode=UNIFIED_NOISE_INSTANCE,
-        )
-        self.assertEqual(targets[0]["labels"].tolist(), [1, 1])
-        self.assertEqual(targets[0]["masks"].tolist(), [
-            [1.0, 1.0, 0.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 1.0, 0.0],
-        ])
-        self.assertEqual(inverse[0].numel(), 4)
+    def test_retired_modes_are_rejected_in_configs_and_checkpoint_metadata(self):
+        for key, value in (("track_target_mode", "unified_noise_instance"),
+                           ("noise_attribution_mode", "truth_joint_hungarian_qualified")):
+            for config in ({key: value}, {"params": {key: value}},
+                           {"params": {"params": {key: value}}}):
+                with self.subTest(config=config), self.assertRaisesRegex(ValueError, "removed"):
+                    validate_track_finding_modes(config)
+        validate_track_finding_modes({})
+        validate_track_finding_modes({"track_target_mode": "signal_only", "noise_attribution_mode": "native"})
+        labels = torch.tensor([[-1, 0]])
+        with self.assertRaisesRegex(ValueError, "removed"):
+            build_track_instance_targets(labels, torch.ones_like(labels, dtype=torch.bool),
+                                         mode="unified_noise_instance")
 
-    def test_all_noise_is_one_target_and_padding_is_never_a_target(self):
+    def test_retired_checkpoint_is_rejected_before_loading_weights(self):
+        trainer = DownstreamTrainer.__new__(DownstreamTrainer)
+        trainer.device = "cpu"
+        for checkpoint in ({"track_target_mode": "unified_noise_instance"},
+                           {"params": {"params": {"track_target_mode": "unified_noise_instance"}}}):
+            with patch("torch.load", return_value=checkpoint):
+                with self.assertRaisesRegex(ValueError, "checkpoint.*removed"):
+                    trainer.load_checkpoint("retired.pth", inference=True)
+                with self.assertRaisesRegex(ValueError, "checkpoint.*removed"):
+                    trainer.restore_checkpoint("retired.pth")
+
+    def test_retired_training_and_analysis_yaml_fail_early(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text("model:\n  track_target_mode: unified_noise_instance\n")
+            with self.assertRaisesRegex(ValueError, "removed"):
+                resolve_params(TrackFindingExperimentConfig(yaml_config=str(path), config="model"))
+            with self.assertRaisesRegex(ValueError, "removed"):
+                DownstreamTrainer(SimpleNamespace(track_target_mode="unified_noise_instance"), None)
+            path.write_text("analysis:\n  noise_attribution_mode: truth_joint_hungarian_qualified\n")
+            with self.assertRaisesRegex(ValueError, "removed"):
+                read_analysis(path)
+
+    def test_evaluation_cli_rejects_retired_attribution(self):
+        with patch.object(sys, "argv", ["eval", "--analysis-config", "unused.yaml",
+                                      "--noise-attribution-mode", "truth_joint_hungarian_qualified"]):
+            with patch("sys.stderr"), self.assertRaises(SystemExit) as caught:
+                evaluation_args()
+            self.assertEqual(caught.exception.code, 2)
+
+    def test_background_and_padding_produce_no_targets(self):
         labels = torch.tensor([[-1, -1, -100], [-100, -100, -100]])
         valid = torch.tensor([[True, True, False], [False, False, False]])
         targets, _inverse = build_track_instance_targets(
             labels,
             valid,
-            mode=UNIFIED_NOISE_INSTANCE,
+            mode=SIGNAL_ONLY,
         )
-        self.assertEqual(tuple(targets[0]["masks"].shape), (1, 3))
-        self.assertEqual(targets[0]["masks"].tolist(), [[1.0, 1.0, 0.0]])
+        self.assertEqual(tuple(targets[0]["masks"].shape), (0, 3))
+        self.assertEqual(targets[0]["masks"].tolist(), [])
         self.assertEqual(tuple(targets[1]["masks"].shape), (0, 3))
 
-    def test_unified_noise_target_has_a_finite_hungarian_loss(self):
+    def test_signal_target_has_a_finite_hungarian_loss(self):
         labels = torch.tensor([[-1, -1, 0, 0, -100]])
         valid = torch.tensor([[True, True, True, True, False]])
         targets, _inverse = build_track_instance_targets(
             labels,
             valid,
-            mode=UNIFIED_NOISE_INSTANCE,
+            mode=SIGNAL_ONLY,
         )
         outputs = {
             "pred_probs": torch.tensor([[
@@ -110,12 +146,12 @@ class TrackFindingMetricsTest(unittest.TestCase):
         }
         matcher = PointHungarianMatcher(cost_class=1, cost_dice=1, cost_focal=20)
         indices = matcher(outputs, targets, valid)
-        self.assertEqual(indices[0][0].numel(), 2)
+        self.assertEqual(indices[0][0].numel(), 1)
         losses = compute_point_loss(outputs, targets, valid, matcher)
         for value in losses.values():
             self.assertTrue(torch.isfinite(value).all())
 
-    def test_signal_only_mode_remains_explicit_compatibility_behavior(self):
+    def test_signal_only_targets_exclude_background(self):
         labels = torch.tensor([[-1, -1, 0, 0, -100]])
         valid = torch.tensor([[True, True, True, True, False]])
         targets, _inverse = build_track_instance_targets(labels, valid, mode=SIGNAL_ONLY)
@@ -136,89 +172,20 @@ class TrackFindingMetricsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validation_ari_metric("unknown")
 
-    def test_qualified_noise_query_is_canonicalized_without_hiding_signal(self):
-        truth = np.array([-1, -1, 0, 0, 1, 1])
-        pred = np.array([9, 9, 3, 3, 4, 4])
-        signal = np.ones_like(truth, dtype=bool)
-        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
-            truth,
-            pred,
-            pred_signal_mask=signal,
-            mode=NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
-        )
-        self.assertTrue(attribution["noise_match_qualified"])
-        self.assertEqual(attribution["noise_pred_id"], 9)
-        self.assertEqual(canonical_pred.tolist(), [-1, -1, 3, 3, 4, 4])
-        self.assertEqual(canonical_signal.tolist(), [False, False, True, True, True, True])
-        native = event_track_metrics(truth, pred, pred_signal_mask=signal)
-        canonical = event_track_metrics(
-            truth, canonical_pred, pred_signal_mask=canonical_signal,
-        )
-        self.assertEqual(native["n_pred_tracks"], 3)
-        self.assertEqual(canonical["n_pred_tracks"], 2)
-        self.assertEqual(canonical["n_matched_tracks"], 2)
-        self.assertNotIn(9, {match["pred_id"] for match in canonical["matches"]})
-        self.assertAlmostEqual(canonical["background_rejection"], 1.0)
-        self.assertAlmostEqual(canonical["signal_loss_to_background"], 0.0)
-
-    def test_noise_query_signal_leakage_becomes_signal_loss(self):
-        truth = np.array([-1, -1, 0, 0])
-        pred = np.array([8, 8, 8, 7])
-        signal = np.ones_like(truth, dtype=bool)
-        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
-            truth,
-            pred,
-            pred_signal_mask=signal,
-            mode=NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
-        )
-        self.assertTrue(attribution["noise_match_qualified"])
-        canonical = event_track_metrics(
-            truth, canonical_pred, pred_signal_mask=canonical_signal,
-        )
-        self.assertAlmostEqual(canonical["signal_loss_to_background"], 0.5)
-        self.assertAlmostEqual(canonical["background_rejection"], 1.0)
-
-    def test_ambiguous_noise_candidate_is_not_reclassified(self):
-        truth = np.array([-1, -1, 0, 0, 0])
-        pred = np.array([5, 5, 5, 5, 5])
-        signal = np.ones_like(truth, dtype=bool)
-        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
-            truth,
-            pred,
-            pred_signal_mask=signal,
-            mode=NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
-        )
-        self.assertFalse(attribution["noise_match_qualified"])
-        self.assertEqual(attribution["noise_attribution_status"], "no_joint_noise_candidate")
-        self.assertEqual(canonical_pred.tolist(), pred.tolist())
-        self.assertEqual(canonical_signal.tolist(), signal.tolist())
-
-    def test_joint_noise_candidate_below_threshold_is_rejected(self):
-        truth = np.array([-1, -1] + [0] * 10)
-        pred = np.array([5, 5] + [5] * 3 + [6] * 7)
-        signal = np.ones_like(truth, dtype=bool)
-        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
-            truth,
-            pred,
-            pred_signal_mask=signal,
-            mode=NOISE_ATTRIBUTION_TRUTH_JOINT_HUNGARIAN_QUALIFIED,
-        )
-        self.assertEqual(attribution["noise_pred_id"], 5)
-        self.assertFalse(attribution["noise_match_qualified"])
-        self.assertEqual(attribution["noise_attribution_status"], "rejected_threshold")
-        self.assertEqual(canonical_pred.tolist(), pred.tolist())
-        self.assertEqual(canonical_signal.tolist(), signal.tolist())
-
-    def test_native_noise_attribution_leaves_prediction_untouched(self):
+    def test_evaluation_never_relabels_a_query_using_truth(self):
         truth = np.array([-1, -1, 0, 0])
         pred = np.array([6, 6, 2, 2])
         signal = np.ones_like(truth, dtype=bool)
-        canonical_pred, canonical_signal, attribution = canonicalize_noise_query(
-            truth, pred, pred_signal_mask=signal, mode=NOISE_ATTRIBUTION_NATIVE,
+        evaluated = evaluate_event_method(
+            "adapter", 0, 0, 0, truth, pred, signal, signal, None, MatchConfig(), 0.001,
         )
-        self.assertEqual(canonical_pred.tolist(), pred.tolist())
-        self.assertEqual(canonical_signal.tolist(), signal.tolist())
-        self.assertEqual(attribution["noise_attribution_status"], "native")
+        np.testing.assert_array_equal(evaluated["pred"], pred)
+        np.testing.assert_array_equal(evaluated["signal"], signal)
+        row = evaluated["rows"][0]
+        self.assertEqual(row["n_pred_tracks"], 2)
+        self.assertEqual(row["background_rejection"], 0.0)
+        self.assertEqual(row["ari_signal"], 1.0)
+        self.assertEqual(row["metric_view"], "native")
 
     def test_matching_reports_efficiency_and_purity(self):
         truth = np.array([1, 1, 1, 2, 2, 2, -1])

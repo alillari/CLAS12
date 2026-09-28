@@ -44,9 +44,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", help="Optional explicit plot output directory.")
     parser.add_argument(
         "--plot-suite",
-        choices=("standard", "momentum-resolution", "all"),
+        choices=("standard", "momentum-resolution", "presentation", "presentation-ml", "all"),
         default="standard",
         help="Plot suite to generate. 'standard' preserves existing campaign plots.",
+    )
+    parser.add_argument(
+        "--presentation-labels", type=int,
+        help="Labeled-event budget for presentation resolution panels (default: largest common budget).",
     )
     return parser.parse_args()
 
@@ -1070,6 +1074,22 @@ def main() -> None:
         raise FileNotFoundError(f"Campaign headline JSONL does not exist: {headline_jsonl}")
     manifest_rows = manifest_lookup(manifest_path)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.plot_suite in ("presentation", "all"):
+        from momentum_presentation import make_presentation
+
+        make_presentation(
+            headline_jsonl, manifest_rows, output_dir / "presentation",
+            labeled_events=args.presentation_labels, manifest_path=manifest_path,
+        )
+
+    if args.plot_suite in ("presentation", "presentation-ml", "all"):
+        from momentum_ml_presentation import make_ml_presentation
+
+        make_ml_presentation(
+            headline_jsonl, manifest_rows, output_dir / "presentation" / "ml_metrics",
+            manifest_path=manifest_path,
+        )
 
     if args.plot_suite in ("standard", "all"):
         metric_rows = read_jsonl(headline_jsonl)

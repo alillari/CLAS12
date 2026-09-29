@@ -31,6 +31,15 @@ from fm4npp.utils import *
 
 from cosine_annealing_warmup import CosineAnnealingWarmupRestarts
 
+# [W&B] Optional experiment tracking. Enabled per-config via `use_wandb: true`.
+# Runs in OFFLINE mode (no account needed): logs are written to ./wandb/ locally
+# and can be synced/inspected later with `wandb sync` or viewed with `wandb offline`.
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _WANDB_AVAILABLE = False
+
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -62,6 +71,10 @@ def apply_bin_weights_torch(bin_list, weight_list, target):
 class Trainer():
     def __init__(self, params, args):
         self.params = params
+        # The shared adapter/backbone contract uses continuous coordinate targets.
+        # Mike's retired band-classification head is not part of this integration.
+        if getattr(params, 'band_classification', False):
+            raise ValueError('band_classification is not supported by the shared backbone')
         self.args = args
         self.root_dir = args.root_dir
         self.config = args.config
@@ -128,7 +141,7 @@ class Trainer():
             klen=self.klen,
             dropout=self.params.dropout,
             embed_method=self.params.embed_method,
-            pe_method=self.params.pe_method
+            pe_method=self.params.pe_method,
         )
 
         # Standard initialization
@@ -157,18 +170,48 @@ class Trainer():
                 find_unused_parameters=True
             )
 
-        # Standard optimizer (no μ-transfer)
-        # Simple AdamW with single learning rate for all parameters
+        # [muP] Simplified width-transfer (mu-parameterization, practical form).
+        # Split trainable params into two groups by tensor rank:
+        #   - VECTOR params (biases, norm gains, Mamba A_log/D): base LR, NOT
+        #     width-scaled (no fan-in that grows with width).
+        #   - MATRIX params (Mamba block weights + output_layer): LR divided by
+        #     the width ratio (embed_dim / mup_base_width). This is the piece
+        #     that gives near-constant optimal LR across widths, so a recipe
+        #     tuned at the base width transfers to other widths.
+        # If use_mup is off, both groups get the same LR -> identical to before.
+        self.mup_base_width = getattr(self.params, 'mup_base_width', 256)
+        self.use_mup = getattr(self.params, 'use_mup', False)
+        cur_width = self.params.embed_dim
+        self.mup_matrix_ratio = (cur_width / self.mup_base_width) if self.use_mup else 1.0
+
+        vector_params, matrix_params = [], []
+        for p in self.model.parameters():
+            if not p.requires_grad:
+                continue
+            (vector_params if p.ndim <= 1 else matrix_params).append(p)
+
+        wd = getattr(self.params, 'weight_decay', 0.1)
         self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+            [
+                {'params': vector_params, 'weight_decay': wd},   # group 0: vectors
+                {'params': matrix_params, 'weight_decay': wd},   # group 1: matrices
+            ],
             lr=self.params.min_lr,
-            weight_decay=0.1,
-            betas=(0.9, 0.95)
+            betas=(0.9, 0.95),
         )
+        # index 1 is the matrix group -> the one that gets width-scaled
+        self._mup_matrix_group_idx = 1
 
         if self.world_rank == 0:
-            print(f"✅ Using standard AdamW optimizer (no μ-transfer scaling)")
-            print(f"   Learning rate: {self.params.min_lr}")
+            if self.use_mup:
+                print(f"✅ AdamW with muP width-transfer ENABLED")
+                print(f"   base width: {self.mup_base_width}, current width: {cur_width}")
+                print(f"   matrix-group LR divided by ratio: {self.mup_matrix_ratio:.4f}")
+                print(f"   ({len(vector_params)} vector params @ base LR, "
+                      f"{len(matrix_params)} matrix params @ base LR / {self.mup_matrix_ratio:.3f})")
+            else:
+                print(f"✅ AdamW, muP disabled (all params share one LR)")
+                print(f"   Learning rate: {self.params.min_lr}")
 
         # No mixed precision for Mamba1 (testing simplification alone)
 
@@ -185,10 +228,63 @@ class Trainer():
 
         # Loss function
         self.loss_func = nn.MSELoss(reduction='none')
+        # [BAND CLASSIFICATION TOGGLE]
+        self.band_classification = getattr(self.params, 'band_classification', False)
+        self.n_bands = getattr(self.params, 'n_bands', 6)
+        self.band_loss_weight = getattr(self.params, 'band_loss_weight', 1.0)
+        if self.band_classification:
+            self.ce_func = nn.CrossEntropyLoss(reduction='none', ignore_index=-100)
         self.loss_func_eval = nn.MSELoss(reduction='none')
 
-        # Load checkpoint if exists
+        # [W&B] Optional offline experiment tracking (no account needed).
+        # Enable per-config with `use_wandb: true`. Logs hyperparameters,
+        # train loss/lr, and val loss. Written locally to <root_dir>/wandb/.
+        self.use_wandb = getattr(params, 'use_wandb', False) and _WANDB_AVAILABLE and self.world_rank == 0
+        if self.use_wandb:
+            os.environ['WANDB_MODE'] = 'offline'
+            wandb.init(
+                project='clas12-fm4npp',
+                name=f"{getattr(params, 'save_version', 'run')}_{args.run_num}",
+                config={k: v for k, v in vars(params).items()
+                        if isinstance(v, (int, float, str, bool))},
+                dir=os.path.join(args.root_dir, 'wandb'),
+            )
+            print("[W&B] offline logging enabled")
+        elif getattr(params, 'use_wandb', False) and not _WANDB_AVAILABLE:
+            print("[W&B] use_wandb requested but wandb not installed -- skipping.")
+
+        # Load checkpoint if exists (previously dead code -- never ran)
         self.restore_checkpoint()
+
+    def band_mixed_loss(self, point_pred, klabel):
+        """[BAND CLASSIFICATION] Mixed loss.
+        point_pred: (b, N, klen*(2+n_bands)) = per neighbor [eta, phi, band_logits x n_bands]
+        klabel:     (b, N, klen*3)           = per neighbor [eta, phi, band_idx] (-100 padding)
+        Returns scalar: masked MSE on (eta,phi) + weighted CE on band.
+        """
+        b, N, _ = point_pred.shape
+        k = self.klen
+        pp = point_pred.reshape(b, N, k, 2 + self.n_bands)
+        kl = klabel.reshape(b, N, k, 3)
+
+        cont_pred = pp[..., :2]                  # (b,N,k,2) eta,phi
+        band_logits = pp[..., 2:]                # (b,N,k,n_bands)
+        cont_tgt = kl[..., :2]                   # (b,N,k,2)
+        band_tgt = kl[..., 2]                    # (b,N,k) band index or -100
+
+        # continuous part: masked MSE
+        cmask = cont_tgt != -100
+        mse = self.loss_func(cont_pred, cont_tgt)
+        mse = (mse * cmask).sum() / cmask.sum().clamp(min=1)
+
+        # classification part: CE with ignore_index=-100 handles padding natively
+        ce = self.ce_func(band_logits.reshape(-1, self.n_bands),
+                          band_tgt.reshape(-1).long())
+        valid = (band_tgt.reshape(-1) != -100)
+        ce = ce.sum() / valid.sum().clamp(min=1)
+
+        return mse + self.band_loss_weight * ce
+
 
     def log_infile(self, log):
         """Write log to file"""
@@ -215,7 +311,7 @@ class Trainer():
             if self.world_rank == 0:
                 print(f"Loading checkpoint from {self.checkpoint_path}")
 
-            checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
 
             try:
                 self.model.load_state_dict(checkpoint['model_state'])
@@ -284,7 +380,14 @@ class Trainer():
             b, c = grouped.size(0), grouped.size(-1)
 
             # Prepare targets
-            targets = grouped.reshape(b, -1, 3)[:, :, 1:].to(self.device)
+            # [FIX] was: grouped.reshape(b, -1, 3) -- hardcoded 3 columns.
+            # targets is only ever used for padding detection via
+            # targets[..., 0] (always eta, regardless of column count --
+            # the collator pads every column uniformly with -100), so it's
+            # safe and correct to reshape with the same dynamic `c` already
+            # used for `grouped` right below. Broke when use_aux_features
+            # widens each point from 3 to 7 columns (position + sx,sy,sz,length).
+            targets = grouped.reshape(b, -1, c).to(self.device)
             klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
             grouped = grouped.reshape(b, -1, c).to(self.device)
 
@@ -308,10 +411,15 @@ class Trainer():
             kmask = klabel != -100
             tmask = targets[..., 0] != -100
 
-            loss = self.loss_func(kpred, klabel)
+            # [BAND CLASSIFICATION TOGGLE] loss-only branch; shared tail
+            # (backward/clip/step/log/validate) runs identically for both modes.
+            if self.band_classification:
+                loss = self.band_mixed_loss(point_pred, klabel)
+            else:
+                loss = self.loss_func(kpred, klabel)
 
             # Loss weighting
-            if self.params.loss_reweight:
+            if not self.band_classification and self.params.loss_reweight:
                 loss = (loss * kmask).sum(-1).sum(-1) / kmask.sum(-1).sum(-1)
                 loss_weight_ = apply_bin_weights_torch(
                     torch.Tensor(self.loss_bin).to(self.device),
@@ -320,8 +428,9 @@ class Trainer():
                 )
                 loss = loss * loss_weight_
                 loss = loss.mean()
-            else:
+            elif not self.band_classification:
                 loss = (loss * kmask).sum() / kmask.sum()
+            # (band mode: loss already reduced to a scalar in band_mixed_loss)
 
             if self.params.ablate_loss_scale:
                 loss = loss * self.params.ablate_loss_scale_rate
@@ -336,6 +445,11 @@ class Trainer():
 
             self.optimizer.step()
             self.scheduler.step()
+            # [muP] scheduler sets all groups to the same scheduled LR; divide the
+            # matrix group down by the width ratio so muP scaling survives each step.
+            if self.use_mup and self.mup_matrix_ratio != 1.0:
+                mg = self.optimizer.param_groups[self._mup_matrix_group_idx]
+                mg['lr'] = mg['lr'] / self.mup_matrix_ratio
 
             # Logging
             loss_log = '{},{},{},{},{}'.format(
@@ -350,6 +464,9 @@ class Trainer():
                 if self.iters % 100 == 0:
                     print(f'Iter {self.iters}: loss={self.report_loss(loss, dist.is_initialized()):.4f}')
                 self.log_globalfile('train', self.iters, self.report_loss(loss, dist.is_initialized()), self.scheduler.get_lr()[0])
+                if self.use_wandb:
+                    wandb.log({'train/loss': self.report_loss(loss, dist.is_initialized()),
+                               'train/lr': self.scheduler.get_lr()[0]}, step=self.iters)
 
             # Validation every n_eval_steps
             if self.iters % self.params.n_eval_steps == 0:
@@ -373,8 +490,11 @@ class Trainer():
 
         with torch.no_grad():
             for i, (grouped, _, knearest) in enumerate(self.valid_data_loader):
+                if i >= getattr(self.params, 'max_val_batches', int(1e12)): break
                 b, c = grouped.size(0), grouped.size(-1)
-                targets = grouped.reshape(b, -1, 4)[:, :, 1:].to(self.device)
+                # CLAS12: 3 columns [eta, phi, r], no energy (was reshape(...,4)[:,:,1:]).
+                # [FIX] same reasoning as the train loop above.
+                targets = grouped.reshape(b, -1, c).to(self.device)
                 klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
                 grouped = grouped.reshape(b, -1, c).to(self.device)
 
@@ -394,15 +514,26 @@ class Trainer():
                 kmask = klabel != -100
                 tmask = targets[..., 0] != -100
 
-                loss_kpred = self.loss_func_eval(kpred[kmask], klabel[kmask]).mean()
-                loss = loss_kpred
+                # [BAND CLASSIFICATION TOGGLE] same mixed loss as training.
+                if self.band_classification:
+                    loss = self.band_mixed_loss(point_pred, klabel)
+                else:
+                    loss_kpred = self.loss_func_eval(kpred[kmask], klabel[kmask]).mean()
+                    loss = loss_kpred
 
                 if self.params.ablate_loss_scale:
                     loss = loss * self.params.ablate_loss_scale_rate
 
                 self.logs['val_loss'] += loss.detach()
 
-        self.logs['val_loss'] /= len(self.valid_data_loader)
+        # [FIX] Divide by the number of batches ACTUALLY iterated, not the full
+        # loader length. With max_val_batches set, the loop breaks early -- dividing
+        # by len(loader) understated val loss by (len(loader)/max_val_batches)x.
+        n_val_batches = min(
+            getattr(self.params, 'max_val_batches', int(1e12)),
+            len(self.valid_data_loader),
+        )
+        self.logs['val_loss'] /= max(n_val_batches, 1)
 
         if dist.is_initialized():
             dist.all_reduce(self.logs['val_loss'].detach())
@@ -432,6 +563,8 @@ class Trainer():
         if self.world_rank == 0:
             self.log_infile(tolog)
             self.log_globalfile('val', self.iters, float(self.logs['val_loss']), self.scheduler.get_lr()[0])
+            if self.use_wandb:
+                wandb.log({'val/loss': float(self.logs['val_loss'])}, step=self.iters)
 
         self.model.train()
         return 0
@@ -470,6 +603,9 @@ class Trainer():
             print("\n" + "="*80)
             print("TRAINING COMPLETE")
             print("="*80)
+
+        if self.use_wandb:
+            wandb.finish()
 
 
 if __name__ == '__main__':

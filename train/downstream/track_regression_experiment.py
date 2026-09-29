@@ -10,7 +10,7 @@ import random
 import socket
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from fm4npp.utils import YParams
+from fm4npp.artifact_paths import artifact_path
 from train.downstream.validation_config import configure_validation
 from train.downstream.physics_checkpoints import MOMENTUM_TASKS, resolve_config as resolve_physics_config, selection_mode
 
@@ -68,7 +69,7 @@ class TrackRegressionExperimentConfig:
     yaml_config: str
     config: str
     run_num: str = "0"
-    root_dir: str = "./downstream_log/"
+    root_dir: str = field(default_factory=lambda: artifact_path("downstream_log"))
     global_log_dir: str = "globallogs"
     eventnumber: int = 50000
     usepretrain: bool = False

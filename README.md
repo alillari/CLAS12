@@ -55,10 +55,10 @@ corresponding FM4NPP and TPCpp-10M works as appropriate.
 |-- fm4npp/             # FM4NPP-derived model, dataset, and utility code
 |-- train/              # Training and downstream task scripts
 |-- scripts/            # Configuration and run scripts
-|-- fig/                # Figures and visual assets
+|-- dev_scripts/        # Versioned calibration required by the model
 |-- SETUP.md            # Setup notes inherited from the upstream structure
 |-- requirements.txt    # Python dependencies
-`-- example_usage.py    # Experimental usage example
+`-- README.md           # Repository and storage conventions
 ```
 
 ## Setup
@@ -70,6 +70,38 @@ launching training jobs.
 Typical dependencies include Python, PyTorch, CUDA-capable hardware for training,
 and Mamba-related packages. See `requirements.txt` and the training scripts for
 the current working assumptions.
+
+## Research-product storage
+
+Keep source code, tests, reusable configurations, required calibration inputs,
+and software documentation in this repository. Store experiment checkpoints,
+logs, predictions, plots, generated statistics, campaign outputs, and dated
+research reports outside the checkout.
+
+The usual sibling storage directory is `/home/alessio/ML-work/result_deep_storage`:
+
+```bash
+export CLAS12_ARTIFACT_ROOT=/home/alessio/ML-work/result_deep_storage
+```
+
+Use `campaigns/` for complete campaign artifacts, `research_reports/` for research
+writeups, and `downstream_log/` for standalone training outputs under that root.
+The downstream training CLIs and experiment helpers default their runtime logs
+to the sibling `result_deep_storage/downstream_log` independently of the current
+working directory; `CLAS12_ARTIFACT_ROOT` overrides that default. Explicit CLI
+paths still take precedence. Check the selected YAML's `artifact_root`,
+`checkpoint_dir`, and analysis `output_dir` too: existing configurations may
+deliberately point to another external location, including a mounted host.
+
+For inherited entrypoints or custom scripts, pass external output paths explicitly.
+Ignore rules prevent accidental addition of common output directories; they do
+not move files or stop a program from writing into the checkout. Python caches
+may be recreated by the interpreter and remain ignored. To put them outside too,
+set `PYTHONPYCACHEPREFIX="$CLAS12_ARTIFACT_ROOT/python_cache"` before running Python.
+
+`dev_scripts/clas12_band_calibration.json` is a versioned runtime dependency of
+`fm4npp/hilbert.py`, so it remains with the code. Generic how-to documentation also
+belongs here; experiment-specific findings belong in external research reports.
 
 ## Notes for Contributors
 

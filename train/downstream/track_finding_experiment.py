@@ -10,7 +10,7 @@ import random
 import socket
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from fm4npp.utils import YParams
+from fm4npp.artifact_paths import artifact_path
 from train.downstream.track_finding_contract import validate_track_finding_modes
 
 try:
@@ -35,7 +36,7 @@ class TrackFindingExperimentConfig:
     yaml_config: str
     config: str
     run_num: str = "0"
-    root_dir: str = "./downstream_log/"
+    root_dir: str = field(default_factory=lambda: artifact_path("downstream_log"))
     global_log_dir: str = "globallogs"
     eventnumber: int = 50000
     usepretrain: bool = False
@@ -189,6 +190,9 @@ def train_experiment(
             "best_ari": json_safe(getattr(trainer, "best_ARI", None)),
             "best_step": json_safe(getattr(trainer, "best_step", None)),
             "best_epoch": json_safe(getattr(trainer, "best_epoch", None)),
+            "validation_history_dir": getattr(params, "validation_history_dir", None),
+            "validation_metrics_jsonl": getattr(params, "validation_metrics_jsonl", None),
+            "validation_metrics_csv": getattr(params, "validation_metrics_csv", None),
             "final_step": json_safe(getattr(trainer, "global_step", None)),
             "eventnumber": int(config.eventnumber),
             "validation_events": json_safe(getattr(params, "max_validation_events", None)),
@@ -217,6 +221,7 @@ def train_experiment(
             "best_step": json_safe(getattr(trainer, "best_step", None)),
             "best_epoch": json_safe(getattr(trainer, "best_epoch", None)),
             "checkpoint_path": getattr(params, "trained_checkpoint_path", None),
+            "validation_history_dir": getattr(params, "validation_history_dir", None),
             "log_file": getattr(params, "training_log_path", None),
             "artifact_summary": os.path.abspath(summary_path),
             "seed": json_safe(getattr(params, "seed", None)),

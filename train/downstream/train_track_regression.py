@@ -10,6 +10,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
+from fm4npp.artifact_paths import artifact_path
+
 try:
     from .track_regression_experiment import (
         TrackRegressionExperimentConfig,
@@ -27,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yaml_config", default="", type=str, help="Path to YAML config file")
     parser.add_argument("--config", default="", type=str, help="Model config name")
     parser.add_argument("--run_num", default="0", type=str, help="Sub run number")
-    parser.add_argument("--root_dir", default="./downstream_log/", type=str, help="Root dir to store results")
+    parser.add_argument("--root_dir", default=artifact_path("downstream_log"), type=str, help="Root dir to store results")
     parser.add_argument("--global_log_dir", default="globallogs", type=str, help="Global dir to store logging only")
     parser.add_argument("--eventnumber", default=50000, type=int, help="Downstream training event number")
     parser.add_argument("--usepretrain", action="store_true", help="Use pretrained backbone")

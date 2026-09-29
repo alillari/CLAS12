@@ -13,6 +13,7 @@ import torch
 sys.path.append('../..')
 
 from fm4npp.utils import YParams
+from fm4npp.artifact_paths import artifact_path
 from point_classification_trainer import DownstreamTrainer
 
 def main():
@@ -20,7 +21,7 @@ def main():
     parser.add_argument("--yaml_config", default='', type=str, help="Path to YAML config file")
     parser.add_argument("--config", default='', type=str, help="Model config name")
     parser.add_argument("--run_num", default='0', type=str, help="Sub run number")
-    parser.add_argument("--root_dir", default='./downstream_log/', type=str, help="Root dir to store results")
+    parser.add_argument("--root_dir", default=artifact_path("downstream_log"), type=str, help="Root dir to store results")
     parser.add_argument("--global_log_dir", default='globallogs', type=str, help="Global dir to store logging only")
     parser.add_argument("--eventnumber", default=50000, type=int, help="downstream training event number")
     parser.add_argument("--usepretrain", action="store_true", help="use pretrain model")

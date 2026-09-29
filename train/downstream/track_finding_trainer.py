@@ -36,8 +36,9 @@ from fm4npp.models.linformer_gpt import LinformerGPT
 from trackinghead import *
 from loss import *
 from downstream_util import get_early_stopping_config
-from track_finding_metrics import MatchConfig, event_track_metrics, summarize_event_metrics
+from track_finding_metrics import MatchConfig, EventMetricAccumulator, event_track_metrics, summarize_event_metrics
 from train.downstream.track_finding_contract import validate_track_finding_modes
+from train.downstream.track_finding_history import ValidationHistory
 from track_finding_targets import (
     SIGNAL_ONLY,
     build_track_instance_targets,
@@ -901,6 +902,7 @@ class DownstreamTrainer():
             default_warmup_steps=60,
         )
         self.stagnation_counter = 0
+        self._validation_history = None
 
         self._load_loss_reweight_stats()
 
@@ -963,10 +965,11 @@ class DownstreamTrainer():
                 print(f"  Best Loss: {self.best_loss:.6f} | Best ARI: {self.best_ARI:.6f}")
                 print("-" * 80)
             #if (epoch_loss < self.best_loss) or (avg_ari_2 > self.best_ARI):
-            if (avg_ari_2 > self.best_ARI + self.min_delta) or (
+            improved = (avg_ari_2 > self.best_ARI + self.min_delta) or (
                 abs(avg_ari_2 - self.best_ARI) <= self.min_delta
                 and epoch_loss < (self.best_loss - self.min_delta)
-            ):
+            )
+            if improved:
                 self.best_loss = epoch_loss
                 self.best_ARI = avg_ari_2
                 self.best_epoch = epoch
@@ -980,10 +983,10 @@ class DownstreamTrainer():
                 self.stagnation_counter = 0
             elif epoch>= self.warmup_steps:
                 self.stagnation_counter += 1
-                if self.stagnation_counter >= self.patience:
-                    print(f"Early stopping triggered at epoch {epoch} due to no improvement in validation loss for {self.patience} epochs.")
-                    print(f"Best validation loss: {self.best_loss:.4f}, current loss: {epoch_loss:.4f}")
-                    break
+            self._persist_validation(epoch, self.global_step, epoch_loss, avg_ari_2, improved, train_epoch_loss)
+            if not improved and epoch >= self.warmup_steps and self.stagnation_counter >= self.patience:
+                print(f"Early stopping triggered at epoch {epoch} after {self.patience} validations without improvement.")
+                break
             self.down_scheduler.step()
             if metrics_callback is not None:
                 metrics_callback({
@@ -998,12 +1001,74 @@ class DownstreamTrainer():
                     "best/val_ari": float(self.best_ARI),
                     "best/val_loss": float(self.best_loss),
                     "best/step": self.best_step,
+                    **self._validation_metric_callback(),
                 })
 
             
 
     def _current_lr(self):
         return self.down_optimizer.param_groups[0]["lr"]
+
+    def _validation_metric_callback(self):
+        return {
+            f"val/option{option}/{metric}": value
+            for option, summary in getattr(self, "_last_validation_metrics", {}).items()
+            for metric, value in summary.items()
+        }
+
+    def _persist_validation(self, epoch, step, val_loss, val_ari, improved, train_loss=None):
+        if getattr(self, "world_rank", 0) != 0:
+            return
+        if getattr(self, "_validation_history", None) is None:
+            params = self.params
+            metadata = {
+                "training_log": params.training_log_path,
+                "model_config": getattr(params, "model_version", None),
+                "model_yaml": getattr(params, "_yaml_filename", None),
+                "pretrained_checkpoint": getattr(params, "pretrained_ckpt", None),
+                "data_root_test": getattr(params, "data_root_test", getattr(params, "data_root", None)),
+                "seed": getattr(params, "seed", None),
+                "max_validation_events": getattr(params, "max_validation_events", None),
+                "max_val_batches": getattr(params, "max_val_batches", None),
+                "max_optimizer_steps": getattr(params, "max_optimizer_steps", None),
+                "validation_split_role": "model_selection",
+                "world_size": getattr(self, "world_size", 1),
+            }
+            self._validation_history = ValidationHistory(params.training_log_path, metadata)
+            params.validation_history_dir = str(self._validation_history.directory)
+            params.validation_metrics_jsonl = str(self._validation_history.jsonl_path)
+            params.validation_metrics_csv = str(self._validation_history.csv_path)
+            print(f"Validation history: {self._validation_history.directory}")
+        summaries = getattr(self, "_last_validation_metrics", {})
+        record = {
+            "step": int(step), "epoch": int(epoch),
+            "lr": float(self._current_lr()), "train_loss": train_loss, "val_loss": val_loss,
+            "val_loss_event_mean": getattr(self, "_last_validation_loss_event_mean", None),
+            "selection_metric": validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal")),
+            "selection_option": 2, "selection_score": val_ari,
+            "selection_aggregation": "mean_of_batch_event_means",
+            "selected_best": bool(improved),
+            "assignment_threshold": float(getattr(self.params, "assignment_threshold", 0.0)),
+            "match_iou_threshold": float(getattr(self.params, "match_iou_threshold", 0.5)),
+            "match_min_purity": float(getattr(self.params, "match_min_purity", 0.5)),
+            "match_min_efficiency": float(getattr(self.params, "match_min_efficiency", 0.5)),
+        }
+        for option in (1, 2):
+            summary = summaries.get(option, EventMetricAccumulator().summary())
+            record.update({f"option{option}_{key}": value for key, value in summary.items()})
+        record.update({f"val_{key}": value for key, value in getattr(self, "_last_validation_loss_components", {}).items()})
+
+        def save_snapshot(path, validation_record):
+            payload = self._checkpoint_payload(epoch, val_loss, inference_only=True)
+            payload["validation_record"] = validation_record
+            # Unique history directory and exclusive creation prevent replacement.
+            with path.open("xb") as stream:
+                torch.save(payload, stream)
+
+        self._validation_history.append(
+            record,
+            checkpoint_writer=save_snapshot if bool(getattr(self.params, "save_validation_checkpoints", True)) else None,
+        )
 
     def _compute_batch_loss(self, batch, pretrain=False, train=False):
         grouped, label, _knearest, _reg = self._unpack_batch(batch)
@@ -1083,6 +1148,7 @@ class DownstreamTrainer():
         epoch,
         step,
         optuna_trial=None,
+        train_loss=None,
     ):
         has_finite_validation = np.isfinite(val_loss) and np.isfinite(val_ari)
         improved = has_finite_validation and (
@@ -1107,6 +1173,8 @@ class DownstreamTrainer():
             self.stagnation_counter = 0
         elif step >= self.early_stopping_min_steps:
             self.stagnation_counter += 1
+
+        self._persist_validation(epoch, step, val_loss, val_ari, improved, train_loss)
 
         if optuna_trial is not None:
             optuna_trial.report(float(val_ari), int(step))
@@ -1205,6 +1273,7 @@ class DownstreamTrainer():
                         epoch=epoch,
                         step=self.global_step,
                         optuna_trial=optuna_trial,
+                        train_loss=train_loss,
                     )
                     if metrics_callback is not None:
                         metrics_callback({
@@ -1219,6 +1288,7 @@ class DownstreamTrainer():
                             "best/val_ari": float(self.best_ARI),
                             "best/val_loss": float(self.best_loss),
                             "best/step": self.best_step,
+                            **self._validation_metric_callback(),
                         })
                     if self.stagnation_counter >= self.patience:
                         print(
@@ -1359,6 +1429,10 @@ class DownstreamTrainer():
             if max_validation_events < 1:
                 raise ValueError("max_validation_events must be positive or None")
         validated_events = 0
+        accumulators = {option: EventMetricAccumulator() for option in (1, 2)}
+        loss_totals = {key: 0.0 for key in ("loss_matched_ce", "loss_unmatched_ce", "loss_dice", "loss_focal")}
+        total_event_loss = 0.0
+        self._last_validation_metrics = {}
 
         with torch.no_grad():  # Disable gradient calculation
             for i, batch in enumerate(tqdm(self.val_data_loader)):
@@ -1451,16 +1525,19 @@ class DownstreamTrainer():
                 segmentation_result_opt2 = infrence_result_opt2["assignments"]
                 #calculate adjust rand score between segmentation result and label
                 
-                adjusted_rand_index = self._batch_adjusted_rand(
-                    inverse_valid_list,
-                    segmentation_result,
-                    mask,
-                )
-                adjusted_rand_index_opt2 = self._batch_adjusted_rand(
-                    inverse_valid_list,
-                    segmentation_result_opt2,
-                    mask,
-                )
+                ari_metric = validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal"))
+                batch_ari = {}
+                for option, assignments in ((1, segmentation_result), (2, segmentation_result_opt2)):
+                    # Preserve the existing assignment-policy diagnostic and
+                    # checkpoint-selection aggregation; accumulate full event
+                    # metrics separately, without re-running inference/matching.
+                    rows = self._batch_event_metrics(inverse_valid_list, assignments, mask)
+                    scores = [row[ari_metric] for row in rows if row.get(ari_metric) is not None]
+                    batch_ari[option] = float(np.mean(scores)) if scores else 0.0
+                    for row in rows:
+                        accumulators[option].add(row)
+                adjusted_rand_index = batch_ari[1]
+                adjusted_rand_index_opt2 = batch_ari[2]
                 #print(adjusted_rand_index)
                 # Compute loss and get matching indices
                 loss = losses["loss_matched_ce"] * self.loss_matched_ce_weight + losses["loss_unmatched_ce"] * self.loss_unmatched_ce_weight + losses["loss_dice"] * self.loss_dice_weight + losses["loss_focal"] * self.loss_focal_weight
@@ -1476,11 +1553,19 @@ class DownstreamTrainer():
                 self.down_results['loss_dice'].append(losses["loss_dice"].item())
                 self.down_results['loss_focal'].append(losses["loss_focal"].item())
                 validated_events += b
+                total_event_loss += float(loss.item()) * b
+                for key in loss_totals:
+                    loss_totals[key] += float(losses[key].item()) * b
 
 
 
         # Final validation metrics
         avg_loss = np.mean(self.down_results['val'])
+        self._last_validation_metrics = {option: accumulator.summary() for option, accumulator in accumulators.items()}
+        self._last_validation_loss_components = {
+            key: value / validated_events if validated_events else None for key, value in loss_totals.items()
+        }
+        self._last_validation_loss_event_mean = total_event_loss / validated_events if validated_events else None
 
         # Print validation results
         if self.log_to_screen:
@@ -1488,12 +1573,10 @@ class DownstreamTrainer():
 
         return avg_loss
 
-    def _save_checkpoint(self, filename, epoch, is_best, loss):
+    def _checkpoint_payload(self, epoch, loss, inference_only=False):
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.down_model.state_dict(),
-            'optimizer_state_dict': self.down_optimizer.state_dict(),
-            'scheduler_state_dict': self.down_scheduler.state_dict(),
             'best_loss': self.best_loss,
             'best_ARI': getattr(self, "best_ARI", None),
             'best_step': getattr(self, "best_step", None),
@@ -1504,6 +1587,11 @@ class DownstreamTrainer():
             'validation_ari_mode': getattr(self.params, "validation_ari_mode", "signal"),
             'params': vars(self.params)  # Save all hyperparameters
         }
+        checkpoint['inference_only'] = inference_only
+        checkpoint['validation_metrics'] = getattr(self, '_last_validation_metrics', {})
+        if not inference_only:
+            checkpoint['optimizer_state_dict'] = self.down_optimizer.state_dict()
+            checkpoint['scheduler_state_dict'] = self.down_scheduler.state_dict()
 
         # Handle DistributedDataParallel wrapper
         if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
@@ -1513,7 +1601,13 @@ class DownstreamTrainer():
             lora_state = {k: v for k, v in self.model.state_dict().items()
                           if 'lora_A' in k or 'lora_B' in k}
             checkpoint['lora_state_dict'] = lora_state
-            checkpoint['lora_optimizer_state_dict'] = self.lora_optimizer.state_dict()
+            if not inference_only:
+                checkpoint['lora_optimizer_state_dict'] = self.lora_optimizer.state_dict()
+
+        return checkpoint
+
+    def _save_checkpoint(self, filename, epoch, is_best, loss):
+        checkpoint = self._checkpoint_payload(epoch, loss)
 
         torch.save(checkpoint, os.path.join(self.params.checkpoint_dir, filename))
 
@@ -1533,6 +1627,8 @@ class DownstreamTrainer():
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
         validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
+        if checkpoint.get('inference_only', False) and not inference:
+            raise ValueError("Validation snapshots are for inference/selection; resume training from a full checkpoint.")
 
         # 3. Handle DDP keys
         state_dict = checkpoint['model_state_dict']

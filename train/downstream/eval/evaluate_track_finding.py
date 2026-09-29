@@ -30,6 +30,7 @@ from loss import assign_points_to_masks  # noqa: E402
 from trackinghead import MambaAttentionHead  # noqa: E402
 from track_finding_metrics import (  # noqa: E402
     MatchConfig,
+    EventMetricAccumulator,
     compare_metric_summaries,
     event_track_metrics,
     finite_or_none,
@@ -321,67 +322,6 @@ def evaluate_event_method(
         pred_signal, valid, reg, match_config, momentum_scale, "native", result,
     )
     return {"rows": rows, "pred": pred, "signal": pred_signal}
-
-
-EVENT_MEAN_METRICS = (
-    "ari_signal",
-    "ari_with_background",
-    "track_efficiency",
-    "track_purity",
-    "matched_iou_mean",
-    "matched_purity_mean",
-    "matched_efficiency_mean",
-    "fake_rate",
-    "miss_rate",
-    "split_rate",
-    "merge_rate",
-    "background_rejection",
-    "background_contamination",
-    "signal_loss_to_background",
-)
-EVENT_COUNT_METRICS = (
-    "n_points",
-    "n_signal_points",
-    "n_background_points",
-    "n_true_tracks",
-    "n_pred_tracks",
-    "n_matched_tracks",
-)
-
-
-class EventMetricAccumulator:
-    """Streaming equivalent of ``summarize_event_metrics`` for threshold sweeps."""
-
-    def __init__(self) -> None:
-        self.n_events = 0
-        self.counts = {key: 0 for key in EVENT_COUNT_METRICS}
-        self.sums = {key: 0.0 for key in EVENT_MEAN_METRICS}
-        self.observations = {key: 0 for key in EVENT_MEAN_METRICS}
-
-    def add(self, row: dict[str, Any]) -> None:
-        self.n_events += 1
-        for key in EVENT_COUNT_METRICS:
-            self.counts[key] += int(row.get(key, 0))
-        for key in EVENT_MEAN_METRICS:
-            value = row.get(key)
-            if value is not None:
-                self.sums[key] += float(value)
-                self.observations[key] += 1
-
-    def summary(self) -> dict[str, Any]:
-        out = {"n_events": self.n_events, **self.counts}
-        for key in EVENT_MEAN_METRICS:
-            n = self.observations[key]
-            out[key] = finite_or_none(self.sums[key] / n) if n else None
-        out["track_efficiency_global"] = (
-            self.counts["n_matched_tracks"] / self.counts["n_true_tracks"]
-            if self.counts["n_true_tracks"] else None
-        )
-        out["track_purity_global"] = (
-            self.counts["n_matched_tracks"] / self.counts["n_pred_tracks"]
-            if self.counts["n_pred_tracks"] else None
-        )
-        return out
 
 
 def threshold_partition(event_id: int, modulus: int, calibration_remainder: int) -> str:

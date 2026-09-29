@@ -33,8 +33,9 @@ default: &default
   data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
   stat_dir: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/
   regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_mom_event_segment_mctrue_min12.json
-  downstream_dir: ./downstream_log/clas12_momentum_adapteronly
-  checkpoint_dir: ./downstream_log/clas12_momentum_adapteronly/checkpoints
+  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage}
+  downstream_dir: "{artifact_root}/downstream_log/clas12_momentum_adapteronly"
+  checkpoint_dir: "{downstream_dir}/checkpoints"
 
   # === Data configuration ===
   data_version: clas12_cvt

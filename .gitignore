@@ -45,6 +45,23 @@ training_checkpoints/
 globallogs/
 downstream_log/
 evaluation_output/
+artifacts/
+results/
+research_reports/
+repository_cleanup/
+result_deep_storage/
+/sweep_analysis/
+plots/
+figures/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+# Dated experiment reports belong in external research_reports/, not source docs.
+*_PROGRESS_20??-??-??.md
+*_RESULTS_20??-??-??.md
 *.log
 *.out
 *.err
@@ -71,6 +88,9 @@ venv.bak/
 *.swo
 *~
 .DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Temporary files
 tmp/

@@ -78,6 +78,8 @@ default: &default
   limit_test_size: 10000
   max_validation_events: 10000
   val_interval_steps: 1000
+  # Keep lightweight adapter snapshots at every validation for later selection.
+  save_validation_checkpoints: true
   max_train_batches: None
   max_val_batches: None
   early_stopping_min_steps: 1000

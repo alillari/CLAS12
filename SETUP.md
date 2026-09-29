@@ -126,8 +126,9 @@ data_root_train: /path/to/clas12/raggedmmap
 data_root_test: /path/to/clas12/raggedmmap
 stat_dir: /path/to/stats
 regression_target_stats: /path/to/stats/regression_target_stats.json
-downstream_dir: ./downstream_log/<run-name>
-checkpoint_dir: ./downstream_log/<run-name>/checkpoints
+artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage}
+downstream_dir: "{artifact_root}/downstream_log/<run-name>"
+checkpoint_dir: "{downstream_dir}/checkpoints"
 ```
 
 The inherited FM4NPP configs are still present:

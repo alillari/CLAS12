@@ -97,6 +97,8 @@ def parse_args() -> argparse.Namespace:
         help="Checkpoint-selection ARI; inclusive includes valid raw -1 noise rows.",
     )
     parser.add_argument("--training-override", action="append", default=[], metavar="KEY=VALUE", help="Additional rendered model YAML override. Can be repeated.")
+    parser.add_argument("--save-validation-checkpoints", action=argparse.BooleanOptionalAction, default=None,
+                        help="Save adapter weights at every validation (default: enabled); metrics are always logged.")
     parser.add_argument("--manifest")
     parser.add_argument("--allow-empty", action="store_true")
     parser.add_argument("--no-adapter-only", action="store_true")
@@ -154,6 +156,7 @@ def parse_training_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "validation_ari_mode": args.validation_ari_mode,
         "seed": args.seed,
         "assignment_threshold": args.assignment_threshold,
+        "save_validation_checkpoints": args.save_validation_checkpoints,
     }
     overrides = {key: value for key, value in direct.items() if value is not None}
     validate_track_finding_modes(overrides, source="campaign arguments")

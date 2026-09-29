@@ -72,6 +72,7 @@ default: &default
   max_epochs: 100
   max_optimizer_steps: 20000
   val_interval_steps: 500
+  save_validation_checkpoints: true
   max_train_batches: null
   max_val_batches: 250
   first_cycle_steps: 20000

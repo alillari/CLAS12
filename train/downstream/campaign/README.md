@@ -8,6 +8,36 @@ For one-output `p`, `theta`, and `phi` ablations, see
 [Single-target regression](../SINGLE_TARGET_REGRESSION.md) for loss definitions,
 config presets, matched statistics generation, and evaluation behavior.
 
+### Inspect paired single-head residuals
+
+For completed `p` and `theta` campaigns, make residual maps and bias/width/tail
+curves against **true momentum**, with an additional truth-theta view:
+
+```bash
+python train/downstream/campaign/plot_single_head_residuals.py \
+  --p-evaluation /path/to/p_campaign/runs/adapteronly_label50000/evaluation \
+  --theta-evaluation /path/to/theta_campaign/runs/adapteronly_label50000/evaluation \
+  --output-dir /path/to/residual_review
+```
+
+This is CPU plotting from cached predictions; no inference or checkpoint
+reselection occurs. The two evaluations must cover the same tracks. Because
+older scalar exports contain only their own truth quantity, the script joins
+them using source-file, event, source-event-index, segment, truth-segment and
+sample-mode identity. It checks duplicate identities and matching hit counts,
+and fails on incomplete cohorts rather than silently plotting their intersection.
+Neither head's predictions are used to define either truth axis.
+
+Outputs include PNG/PDF residual maps, median/core/tail curves, untrimmed tail
+plots, selected/best-loss/final checkpoint comparisons, per-bin CSVs, largest-error
+track identities, and `diagnostics.json` with prediction-file hashes. Momentum
+residuals are percentages; angular residuals are degrees. Core maps explicitly
+count tracks beyond their display limits; quantiles use all finite residuals.
+Bins with fewer than `--min-bin-entries` (default 200) or nonfinite predictions
+do not contribute valid curves. These diagnostic bins do not change checkpoint
+selection. Checkpoint comparisons use the original validation binning and require
+the campaign's collated `summary/physics_checkpoint_history.jsonl`.
+
 The runner is intentionally local-first. It does not submit SLURM jobs. It runs
 one training/evaluation job at a time and sets `CUDA_VISIBLE_DEVICES` for each
 subprocess.

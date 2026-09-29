@@ -33,6 +33,90 @@ CSV filenames remain. Summary JSON retains `native_metrics`, `native_baselines`,
 and `native_comparisons` as aliases for existing campaign plots. Existing
 checkpoints and campaign artifacts are not rewritten by this cleanup.
 
+## Track-finding validation histories and later checkpoint selection
+
+Every validation now aggregates the adapter's computed metrics for both
+assignment options: signal/inclusive ARI, track purity/efficiency, matched
+IoU/purity/efficiency, fake/miss/split/merge rates, background rejection,
+contamination, and signal loss to background. Global track purity/efficiency
+use pooled matched/predicted/truth counts. Other rates retain the evaluator's
+event-average definitions, omitting undefined values. Counts and event-averaged
+loss components are recorded too. No extra model forward pass is required.
+
+The existing ARI-based selection, loss tie-break, and early stopping rule stay
+unchanged. In particular, legacy selection averages batch-level ARI means;
+the new full-validation ARIs average individual eligible events. These can
+differ for an uneven final batch. History records keep `selection_score` and
+`selection_aggregation` separate from the full-validation metrics.
+
+Each training invocation creates a fresh directory beside its training log:
+
+```text
+<log-stem>_validation/run_<unique-id>/
+  metadata.json
+  metrics.jsonl
+  metrics.csv
+  checkpoints/validation_000001_step_000001000_epoch_000000.pth
+  ...
+```
+
+The directory is printed and included as `validation_history_dir` in the
+training artifact summary. CSV/JSONL rows include the step, epoch, learning
+rate, selection result, fixed threshold, metric matching cuts, both options'
+metrics, and the corresponding snapshot path. New invocations do not replace
+previous histories. In distributed runs the history is written by rank zero
+for its validation loader; it does not introduce cross-rank metric reduction.
+
+`save_validation_checkpoints: true` is the default. Every validation retains
+an immutable snapshot, including non-improving and early-stopping validations.
+Snapshots contain adapter weights, any active LoRA weights, configuration,
+and validation metrics. They omit optimizer/scheduler states and the frozen
+backbone. They load through the existing evaluator with `--checkpoint`; they
+are not training-resume checkpoints. The normal best checkpoint remains full.
+Keep the matching backbone checkpoint and rendered analysis/model YAMLs.
+
+To disable snapshots while retaining every metric record, set
+`save_validation_checkpoints: false`, or pass `--no-save-validation-checkpoints`
+when building a campaign. Snapshots consume disk space proportional to the
+number of validation checks.
+
+Plot one history without retraining or reevaluating:
+
+```bash
+PY=/home/alessio/miniconda3/envs/fm4npp/bin/python
+export MPLCONFIGDIR=/tmp/matplotlib-cache
+HISTORY_DIR=/path/to/checkpoints/run-name_validation/run_unique-id
+"$PY" train/downstream/campaign/plot_track_finding_validation.py \
+  --history "$HISTORY_DIR"
+```
+
+This writes PNG/PDF panels of metrics versus optimizer step and purity,
+background rejection, and fake rate versus signal ARI. `trend_summary.json`
+identifies the best snapshot for each metric and adjacent validation intervals
+where signal ARI rises while purity/background performance deteriorates.
+`--after-step 10000` restricts the analysis to later training;
+`--min-delta 0.001` sets the absolute change required to flag a trade-off.
+`--assignment-option 1` plots the membership-only diagnostic instead.
+The tool rejects mixed histories, sample-count changes, and changes in
+assignment threshold or metric matching cuts.
+
+For later evaluation of a snapshot:
+
+```bash
+"$PY" train/downstream/eval/evaluate_track_finding.py \
+  --analysis-config /path/to/run/config/analysis.yaml \
+  --checkpoint /path/to/history/checkpoints/validation_000010_step_000010000_epoch_000003.pth \
+  --output-dir /path/to/separate/snapshot_evaluation
+```
+
+The plots describe a validation trajectory, not proof of causality or an
+independent test result. Keep training/data/threshold fixed when comparing
+selection rules, and use a genuinely disjoint sample for final confirmation.
+The current selection rule can stop training early; set an adequate step/epoch
+budget and patience if the goal is to observe later degradation. Historical
+ARI-only logs cannot reconstruct discarded metrics or overwritten checkpoints.
+Momentum-binned and COATJAVA comparisons still come from the final evaluator.
+
 ## Track-regression evaluation
 
 Run the standalone adapter-only campaign example from any working directory:

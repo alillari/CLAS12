@@ -9,8 +9,9 @@ default: &default
   data_root_train: /path/to/clas12_cvt_raggedmmap/
   data_root_test: /path/to/clas12_cvt_raggedmmap/
   stat_dir: /path/to/clas12_stats/
-  downstream_dir: ./downstream_log/clas12_point_classification_adapteronly
-  checkpoint_dir: ./downstream_log/clas12_point_classification_adapteronly/checkpoints
+  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage}
+  downstream_dir: "{artifact_root}/downstream_log/clas12_point_classification_adapteronly"
+  checkpoint_dir: "{downstream_dir}/checkpoints"
 
   data_version: clas12_cvt
   input_layout: xyz

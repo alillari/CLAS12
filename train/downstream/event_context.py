@@ -12,8 +12,6 @@ def validate_event_context_config(params):
     mode = getattr(params, "adapter_sample_mode", "event_segment")
     if mode not in EVENT_MODES:
         return
-    if not getattr(params, "pretrained_ckpt", None):
-        raise ValueError(f"{mode} requires --usepretrain and --pretrained_ckpt")
     if getattr(params, "chunk_training", False):
         raise ValueError(f"{mode} requires chunk_training=False")
     if getattr(params, "input_representation", "center_only") != "center_only":
@@ -21,7 +19,7 @@ def validate_event_context_config(params):
     if getattr(params, "embed_method", "pos_only") != "pos_only":
         raise ValueError(f"{mode} currently requires embed_method=pos_only")
     if getattr(params, "mambaversion", "mamba1") != "mamba1":
-        raise ValueError(f"{mode} is initially supported for Mamba1 backbones")
+        raise ValueError(f"{mode} currently requires mambaversion=mamba1")
 
 
 def validate_checkpoint_sample_mode(checkpoint, sample_mode):

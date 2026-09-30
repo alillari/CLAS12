@@ -192,8 +192,7 @@ class EventContextTest(unittest.TestCase):
                          dict(input_representation='clas12_geometry_v1')]:
             with self.assertRaises(ValueError):
                 cls(**dict(self.kwargs, **override))
-        with self.assertRaisesRegex(ValueError, 'pretrained_ckpt'):
-            validate_event_context_config(SimpleNamespace(adapter_sample_mode=mode))
+        validate_event_context_config(SimpleNamespace(adapter_sample_mode=mode))
         validate_event_context_config(SimpleNamespace(adapter_sample_mode=mode, pretrained_ckpt='m6.tar'))
 
     def test_checkpoint_context_must_match(self):

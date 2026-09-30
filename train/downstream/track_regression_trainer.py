@@ -612,7 +612,8 @@ class DownstreamTrainer():
                     pred_dict = self._pretrained_adapter_forward(model_input, feature, inputdict)
 
                 else:
-                    pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
+                    adapter_points, adapter_kwargs = adapter_sequence(model_input, inputdict, getattr(self.params, "adapter_sample_mode", "event_segment"))
+                    pred_dict = self.down_model(adapter_points, feature=None, **adapter_kwargs, **geometry_kwargs)
 
                 pred = pred_dict['pred_regression']
                 outputs = {
@@ -1098,7 +1099,8 @@ class DownstreamTrainer():
                 feature = self._backbone_features(model_input, inputdict)
             pred_dict = self._pretrained_adapter_forward(model_input, feature, inputdict)
         else:
-            pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
+            adapter_points, adapter_kwargs = adapter_sequence(model_input, inputdict, getattr(self.params, "adapter_sample_mode", "event_segment"))
+            pred_dict = self.down_model(adapter_points, feature=None, **adapter_kwargs, **geometry_kwargs)
         self._log_geometry_branch_rms(pred_dict)
 
         pred = pred_dict["pred_regression"]  # B x num_output_classes
@@ -1422,7 +1424,8 @@ class DownstreamTrainer():
                         feature = self._backbone_features(model_input, inputdict)
                         pred = self._pretrained_adapter_forward(model_input, feature, inputdict)["pred_regression"]
                     else:
-                        pred = self.down_model(model_input, feature=None, padding_mask=mask,
+                        adapter_points, adapter_kwargs = adapter_sequence(model_input, inputdict, getattr(self.params, "adapter_sample_mode", "event_segment"))
+                        pred = self.down_model(adapter_points, feature=None, **adapter_kwargs,
                             **self._geometry_context_kwargs(inputdict, pretrain))["pred_regression"]
                     losses = masked_regression_loss(
                         outputs={"pred": pred}, targets=targets, option=self.regression_loss,

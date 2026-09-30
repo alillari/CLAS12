@@ -32,6 +32,7 @@ from evaluation_contract import (  # noqa: E402
     EVALUATION_CONTRACT, CVT_REFERENCE_DEFINITION, configure_entrance_evaluation,
 )
 from model import MambaTrackRegressionHead  # noqa: E402
+from event_context import adapter_sequence  # noqa: E402
 from regression_utils import (  # noqa: E402
     SINGLE_TARGET_TASKS,
     project_phi_pair_numpy,
@@ -2072,8 +2073,11 @@ def main():
                 )["pred_regression"]
             else:
                 geometry_kwargs = trainer._geometry_context_kwargs(batch, pretrain=False)
+                adapter_points, adapter_kwargs = adapter_sequence(
+                    model_input, batch, getattr(trainer.params, "adapter_sample_mode", "event_segment")
+                )
                 prediction = trainer.down_model(
-                    model_input, feature=None, padding_mask=mask, **geometry_kwargs
+                    adapter_points, feature=None, **adapter_kwargs, **geometry_kwargs
                 )["pred_regression"]
 
             target_segment_mask = batch.get("target_segment_mask")

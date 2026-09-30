@@ -72,6 +72,24 @@ class MembershipTest(unittest.TestCase):
         actual = head(points, padded, pretrain=True, **kwargs)['pred_regression']
         torch.testing.assert_close(actual, output['pred_regression'])
 
+    def test_adapter_only_membership_uses_full_event_and_membership(self):
+        _, batch, _, points, kwargs = self.inputs()
+        head = self.head()
+        output = head(points, feature=None, pretrain=False, **kwargs)
+        self.assertEqual(head.input_proj[1].in_features, 4)
+        torch.testing.assert_close(output['embedding_pre_projection'][..., -1],
+                                   kwargs['track_membership'].float())
+        self.assertFalse(torch.allclose(output['pred_regression'][1], output['pred_regression'][2]))
+        output['pred_regression'].square().sum().backward()
+        self.assertGreater(head.input_proj[1].weight.grad[:, -1].abs().sum().item(), 0)
+        # Gather mode without a backbone receives exactly the baseline input.
+        gather_points, gather_kwargs = adapter_sequence(
+            batch['points'], batch, 'event_segment_context')
+        track_points, track_kwargs = adapter_sequence(
+            batch['points'], batch, 'event_segment')
+        torch.testing.assert_close(gather_points, track_points)
+        torch.testing.assert_close(gather_kwargs['padding_mask'], track_kwargs['padding_mask'])
+
     def test_membership_validation_and_checkpoint_guards(self):
         _, _, features, points, kwargs = self.inputs()
         head = self.head()
@@ -84,8 +102,7 @@ class MembershipTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'differs'):
                 validate_checkpoint_sample_mode({'adapter_sample_mode': saved}, EVENT_MEMBERSHIP_MODE)
         validate_checkpoint_sample_mode({'adapter_sample_mode': EVENT_MEMBERSHIP_MODE}, EVENT_MEMBERSHIP_MODE)
-        with self.assertRaisesRegex(ValueError, 'requires --usepretrain'):
-            validate_event_context_config(SimpleNamespace(adapter_sample_mode=EVENT_MEMBERSHIP_MODE))
+        validate_event_context_config(SimpleNamespace(adapter_sample_mode=EVENT_MEMBERSHIP_MODE))
         mode, cls, _ = resolve_adapter_sample_mode(SimpleNamespace(adapter_sample_mode=EVENT_MEMBERSHIP_MODE))
         self.assertEqual(mode, EVENT_MEMBERSHIP_MODE)
 

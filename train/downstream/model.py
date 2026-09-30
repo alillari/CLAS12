@@ -690,8 +690,6 @@ class MambaTrackRegressionHead(nn.Module):
             x = self.embedder_norm(x)
 
         if self.track_membership_channel:
-            if not pretrain:
-                raise ValueError("Track membership conditioning requires pretrained features")
             if track_membership is None or track_membership.shape != x.shape[:2]:
                 raise ValueError("Track membership must match the full event feature sequence")
             if padding_mask is None or padding_mask.shape != x.shape[:2]:

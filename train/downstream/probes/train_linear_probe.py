@@ -274,6 +274,8 @@ def iter_probe_batches(
             valid = event_valid(targets["target_valid"])
             if not bool(valid.any()):
                 continue
+            if getattr(trainer.params, "adapter_sample_mode", "event_segment") == "event_segment_membership":
+                raise ValueError("The pooled linear probe does not support membership-conditioned full events")
             embeddings = trainer._backbone_features(points, batch)
             pooled = masked_mean_layers(embeddings, mask)
             yield pooled[:, valid].detach(), targets["target"][valid].detach()

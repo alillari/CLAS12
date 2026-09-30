@@ -117,7 +117,7 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
             "track_legacy regression statistics are disabled: use the v6 event "
             "product with adapter_sample_mode=event_segment"
         )
-    elif adapter_sample_mode in {"event_segment", "event_segment_context"}:
+    elif adapter_sample_mode in {"event_segment", "event_segment_context", "event_segment_membership"}:
         if task is None:
             raise ValueError("event_segment statistics require --task")
         if segment_target_source not in {"mctrue", "seg_target", "coatjava"}:
@@ -212,7 +212,7 @@ def main():
     parser.add_argument("--high-thr", type=int, default=100)
     parser.add_argument("--limit-size", type=int)
     parser.add_argument("--chunk-size", type=int, default=250000)
-    parser.add_argument("--adapter-sample-mode", choices=("event_segment", "event_segment_context"), default="event_segment")
+    parser.add_argument("--adapter-sample-mode", choices=("event_segment", "event_segment_context", "event_segment_membership"), default="event_segment")
     parser.add_argument("--segment-target-source", default="mctrue")
     parser.add_argument("--segment-min-clusters", type=int, default=12)
     parser.add_argument("--segment-exact-clusters", action="store_true")

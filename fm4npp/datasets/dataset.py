@@ -1344,6 +1344,7 @@ ADAPTER_SAMPLE_MODE_DATASETS = {
     'track_legacy': TPCBatchDataset,
     'event_segment': EventSegmentTPCBatchDataset,
     'event_segment_context': EventContextSegmentTPCBatchDataset,
+    'event_segment_membership': EventContextSegmentTPCBatchDataset,
 }
 
 

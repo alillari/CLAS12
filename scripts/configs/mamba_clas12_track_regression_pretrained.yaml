@@ -214,3 +214,9 @@ clas12_track_regression_m6_track_context: &m6_track_context
 clas12_track_regression_m6_event_context:
   <<: *m6_track_context
   adapter_sample_mode: event_segment_context
+
+# Full-event adapter sequence with one target-track membership channel.
+# Backbone width stays 1536; only the adapter input projection becomes 1537.
+clas12_track_regression_m6_event_membership:
+  <<: *m6_track_context
+  adapter_sample_mode: event_segment_membership

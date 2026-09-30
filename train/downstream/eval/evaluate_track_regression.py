@@ -216,6 +216,7 @@ def load_analysis_config(args):
 def build_head(trainer):
     params = trainer.params
     return MambaTrackRegressionHead(
+        track_membership_channel=getattr(params, "adapter_sample_mode", "event_segment") == "event_segment_membership",
         input_dim=params.embed_dim,
         num_layers=1,
         num_output_dim=params.num_output_classes,
@@ -2066,8 +2067,8 @@ def main():
 
             if use_pretrained:
                 feature = trainer._backbone_features(model_input, batch)
-                prediction = trainer.down_model(
-                    model_input, feature, pretrain=True, padding_mask=mask
+                prediction = trainer._pretrained_adapter_forward(
+                    model_input, feature, batch
                 )["pred_regression"]
             else:
                 geometry_kwargs = trainer._geometry_context_kwargs(batch, pretrain=False)

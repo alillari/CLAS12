@@ -516,8 +516,9 @@ class MambaTrackRegressionHead(nn.Module):
                  target_mean=None, target_std=None,
                  input_representation="center_only",
                  geometry_pitch_mean_cm=None, geometry_pitch_std_cm=None,
-                 pos_dim=3, aux_dim=4):
+                 pos_dim=3, aux_dim=4, track_membership_channel=False):
         super().__init__()
+        self.track_membership_channel = bool(track_membership_channel)
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
@@ -553,9 +554,10 @@ class MambaTrackRegressionHead(nn.Module):
             raise ValueError(f"Unknown pooling mode: {self.pooling}")
 
         # Input processing
+        projection_dim = input_dim + int(self.track_membership_channel)
         self.input_proj = nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, embed_dim)
+            nn.LayerNorm(projection_dim),
+            nn.Linear(projection_dim, embed_dim)
         )
 
 
@@ -652,6 +654,7 @@ class MambaTrackRegressionHead(nn.Module):
         pretrain=False,
         token_context=None,
         geometry_context=None,
+        track_membership=None,
     ):
         if pretrain:
             if self.input_representation == "clas12_geometry_v1":
@@ -685,6 +688,22 @@ class MambaTrackRegressionHead(nn.Module):
                 x = layer(x) + x
 
             x = self.embedder_norm(x)
+
+        if self.track_membership_channel:
+            if not pretrain:
+                raise ValueError("Track membership conditioning requires pretrained features")
+            if track_membership is None or track_membership.shape != x.shape[:2]:
+                raise ValueError("Track membership must match the full event feature sequence")
+            if padding_mask is None or padding_mask.shape != x.shape[:2]:
+                raise ValueError("Membership conditioning requires the full event padding mask")
+            if not ((track_membership == 0) | (track_membership == 1)).all():
+                raise ValueError("Track membership must be binary")
+            members = track_membership.bool()
+            if (members & ~padding_mask).any() or not members.any(dim=1).all():
+                raise ValueError("Track membership must select real tokens in every event")
+            x = torch.cat((x, track_membership.to(x.dtype).unsqueeze(-1)), dim=-1)
+        elif track_membership is not None:
+            raise ValueError("This head was not constructed with a track membership channel")
 
         embedding_pre_projection = None
         embedding_post_projection = None

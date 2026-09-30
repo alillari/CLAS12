@@ -29,6 +29,7 @@ from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
 from fm4npp.models.mambagpt import MambaGPT, Mamba1GPT
 from train.downstream.event_context import (
+    adapter_sequence, EVENT_MEMBERSHIP_MODE,
     backbone_features, validate_event_context_config, validate_checkpoint_sample_mode,
 )
 from train.downstream.lr_schedulers import CosineAnnealingWarmupThenHold
@@ -142,10 +143,10 @@ class DownstreamTrainer():
                     "clas12_pos_plus_aux_v1 is currently supported only by "
                     "Mamba1GPT or MambaGPT backbones"
                 )
-        if getattr(params, "adapter_sample_mode", "event_segment") not in {"event_segment", "event_segment_context"}:
+        if getattr(params, "adapter_sample_mode", "event_segment") not in {"event_segment", "event_segment_context", "event_segment_membership"}:
             raise ValueError(
                 "track_legacy regression is disabled. Use the v6 event product with "
-                "adapter_sample_mode=event_segment or event_segment_context."
+                "adapter_sample_mode=event_segment, event_segment_context, or event_segment_membership."
             )
         validate_event_context_config(params)
         # A zero-filled fallback is never meaningful for a regression target.
@@ -530,7 +531,7 @@ class DownstreamTrainer():
         #                  ).to(self.device)
         
         #else:
-        self.down_model = MambaTrackRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean"), embed_method=self.params.embed_method, pe_method=self.params.pe_method, target_mean=self.regression_target_stats["mean"], target_std=self.regression_target_stats["std"], input_representation=getattr(self.params, "input_representation", "center_only"), geometry_pitch_mean_cm=getattr(self.params, "geometry_pitch_mean_cm", None), geometry_pitch_std_cm=getattr(self.params, "geometry_pitch_std_cm", None), pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4)).to(self.device)
+        self.down_model = MambaTrackRegressionHead(track_membership_channel=getattr(self.params, "adapter_sample_mode", "event_segment") == EVENT_MEMBERSHIP_MODE, input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean"), embed_method=self.params.embed_method, pe_method=self.params.pe_method, target_mean=self.regression_target_stats["mean"], target_std=self.regression_target_stats["std"], input_representation=getattr(self.params, "input_representation", "center_only"), geometry_pitch_mean_cm=getattr(self.params, "geometry_pitch_mean_cm", None), geometry_pitch_std_cm=getattr(self.params, "geometry_pitch_std_cm", None), pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4)).to(self.device)
 
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -608,7 +609,7 @@ class DownstreamTrainer():
                     with torch.no_grad():
                         feature = self._backbone_features(model_input, inputdict)
                     #print('feature: ', feature.size())
-                    pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
+                    pred_dict = self._pretrained_adapter_forward(model_input, feature, inputdict)
 
                 else:
                     pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
@@ -715,6 +716,7 @@ class DownstreamTrainer():
         #                          ).to(self.device)
 
         self.down_model = MambaTrackRegressionHead(
+            track_membership_channel=getattr(self.params, "adapter_sample_mode", "event_segment") == EVENT_MEMBERSHIP_MODE,
             input_dim=self.params.embed_dim,
             num_layers=1,
             num_output_dim=self.params.num_output_classes,
@@ -1069,6 +1071,13 @@ class DownstreamTrainer():
             getattr(self.params, "adapter_sample_mode", "event_segment"),
         )
 
+    def _pretrained_adapter_forward(self, model_input, feature, inputdict):
+        points, kwargs = adapter_sequence(
+            model_input, inputdict,
+            getattr(self.params, "adapter_sample_mode", "event_segment"),
+        )
+        return self.down_model(points, feature, pretrain=True, **kwargs)
+
     def _train_one_batch(self, inputdict, pretrain=False):
         grouped = inputdict['points'].to(self.device)  # B X N X C
         b, c = grouped.size(0), grouped.size(-1)
@@ -1087,7 +1096,7 @@ class DownstreamTrainer():
         if pretrain:
             with torch.no_grad():
                 feature = self._backbone_features(model_input, inputdict)
-            pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
+            pred_dict = self._pretrained_adapter_forward(model_input, feature, inputdict)
         else:
             pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
         self._log_geometry_branch_rms(pred_dict)
@@ -1411,8 +1420,7 @@ class DownstreamTrainer():
                     model_input = self._representation_input(grouped, inputdict)
                     if pretrain:
                         feature = self._backbone_features(model_input, inputdict)
-                        pred = self.down_model(model_input, feature, pretrain=True,
-                                               padding_mask=mask)["pred_regression"]
+                        pred = self._pretrained_adapter_forward(model_input, feature, inputdict)["pred_regression"]
                     else:
                         pred = self.down_model(model_input, feature=None, padding_mask=mask,
                             **self._geometry_context_kwargs(inputdict, pretrain))["pred_regression"]

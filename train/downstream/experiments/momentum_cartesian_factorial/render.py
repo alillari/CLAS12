@@ -28,6 +28,11 @@ def main():
         for label, mode in MODES.items():
             name = f"{kind}_{label}"
             config = dict(template)
+            # The active sweep's newer physics diagnostics include per-bin
+            # guardrails. This branch selects by validation loss, and its
+            # older diagnostic parser does not accept that unused option.
+            config["physics_checkpoint"] = dict(config["physics_checkpoint"])
+            config["physics_checkpoint"].pop("per_bin_guardrails", None)
             config.update(
                 adapter_sample_mode=mode,
                 data_root=str(DATA_ROOT), data_root_train=str(DATA_ROOT),
@@ -42,7 +47,7 @@ def main():
     with (root / "experiment.yaml").open("w") as stream:
         yaml.dump(configs, stream)
     (root / "experiment_design.json").write_text(json.dumps(dict(
-        source="Active a02c Cartesian MAE 70k rendered configs; only data root, cohort limit, paths, and adapter mode changed",
+        source="Active a02c Cartesian MAE 70k rendered configs; data root, cohort limit, paths, adapter mode, and unused per-bin physics guardrails changed",
         data_root=str(DATA_ROOT), labeled_events=100000,
         labeled_tracks=args.tracks, backbone=str(BACKBONE),
         modes=MODES, seed=11, batch_size=128, max_optimizer_steps=30000,

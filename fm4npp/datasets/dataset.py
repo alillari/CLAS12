@@ -957,6 +957,29 @@ class MyCollator:
         if has_geometry_context:
             out['token_context'] = token_context
             out['geometry_context'] = geometry_context
+        has_event_context = 'backbone_points' in batch[0]
+        if any(('backbone_points' in sample) != has_event_context for sample in batch):
+            raise ValueError('Cannot mix event-context and isolated-track samples')
+        if has_event_context:
+            # Samples and label budgets remain tracks. Share full-event backbone
+            # work only among tracks from the same event in this batch.
+            events, event_lookup, event_indices = [], {}, []
+            for sample in batch:
+                source = int(sample['source_event_index'])
+                if source not in event_lookup:
+                    event_lookup[source] = len(events)
+                    events.append(sample['backbone_points'])
+                event_indices.append(event_lookup[source])
+            event_longest = max(points.size(0) for points in events)
+            out['backbone_points'] = torch.stack([
+                self.pad_tensor(points, event_longest) for points in events
+            ])
+            out['backbone_event_index'] = torch.as_tensor(event_indices, dtype=torch.long)
+            out['backbone_token_index'] = torch.stack([
+                F.pad(sample['backbone_token_index'],
+                      (0, point_longest - sample['points'].size(0)), value=0)
+                for sample in batch
+            ])
         return out
 
     def collate_tuple(self, batch):
@@ -1274,9 +1297,53 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
                 knearest_points * self.data_scaler)
 
 
+class EventContextSegmentTPCBatchDataset(EventSegmentTPCBatchDataset):
+    """The same supervised tracks, with full events for frozen backbone inference.
+
+    Track sampling, filtering, targets and serialization are inherited unchanged.
+    Original point-row indices connect each track's order to the full-event order;
+    no coordinate matching or on-disk mapping is used.
+    """
+
+    def __init__(self, *args, **kwargs):
+        if kwargs.get('chunk_training', False):
+            raise ValueError('event_segment_context requires chunk_training=False (full events)')
+        if not kwargs.get('return_dict', False):
+            raise ValueError('event_segment_context requires return_dict=True')
+        if kwargs.get('input_representation', 'center_only') != 'center_only':
+            raise ValueError('event_segment_context currently supports center_only inputs')
+        super().__init__(*args, **kwargs)
+
+    def _serialization_indices(self, normalized):
+        radius_order = normalized[..., -1].argsort(dim=1).squeeze(0)
+        return radius_order[self._compute_sorter(normalized[:, radius_order])]
+
+    def __getitem__(self, index):
+        track = super().__getitem__(index)
+        event_index, segment_label = self.idxlist[index]
+        features = torch.from_numpy(np.copy(self.memmap_feature[event_index])).float().unsqueeze(0)
+        model_features = self._to_model_features(features)
+        normalized = self.apply_norm(model_features) if self.normalize else model_features
+        event_order = self._serialization_indices(normalized)
+        labels = np.asarray(self._segment_source_for_filtering()[event_index])
+        track_rows = torch.from_numpy(np.flatnonzero(labels == int(segment_label)))
+        # Repeat the isolated track conversion when deriving its permutation:
+        # shape-dependent FP rounding near Hilbert-bin boundaries must not
+        # change the order inherited from EventSegmentTPCBatchDataset.
+        track_features = self._to_model_features(features[:, track_rows])
+        track_normalized = self.apply_norm(track_features) if self.normalize else track_features
+        track_order = track_rows[self._serialization_indices(track_normalized)]
+        inverse_event_order = torch.empty_like(event_order)
+        inverse_event_order[event_order] = torch.arange(event_order.numel())
+        track['backbone_points'] = normalized[:, event_order].squeeze(0) * self.data_scaler
+        track['backbone_token_index'] = inverse_event_order[track_order]
+        return track
+
+
 ADAPTER_SAMPLE_MODE_DATASETS = {
     'track_legacy': TPCBatchDataset,
     'event_segment': EventSegmentTPCBatchDataset,
+    'event_segment_context': EventContextSegmentTPCBatchDataset,
 }
 
 
@@ -1288,7 +1355,7 @@ def resolve_adapter_sample_mode(params):
 
     dataset_cls = ADAPTER_SAMPLE_MODE_DATASETS[mode]
     dataset_kwargs = {}
-    if dataset_cls is EventSegmentTPCBatchDataset:
+    if issubclass(dataset_cls, EventSegmentTPCBatchDataset):
         dataset_kwargs = {
             'segment_target_source': getattr(params, 'segment_target_source', 'mctrue'),
             'segment_min_clusters': getattr(params, 'segment_min_clusters', 12),

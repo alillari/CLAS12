@@ -2065,9 +2065,9 @@ def main():
             model_input = trainer._representation_input(points, batch)
 
             if use_pretrained:
-                _, embeddings, _ = trainer.model(model_input, return_z=True)
+                feature = trainer._backbone_features(model_input, batch)
                 prediction = trainer.down_model(
-                    model_input, torch.stack(embeddings), pretrain=True, padding_mask=mask
+                    model_input, feature, pretrain=True, padding_mask=mask
                 )["pred_regression"]
             else:
                 geometry_kwargs = trainer._geometry_context_kwargs(batch, pretrain=False)

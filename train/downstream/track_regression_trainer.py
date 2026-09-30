@@ -28,6 +28,9 @@ sys.path.append('../..')
 from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
 from fm4npp.models.mambagpt import MambaGPT, Mamba1GPT
+from train.downstream.event_context import (
+    backbone_features, validate_event_context_config, validate_checkpoint_sample_mode,
+)
 from train.downstream.lr_schedulers import CosineAnnealingWarmupThenHold
 from fm4npp.models.longformer_gpt import LongformerGPT
 from fm4npp.models.linformer_gpt import LinformerGPT
@@ -139,11 +142,12 @@ class DownstreamTrainer():
                     "clas12_pos_plus_aux_v1 is currently supported only by "
                     "Mamba1GPT or MambaGPT backbones"
                 )
-        if getattr(params, "adapter_sample_mode", "event_segment") != "event_segment":
+        if getattr(params, "adapter_sample_mode", "event_segment") not in {"event_segment", "event_segment_context"}:
             raise ValueError(
                 "track_legacy regression is disabled. Use the v6 event product with "
-                "adapter_sample_mode=event_segment."
+                "adapter_sample_mode=event_segment or event_segment_context."
             )
+        validate_event_context_config(params)
         # A zero-filled fallback is never meaningful for a regression target.
         self.params["require_reg_target"] = True
         default_stats_path = os.path.join(
@@ -602,9 +606,7 @@ class DownstreamTrainer():
                 model_input = self._representation_input(grouped, inputdict)
                 if pretrain:
                     with torch.no_grad():
-                        _, pre_embed, _ = self.model(model_input, return_z = True)
-                    #feature = torch.stack(pre_embed).mean(0)
-                    feature = torch.stack(pre_embed)
+                        feature = self._backbone_features(model_input, inputdict)
                     #print('feature: ', feature.size())
                     pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
@@ -1061,6 +1063,12 @@ class DownstreamTrainer():
         formatted = ", ".join(f"{name}={value.item():.3f}" for name, value in norms.items())
         print(f"[geometry branch RMS] step={self.global_step}: {formatted}")
 
+    def _backbone_features(self, model_input, inputdict):
+        return backbone_features(
+            self.model, model_input, inputdict,
+            getattr(self.params, "adapter_sample_mode", "event_segment"),
+        )
+
     def _train_one_batch(self, inputdict, pretrain=False):
         grouped = inputdict['points'].to(self.device)  # B X N X C
         b, c = grouped.size(0), grouped.size(-1)
@@ -1078,8 +1086,7 @@ class DownstreamTrainer():
         model_input = self._representation_input(grouped, inputdict)
         if pretrain:
             with torch.no_grad():
-                _, pre_embed, _ = self.model(model_input, return_z=True)
-            feature = torch.stack(pre_embed)
+                feature = self._backbone_features(model_input, inputdict)
             pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
         else:
             pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
@@ -1403,8 +1410,8 @@ class DownstreamTrainer():
                     targets = self.build_regression_targets(reg, mask, segment)
                     model_input = self._representation_input(grouped, inputdict)
                     if pretrain:
-                        _, embeddings, _ = self.model(model_input, return_z=True)
-                        pred = self.down_model(model_input, torch.stack(embeddings), pretrain=True,
+                        feature = self._backbone_features(model_input, inputdict)
+                        pred = self.down_model(model_input, feature, pretrain=True,
                                                padding_mask=mask)["pred_regression"]
                     else:
                         pred = self.down_model(model_input, feature=None, padding_mask=mask,
@@ -1462,6 +1469,7 @@ class DownstreamTrainer():
             'regression_target_columns': self.regression_target_stats["columns"],
             'regression_target_stats': self.regression_target_stats["path"],
             'input_representation': getattr(self.params, 'input_representation', 'center_only'),
+            'adapter_sample_mode': getattr(self.params, 'adapter_sample_mode', 'event_segment'),
             'params': vars(self.params)  # Save all hyperparameters
         }
 
@@ -1496,6 +1504,8 @@ class DownstreamTrainer():
                 f"Adapter checkpoint {checkpoint_path} is missing 'model_state_dict'. "
                 "This loader expects a downstream adapter checkpoint, not a pretrained backbone."
             )
+        validate_checkpoint_sample_mode(
+            checkpoint, getattr(self.params, "adapter_sample_mode", "event_segment"))
         checkpoint_task = checkpoint.get("regression_task")
         current_task = self.regression_target_stats["task"]
         if checkpoint_task is not None and checkpoint_task != current_task:

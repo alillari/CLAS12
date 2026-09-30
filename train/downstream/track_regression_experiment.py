@@ -249,6 +249,8 @@ def train_experiment(
             "best_epoch": json_safe(getattr(trainer, "best_epoch", None)),
             "final_step": json_safe(getattr(trainer, "global_step", None)),
             "eventnumber": int(config.eventnumber),
+            "supervised_sample_unit": "track",
+            "adapter_sample_mode": getattr(params, "adapter_sample_mode", "event_segment"),
             "train_batch_size": int(config.train_batch_size),
             "seed": json_safe(getattr(params, "seed", None)),
             "task": json_safe(getattr(params, "task", None)),

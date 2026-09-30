@@ -117,7 +117,7 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
             "track_legacy regression statistics are disabled: use the v6 event "
             "product with adapter_sample_mode=event_segment"
         )
-    elif adapter_sample_mode == "event_segment":
+    elif adapter_sample_mode in {"event_segment", "event_segment_context"}:
         if task is None:
             raise ValueError("event_segment statistics require --task")
         if segment_target_source not in {"mctrue", "seg_target", "coatjava"}:
@@ -179,7 +179,7 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
         if selected_count == 0:
             raise ValueError("No event segments passed the configured filters")
     else:
-        raise ValueError("adapter_sample_mode must be 'track_legacy' or 'event_segment'")
+        raise ValueError("adapter_sample_mode must be 'event_segment' or 'event_segment_context'")
 
     variance = m2 / np.maximum(count, 1)
     return {
@@ -212,7 +212,7 @@ def main():
     parser.add_argument("--high-thr", type=int, default=100)
     parser.add_argument("--limit-size", type=int)
     parser.add_argument("--chunk-size", type=int, default=250000)
-    parser.add_argument("--adapter-sample-mode", choices=("event_segment",), default="event_segment")
+    parser.add_argument("--adapter-sample-mode", choices=("event_segment", "event_segment_context"), default="event_segment")
     parser.add_argument("--segment-target-source", default="mctrue")
     parser.add_argument("--segment-min-clusters", type=int, default=12)
     parser.add_argument("--segment-exact-clusters", action="store_true")
@@ -239,7 +239,7 @@ def main():
         else:
             exact_suffix = "_exact" if args.segment_exact_clusters else ""
             filename = (
-                f"regression_target_stats_{args.task}_event_segment_"
+                f"regression_target_stats_{args.task}_{args.adapter_sample_mode}_"
                 f"{args.segment_target_source}_min{args.segment_min_clusters}{exact_suffix}.json"
             )
         args.output = args.data_root.parent / "stats" / filename

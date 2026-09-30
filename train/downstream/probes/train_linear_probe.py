@@ -274,8 +274,8 @@ def iter_probe_batches(
             valid = event_valid(targets["target_valid"])
             if not bool(valid.any()):
                 continue
-            _, embeddings, _ = trainer.model(points, return_z=True)
-            pooled = masked_mean_layers(torch.stack(embeddings), mask)
+            embeddings = trainer._backbone_features(points, batch)
+            pooled = masked_mean_layers(embeddings, mask)
             yield pooled[:, valid].detach(), targets["target"][valid].detach()
 
 

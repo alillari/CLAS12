@@ -196,3 +196,21 @@ clas12_track_regression_pretrained_pos_plus_aux_pitch_p_phi_theta:
   <<: *pos_plus_aux_length_pretrained
   model_version: clas12_track_regression_pretrained_pos_plus_aux_pitch_p_phi_theta
   aux_extra_feature: pitch
+
+# Matched campaign-4 m6 context experiment. The two arms differ only in where
+# the backbone obtains its context. Sample limits and batch sizes count tracks.
+# Both require --usepretrain --pretrained_ckpt <campaign_4 m6 ckpt_best.tar>.
+clas12_track_regression_m6_track_context: &m6_track_context
+  <<: *default
+  embed_dim: 1536
+  task: p_phi_theta
+  data_root: ${CLAS12_CONTEXT_DATA_ROOT:-/home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/}
+  data_root_train: ${CLAS12_CONTEXT_DATA_ROOT:-/home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/}
+  data_root_test: ${CLAS12_CONTEXT_DATA_ROOT:-/home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/}
+  regression_target_stats: ${CLAS12_CONTEXT_STATS:-/home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta_event_segment_mctrue_min12.json}
+  adapter_sample_mode: event_segment
+  chunk_training: false
+
+clas12_track_regression_m6_event_context:
+  <<: *m6_track_context
+  adapter_sample_mode: event_segment_context

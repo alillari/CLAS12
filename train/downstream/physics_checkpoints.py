@@ -1,4 +1,4 @@
-"""Truth-binned checkpoint diagnostics and constrained, non-scalar selection.
+"""Truth-binned diagnostics and historical validation-ledger selection.
 
 This module has no model/trainer dependency. Residuals are signed physical
 quantities; quantiles use NumPy's linear interpolation and never fitted widths.
@@ -18,7 +18,7 @@ MOMENTUM_TASKS = {"mom", "momentum", "p", "theta", "phi", "p_phi_theta", "pt_phi
 
 
 def selection_mode(params):
-    mode = params.get("checkpoint_selection", "physics" if params.get("task", "mom") in MOMENTUM_TASKS else "validation_loss")
+    mode = params.get("checkpoint_selection", "validation_loss")
     if mode not in {"physics", "validation_loss"}:
         raise ValueError("checkpoint_selection must be physics or validation_loss")
     return mode

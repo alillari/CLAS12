@@ -230,8 +230,6 @@ def build_head(trainer):
         target_mean=trainer.regression_target_stats["mean"],
         target_std=trainer.regression_target_stats["std"],
         input_representation=getattr(params, "input_representation", "center_only"),
-        geometry_pitch_mean_cm=getattr(params, "geometry_pitch_mean_cm", None),
-        geometry_pitch_std_cm=getattr(params, "geometry_pitch_std_cm", None),
         pos_dim=getattr(params, "pos_dim", 3),
         aux_dim=getattr(params, "aux_dim", 4),
     ).to(trainer.device)
@@ -2026,6 +2024,12 @@ def main():
         config=config["model_config"],
         run_num=str(config["run_num"]),
     )
+    params["checkpoint_selection"] = "validation_loss"
+    from train.downstream.regression_utils import resolve_regression_loss
+    configured_loss = getattr(params, "regression_loss", None)
+    if configured_loss in {"physical_resolution_l1", "physical_resolution_relative_huber"}:
+        configured_loss = None
+    params["regression_loss"] = resolve_regression_loss(params.task, configured_loss)
     trainer = DownstreamTrainer(params, trainer_args)
     trainer.launch()
     if trainer.world_size != 1:
@@ -2070,9 +2074,8 @@ def main():
                     model_input, torch.stack(embeddings), pretrain=True, padding_mask=mask
                 )["pred_regression"]
             else:
-                geometry_kwargs = trainer._geometry_context_kwargs(batch, pretrain=False)
                 prediction = trainer.down_model(
-                    model_input, feature=None, padding_mask=mask, **geometry_kwargs
+                    model_input, feature=None, padding_mask=mask
                 )["pred_regression"]
 
             target_segment_mask = batch.get("target_segment_mask")

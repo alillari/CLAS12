@@ -362,16 +362,14 @@ class TPCBatchDataset(Dataset):
         self.n_feature_events = len(self.memmap_feature)
         self.input_representation = str(input_representation)
         if self.input_representation not in {
-            'center_only', 'clas12_geometry_v1', 'clas12_pos_plus_aux_v1'
+            'center_only', 'clas12_pos_plus_aux_v1'
         }:
             raise ValueError(
-                "input_representation must be 'center_only', 'clas12_geometry_v1', "
+                "input_representation must be 'center_only' "
                 "or 'clas12_pos_plus_aux_v1', "
                 f"got {self.input_representation!r}"
             )
-        self.return_geometry_context = self.input_representation in {
-            'clas12_geometry_v1', 'clas12_pos_plus_aux_v1'
-        }
+        self.return_geometry_context = self.input_representation == 'clas12_pos_plus_aux_v1'
 
         # Downstream loaders often expect reg_target, but CLAS12 adapter-only may not need it.
         # Load it when present; otherwise create a zero placeholder only for return_dict/return_reg compatibility.

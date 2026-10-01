@@ -129,6 +129,12 @@ def main():
     logfile = os.path.join(log_dir, params.log_file_name)
 
     # Launch and run inference
+    params["checkpoint_selection"] = "validation_loss"
+    from train.downstream.regression_utils import resolve_regression_loss
+    configured_loss = getattr(params, "regression_loss", None)
+    if configured_loss in {"physical_resolution_l1", "physical_resolution_relative_huber"}:
+        configured_loss = None
+    params["regression_loss"] = resolve_regression_loss(params.task, configured_loss)
     trainer = DownstreamTrainer(params, args)
     trainer.launch()
     trainer.inference(

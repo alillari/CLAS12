@@ -64,12 +64,12 @@ class CampaignPhysicsTest(unittest.TestCase):
             manifest['training_overrides'] = parse_training_overrides(self.args([
                 'physics_checkpoint.guardrails.B_macro=0.01', 'physics_checkpoint.guardrails.T_macro=0.1']))
             for family in ('adapteronly', 'pretrained'):
-                for task in ('p','theta','phi'):
+                for task in ('mom','p_phi_theta','pt_phi_eta'):
                     for budget, batch in ((1000,32),(100000,64)):
                         with self.subTest(family=family, task=task, budget=budget):
                             row = build_adapter_only_run_row(Path(tmp)/family/task, budget, batch, 5000)
                             row['base_model_yaml'] = str(ROOT/f'scripts/configs/mamba_clas12_track_regression_{family}.yaml')
-                            row['base_model_config'] = f'clas12_track_regression_{family}_{task}_only'
+                            row['base_model_config'] = f'clas12_track_regression_{family}' + ('' if task == 'mom' else f'_{task}')
                             row['training_overrides'] = {'physics_checkpoint': {'guardrails': {'B_worst':.02}}}
                             if family == 'pretrained':
                                 row.update(model_family='mamba1', num_layers_backbone=6)
@@ -86,7 +86,8 @@ class CampaignPhysicsTest(unittest.TestCase):
                             self.assertIsNone(params.max_val_batches)
                             self.assertEqual(params.physics_checkpoint['min_bin_entries'],200)
                             self.assertEqual(params.physics_checkpoint['guardrails'], dict(B_macro=.01,B_worst=.02,T_macro=.1))
-                            self.assertEqual(params.physics_checkpoint['bin_quantity'],task)
+                            self.assertEqual(params.physics_checkpoint['bin_quantity'], 'p')
+                            self.assertEqual(params.checkpoint_selection, 'validation_loss')
                             self.assertFalse(params.drop_last_test)
             row['training_overrides'] = {'physics_checkpoint': {'typo':1}}
             with self.assertRaisesRegex(ValueError,'Unknown physics_checkpoint'):
@@ -165,6 +166,22 @@ class CampaignPhysicsTest(unittest.TestCase):
             self.assertEqual(report['table']['checkpoint_selection_status'],'insufficient_validation_bins')
             self.assertIsNone(report['table']['selected_step'])
             self.assertIsNone(report['table']['validation_W_macro'])
+
+    def test_loss_selected_rerun_ignores_old_physics_pointer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            row = self.create_run(Path(tmp), 1000)
+            artifact_path = Path(row.get('artifact_summary', Path(row['evaluation_dir']).parent / 'train/artifacts.json'))
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(json.dumps(dict(task='mom', checkpoint_selection='validation_loss',
+                checkpoint_selection_status='validation_loss', best_step=30, best_epoch=3, best_loss=.123)))
+            report = collect_run(row)
+            table = report['table']
+            self.assertEqual(table['checkpoint_selection_status'], 'validation_loss')
+            self.assertEqual(table['training_target_task'], 'mom')
+            self.assertEqual(table['selected_step'], 30)
+            self.assertEqual(table['selected_validation_loss'], .123)
+            self.assertIsNone(table['physics_checkpoint_summary'])
+            self.assertIsNone(table['validation_W_macro'])
 
     def test_scalar_all_plot_suite_skips_joint_figures_and_separates_metric_cohorts(self):
         with tempfile.TemporaryDirectory() as tmp:

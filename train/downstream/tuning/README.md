@@ -5,6 +5,11 @@ track-regression baseline. The tuner calls the shared one-configuration training
 entrypoint in `train/downstream/track_regression_experiment.py`; it does not
 replace the trainer or the campaign manifest tools.
 
+New studies optimize best finite validation loss. Width-based physics selection,
+physical-resolution loss recipes and scalar-head training ablations are retired.
+Existing width-objective studies cannot resume as validation-loss studies; keep
+their results and create a new study. See [the checkpoint policy](../PHYSICS_CHECKPOINTS.md).
+
 ## What Optuna Tunes
 
 The current search space is defined in `track_regression_search_space.py`.

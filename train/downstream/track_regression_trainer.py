@@ -1,10 +1,8 @@
 import hashlib
-import json
 from pathlib import Path
-import tempfile
 import numpy as np
 from sklearn.metrics import adjusted_rand_score
-import os, sys, time, shutil, random, math
+import os, sys, time, random, math
 import argparse
 import torch
 
@@ -39,16 +37,15 @@ from model import *
 from loss import *
 from downstream_util import *
 from regression_utils import (
-    load_regression_loss_reference_stats,
     load_regression_target_stats,
     regression_output_dim,
     resolve_regression_loss,
+    validate_regression_training,
     transform_regression_target_torch,
 )
-from validation_config import preserve_validation_rng
 from physics_checkpoints import (
-    MOMENTUM_TASKS, CheckpointSummary, resolve_config as resolve_physics_config,
-    selection_mode, summarize_native, summarize, write_evaluation_summary, atomic_json, SCHEMA,
+    MOMENTUM_TASKS, resolve_config as resolve_physics_config,
+    selection_mode, write_evaluation_summary,
 )
 
 class DownstreamTrainer():
@@ -101,22 +98,7 @@ class DownstreamTrainer():
         
         self.params = params
         input_representation = getattr(params, "input_representation", "center_only")
-        if input_representation == "clas12_geometry_v1":
-            geometry_stats_path = getattr(params, "geometry_pitch_stats", None)
-            if not geometry_stats_path:
-                raise ValueError(
-                    "clas12_geometry_v1 requires geometry_pitch_stats generated from the v7 pretrain split"
-                )
-            with open(geometry_stats_path) as stream:
-                geometry_stats = json.load(stream)
-            if geometry_stats.get("schema") != "clas12_geometry_pitch_stats_v1":
-                raise ValueError(f"Unexpected geometry pitch statistics schema: {geometry_stats.get('schema')!r}")
-            if geometry_stats.get("split") != "pretrain" or int(geometry_stats.get("count", 0)) < 1:
-                raise ValueError("Geometry pitch statistics must contain a non-empty pretrain split")
-            self.params["geometry_pitch_mean_cm"] = float(geometry_stats["mean_cm"])
-            self.params["geometry_pitch_std_cm"] = float(geometry_stats["std_cm"])
-            self.params["geometry_pitch_stats"] = os.path.abspath(geometry_stats_path)
-        elif input_representation == "clas12_pos_plus_aux_v1":
+        if input_representation == "clas12_pos_plus_aux_v1":
             if getattr(params, "embed_method", None) != "pos_plus_aux":
                 raise ValueError(
                     "clas12_pos_plus_aux_v1 requires embed_method='pos_plus_aux'"
@@ -159,45 +141,14 @@ class DownstreamTrainer():
         self.regression_loss = resolve_regression_loss(
             params.task, getattr(params, "regression_loss", None)
         )
-        if self.regression_loss not in {
-            "mse", "mae", "huber", "physical_resolution_l1",
-            "physical_resolution_relative_huber",
-        }:
-            raise ValueError(
-                f"Unsupported regression_loss {self.regression_loss!r}; choose "
-                "one of ['mse', 'mae', 'huber', 'physical_resolution_l1', "
-                "'physical_resolution_relative_huber']"
-            )
-        self.regression_loss_reference = None
-        if self.regression_loss in {
-            "physical_resolution_l1", "physical_resolution_relative_huber"
-        }:
-            reference_path = getattr(params, "regression_loss_reference_stats", None)
-            if not reference_path:
-                raise ValueError(
-                    f"{self.regression_loss} requires regression_loss_reference_stats"
-                )
-            self.regression_loss_reference = load_regression_loss_reference_stats(
-                reference_path,
-                params.task,
-                momentum_residual=(
-                    "relative" if self.regression_loss == "physical_resolution_relative_huber"
-                    else "absolute"
-                ),
-            )
-            self.params["regression_loss_reference_stats"] = self.regression_loss_reference["path"]
+        if self.regression_loss not in {"mse", "mae", "huber"}:
+            raise ValueError(f"Unsupported regression_loss {self.regression_loss!r}; use mse, mae or huber")
         self.params["regression_loss"] = self.regression_loss
         self.checkpoint_selection = selection_mode(params.params)
         self.physics_config = (
             resolve_physics_config(self.regression_target_stats["task"], getattr(params, "physics_checkpoint", None))
             if self.regression_target_stats["task"] in MOMENTUM_TASKS else None
         )
-        if self.checkpoint_selection == "physics":
-            if self.physics_config is None:
-                raise ValueError("Physics checkpoint selection requires a momentum/angle task")
-            if self.world_size != 1:
-                raise NotImplementedError("Physics checkpoint selection currently requires single-process validation")
-            self.params["drop_last_test"] = False
         self.params["checkpoint_selection"] = self.checkpoint_selection
         if self.physics_config is not None:
             self.params["physics_checkpoint"] = self.physics_config
@@ -526,7 +477,7 @@ class DownstreamTrainer():
         #                  ).to(self.device)
         
         #else:
-        self.down_model = MambaTrackRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean"), embed_method=self.params.embed_method, pe_method=self.params.pe_method, target_mean=self.regression_target_stats["mean"], target_std=self.regression_target_stats["std"], input_representation=getattr(self.params, "input_representation", "center_only"), geometry_pitch_mean_cm=getattr(self.params, "geometry_pitch_mean_cm", None), geometry_pitch_std_cm=getattr(self.params, "geometry_pitch_std_cm", None), pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4)).to(self.device)
+        self.down_model = MambaTrackRegressionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_embedder_layers=self.params.num_embedder_layers, pooling=getattr(self.params, "pooling", "mean"), embed_method=self.params.embed_method, pe_method=self.params.pe_method, target_mean=self.regression_target_stats["mean"], target_std=self.regression_target_stats["std"], input_representation=getattr(self.params, "input_representation", "center_only"), pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4)).to(self.device)
 
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -598,7 +549,6 @@ class DownstreamTrainer():
                 targets = self.build_regression_targets(reg, mask, target_segment_mask)
 
                 self.down_optimizer.zero_grad()
-                geometry_kwargs = self._geometry_context_kwargs(inputdict, pretrain)
                 model_input = self._representation_input(grouped, inputdict)
                 if pretrain:
                     with torch.no_grad():
@@ -609,7 +559,7 @@ class DownstreamTrainer():
                     pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
+                    pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
 
                 pred = pred_dict['pred_regression']
                 outputs = {
@@ -622,9 +572,7 @@ class DownstreamTrainer():
                     option=self.regression_loss,
                     angular_indices=self.regression_target_stats["angular_indices"],
                     target_std=self.regression_target_stats["std"],
-                    target_mean=self.regression_target_stats["mean"],
                     phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
-                    physical_scales=self.regression_loss_reference,
                 )
                 truth_xyz_list.append(self.physics_truth_xyz(reg, mask, target_segment_mask).cpu().numpy())
                 target_list.append(targets['target'].cpu())
@@ -671,6 +619,7 @@ class DownstreamTrainer():
     ):
         ###%%%%%%%
         # Debugging
+        validate_regression_training(self.params.params)
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
         self.bwd_hooks = register_param_backward_nan_hooks(self.model)
         ###%%%%%%%%
@@ -728,8 +677,6 @@ class DownstreamTrainer():
             target_mean=self.regression_target_stats["mean"],
             target_std=self.regression_target_stats["std"],
             input_representation=getattr(self.params, "input_representation", "center_only"),
-            geometry_pitch_mean_cm=getattr(self.params, "geometry_pitch_mean_cm", None),
-            geometry_pitch_std_cm=getattr(self.params, "geometry_pitch_std_cm", None),
             pos_dim=getattr(self.params, "pos_dim", 3),
             aux_dim=getattr(self.params, "aux_dim", 4),
         ).to(self.device)
@@ -828,6 +775,7 @@ class DownstreamTrainer():
                     f.write("Step\tEpoch\tTrain_Loss\tVal_Loss\tLR\tTime\n")
 
         self.best_loss = np.inf
+        self.best_stopping_loss = np.inf
         self.best_step = None
         self.best_epoch = None
         self.global_step = 0
@@ -854,9 +802,6 @@ class DownstreamTrainer():
             self.down_model.eval()
             print(f"✅ Model loaded from {checkpoint_path}")
 
-        if self.checkpoint_selection == "physics":
-            self._initialize_physics_history(checkpoint_file_name)
-            self._preflight_validation_support()
         
 
         if getattr(self.params, "loss_reweight", False):
@@ -874,7 +819,7 @@ class DownstreamTrainer():
                 optuna_trial=optuna_trial,
                 metrics_callback=metrics_callback,
             )
-            self._finish_checkpoint_selection(pretrain, checkpoint_file_name)
+            self._finish_validation(pretrain, checkpoint_file_name)
             return
         
         for epoch in range(self.startEpoch, self.params.max_epochs):
@@ -921,7 +866,7 @@ class DownstreamTrainer():
                     "best/val_loss": float(self.best_loss),
                     "best/step": self.best_step,
                 })
-        self._finish_checkpoint_selection(pretrain, checkpoint_file_name)
+        self._finish_validation(pretrain, checkpoint_file_name)
 
 
     def build_regression_targets(self, reg, hit_mask, target_segment_mask=None):
@@ -967,21 +912,6 @@ class DownstreamTrainer():
     def _current_lr(self):
         return self.down_optimizer.param_groups[0]["lr"]
 
-    def _geometry_context_kwargs(self, inputdict, pretrain):
-        """Move v7 typed sidecars alongside their already-serialized point rows."""
-        input_representation = getattr(self.params, "input_representation", "center_only")
-        if input_representation in {"center_only", "clas12_pos_plus_aux_v1"}:
-            return {}
-        if pretrain:
-            raise ValueError("clas12_geometry_v1 is intentionally adapter-only")
-        try:
-            token_context = inputdict['token_context'].to(self.device, dtype=torch.long)
-            geometry_context = inputdict['geometry_context'].to(self.device, dtype=torch.float32)
-        except KeyError as exc:
-            raise KeyError(
-                "Geometry representation requested but data loader did not return v7 context sidecars"
-            ) from exc
-        return {"token_context": token_context, "geometry_context": geometry_context}
 
     def _representation_input(self, grouped, inputdict):
         """Return the backbone/adapter token tensor for the selected input contract.
@@ -1052,14 +982,6 @@ class DownstreamTrainer():
             padding_mask.unsqueeze(-1), packed, torch.full_like(packed, -100.0)
         )
 
-    def _log_geometry_branch_rms(self, pred_dict):
-        norms = pred_dict.get("geometry_branch_rms")
-        if norms is None or self.world_rank != 0:
-            return
-        if self.global_step not in {0, 1} and self.global_step % 1000 != 0:
-            return
-        formatted = ", ".join(f"{name}={value.item():.3f}" for name, value in norms.items())
-        print(f"[geometry branch RMS] step={self.global_step}: {formatted}")
 
     def _train_one_batch(self, inputdict, pretrain=False):
         grouped = inputdict['points'].to(self.device)  # B X N X C
@@ -1074,7 +996,6 @@ class DownstreamTrainer():
         targets = self.build_regression_targets(reg, mask, target_segment_mask)
 
         self.down_optimizer.zero_grad()
-        geometry_kwargs = self._geometry_context_kwargs(inputdict, pretrain)
         model_input = self._representation_input(grouped, inputdict)
         if pretrain:
             with torch.no_grad():
@@ -1082,8 +1003,7 @@ class DownstreamTrainer():
             feature = torch.stack(pre_embed)
             pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
         else:
-            pred_dict = self.down_model(model_input, feature=None, padding_mask=mask, **geometry_kwargs)
-        self._log_geometry_branch_rms(pred_dict)
+            pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
 
         pred = pred_dict["pred_regression"]  # B x num_output_classes
 
@@ -1097,9 +1017,7 @@ class DownstreamTrainer():
             option=self.regression_loss,
             angular_indices=self.regression_target_stats["angular_indices"],
             target_std=self.regression_target_stats["std"],
-            target_mean=self.regression_target_stats["mean"],
             phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
-            physical_scales=self.regression_loss_reference,
         )
 
         loss = losses['loss']
@@ -1113,152 +1031,41 @@ class DownstreamTrainer():
         self.down_optimizer.step()
         return loss.item()
 
-    def _initialize_physics_history(self, filename):
-        self.selected_checkpoint_path = Path(self.params.checkpoint_dir, filename).resolve()
-        self.selected_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        directory = tempfile.mkdtemp(prefix=self.selected_checkpoint_path.stem + "_physics_",
-                                     dir=self.selected_checkpoint_path.parent)
-        self.physics_history = CheckpointSummary(self.physics_config, directory)
-        # A fresh selection must never accidentally expose a previous run's alias.
-        if self.selected_checkpoint_path.exists():
-            shutil.move(str(self.selected_checkpoint_path), str(Path(directory, "previous_selected.pth")))
-        self.params["physics_checkpoint_summary"] = str(Path(directory, "checkpoint_summary.json"))
-        self.physics_report_pointer = self.selected_checkpoint_path.with_name(
-            self.selected_checkpoint_path.stem + "_physics_report.json")
-        self.physics_history.write(plots=False)
-        self._write_physics_pointer("awaiting_validation")
 
-    def _write_physics_pointer(self, status):
-        atomic_json(self.physics_report_pointer, {
-            "schema": SCHEMA, "task": self.regression_target_stats["task"],
-            "checkpoint_summary": self.params.physics_checkpoint_summary,
-            "validation_support": getattr(self.params, "validation_support", None),
-            "selection_status": status,
-        })
 
-    def _preflight_validation_support(self):
-        """Count the actual fixed validation truth bins before optimizer steps."""
-        truths, xyz_rows = [], []
-        cap = getattr(self.params, "max_val_batches", None)
-        # DataLoader iterator construction consumes CPU RNG even without shuffle.
-        with torch.no_grad(), preserve_validation_rng(self.val_data_loader):
-            for i, batch in enumerate(tqdm(self.val_data_loader, desc="Validation bin occupancy")):
-                if cap is not None and i >= cap:
-                    break
-                points = batch['points'].to(self.device)
-                points = points.reshape(points.size(0), -1, points.size(-1))
-                mask = points[..., 0] != -100
-                reg = batch['reg_target'].to(self.device)
-                segment = batch.get('target_segment_mask')
-                if segment is not None:
-                    segment = segment.to(self.device).bool()
-                targets = self.build_regression_targets(reg, mask, segment)
-                truth = self.down_model.target_normalizer.denormalize(targets['target']).cpu().numpy()
-                truth[~targets['target_valid'].cpu().numpy()] = np.nan
-                truths.append(truth)
-                xyz_rows.append(self.physics_truth_xyz(reg, mask, segment).cpu().numpy())
-        if truths:
-            truth = np.concatenate(truths)
-            support = summarize_native(truth, truth, self.regression_target_stats['task'],
-                                       self.physics_config, np.concatenate(xyz_rows))
-        else:
-            support = summarize([], [], self.physics_config)
-        self.validation_truth_support_hash = support['truth_support_hash']
-        passed = support['n_valid_bins'] >= self.physics_config['min_valid_bins']
-        path = self.physics_history.output_dir / 'validation_support.json'
-        payload = {
-            'schema': SCHEMA, 'purpose': 'validation_truth_occupancy',
-            'task': self.regression_target_stats['task'], 'config': self.physics_config,
-            'data_root_test': str(getattr(self.params, 'data_root_test', '')),
-            'requested_sample_limit': getattr(self.params, 'limit_test_size', None)
-                if getattr(self.params, 'limit_test_data', True) else None,
-            'validation_batch_size': getattr(self.params, 'valid_batch_size', None),
-            'max_val_batches': cap, 'passed': passed,
-            **{key: support[key] for key in ('n_samples', 'n_valid_truth', 'n_invalid_truth',
-                'n_outside_bins', 'n_valid_bins', 'valid_bin_indices', 'truth_support_hash')},
-            'per_bin': [{key: row[key] for key in ('index','low','high','n_truth','valid','invalid_reason')}
-                        for row in support['per_bin']],
-        }
-        atomic_json(path, payload)
-        self.params['validation_support'] = str(path)
-        self._write_physics_pointer('awaiting_validation' if passed else 'insufficient_validation_bins')
-        print(f"Validation occupancy: {support['n_valid_bins']}/{len(support['per_bin'])} valid bins; "
-              f"counts={[row['n_truth'] for row in support['per_bin']]}; report={path}")
-        if not passed:
-            raise ValueError(f"Insufficient validation bin occupancy before training: "
-                f"{support['n_valid_bins']} valid bins, require {self.physics_config['min_valid_bins']}. "
-                f"Inspect {path}; increase the validation sample or explicitly revise binning/occupancy settings.")
 
-    def _publish_physics_selection(self):
-        selected = self.physics_history.selected
-        self.best_step = selected["step"] if selected else None
-        self.best_epoch = selected["epoch"] if selected else None
-        if selected:
-            if getattr(self, "_published_physics_checkpoint", None) != selected["checkpoint"]:
-                temporary = self.selected_checkpoint_path.with_suffix(".tmp")
-                shutil.copyfile(selected["checkpoint"], temporary)
-                os.replace(temporary, self.selected_checkpoint_path)
-                self._published_physics_checkpoint = selected["checkpoint"]
-            self.params["trained_checkpoint_path"] = str(self.selected_checkpoint_path)
-        else:
-            self.params["trained_checkpoint_path"] = None
-        payload = self.physics_history.write()
-        self.params["checkpoint_selection_status"] = payload["selection_status"]
-        self._write_physics_pointer(payload["selection_status"])
-        self.params["selected_physics_metrics"] = (
-            {key: selected[key] for key in ("W_macro", "B_macro", "B_worst", "T_macro", "n_valid_bins")}
-            if selected else None)
-        print(f"Physics checkpoint selection: {payload['selection_status']}; selected step={self.best_step}")
-        if not selected:
-            print(f"No checkpoint passed. Best candidates: {payload['best_candidates']}")
 
-    def _finish_checkpoint_selection(self, pretrain, filename):
-        if self.checkpoint_selection != "physics":
-            return
+    def _finish_validation(self, pretrain, filename):
+        # Small label budgets may hit the epoch cap before the first interval.
         if self.global_step > 0 and self.last_validation_step != self.global_step:
             loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
-            self._record_validation_result(loss, filename, getattr(self, "epoch", getattr(self, "startEpoch", 1) - 1), self.global_step)
-        elif not self.physics_history.records:
-            self._publish_physics_selection()
+            self._record_validation_result(loss, filename,
+                getattr(self, "epoch", getattr(self, "startEpoch", 1) - 1), self.global_step)
+        if self.params.trained_checkpoint_path is None:
+            raise RuntimeError("Training produced no finite validation-loss checkpoint")
 
     def _record_validation_result(
         self, val_loss, checkpoint_file_name, epoch, step, optuna_trial=None,
         allow_stagnation=True,
     ):
         self.last_validation_step = step
-        improved_loss = val_loss < (self.best_loss - self.min_delta)
-        if val_loss < self.best_loss and (self.checkpoint_selection == "physics" or improved_loss):
-            self.best_loss = val_loss
-            self.best_loss_step, self.best_loss_epoch = step, epoch
-        objective = None
-        if self.checkpoint_selection == "physics":
-            previous = self.physics_history.selected
-            previous_path = previous["checkpoint"] if previous else None
-            path = self.physics_history.output_dir / f"step_{step:09d}_epoch_{epoch:05d}.pth"
-            row = self.physics_history.add(self.last_validation_physics, step=step, epoch=epoch,
-                                          validation_loss=val_loss, checkpoint=path)
-            selected = self.physics_history.selected
-            self.best_step = selected["step"] if selected else None
-            self.best_epoch = selected["epoch"] if selected else None
-            self._save_checkpoint(str(path), epoch, row["selected"], val_loss, publish=False)
-            self._publish_physics_selection()
-            improved = selected is not None and selected["checkpoint"] != previous_path
-            if row["eligible"]:
-                objective = row["W_macro"]
-            # Do not stop for stagnation before any checkpoint is acceptable.
-            allow_stagnation = allow_stagnation and selected is not None
-        else:
-            improved = improved_loss
-            if improved:
-                self.best_epoch, self.best_step = epoch, step
-                self._save_checkpoint(checkpoint_file_name, epoch, True, val_loss)
-            objective = float(val_loss)
-        if improved:
+        finite = bool(np.isfinite(val_loss))
+        stopping_loss = getattr(self, "best_stopping_loss", self.best_loss)
+        meaningful_improvement = finite and val_loss < stopping_loss - self.min_delta
+        if meaningful_improvement:
+            self.best_stopping_loss = float(val_loss)
+        # min_delta controls patience, never which weights count as the best.
+        if finite and val_loss < self.best_loss:
+            self.best_loss = float(val_loss)
+            self.best_epoch, self.best_step = epoch, step
+            self.best_loss_epoch, self.best_loss_step = epoch, step
+            self._save_checkpoint(checkpoint_file_name, epoch, val_loss)
+        if meaningful_improvement:
             self.stagnation_counter = 0
         elif allow_stagnation and step >= self.early_stopping_min_steps:
             self.stagnation_counter += 1
-        if optuna_trial is not None and objective is not None:
-            optuna_trial.report(float(objective), int(step))
+        if optuna_trial is not None and finite:
+            optuna_trial.report(float(val_loss), int(step))
             if step >= self.early_stopping_min_steps and optuna_trial.should_prune():
                 import optuna
                 raise optuna.TrialPruned()
@@ -1386,7 +1193,6 @@ class DownstreamTrainer():
         self.model.eval()
         self.down_model.eval()
         self.down_results['val'] = []
-        predictions, truths, truth_xyz = [], [], []
         max_val_batches = getattr(self.params, "max_val_batches", 2001)
         try:
             with torch.no_grad():
@@ -1407,41 +1213,27 @@ class DownstreamTrainer():
                         pred = self.down_model(model_input, torch.stack(embeddings), pretrain=True,
                                                padding_mask=mask)["pred_regression"]
                     else:
-                        pred = self.down_model(model_input, feature=None, padding_mask=mask,
-                            **self._geometry_context_kwargs(inputdict, pretrain))["pred_regression"]
+                        pred = self.down_model(model_input, feature=None, padding_mask=mask)["pred_regression"]
+                    if not torch.isfinite(pred[targets['target_valid']]).all():
+                        raise RuntimeError("Validation produced nonfinite predictions for valid targets")
                     losses = masked_regression_loss(
                         outputs={"pred": pred}, targets=targets, option=self.regression_loss,
                         angular_indices=self.regression_target_stats["angular_indices"],
                         target_std=self.regression_target_stats["std"],
-                        target_mean=self.regression_target_stats["mean"],
                         phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
-                        physical_scales=self.regression_loss_reference)
+                    )
                     self.down_results['val'].append(losses['loss'].item())
-                    if self.physics_config is not None:
-                        head = self.down_model.module if isinstance(self.down_model, DistributedDataParallel) else self.down_model
-                        predictions.append(head.target_normalizer.denormalize(pred).cpu().numpy())
-                        truth = head.target_normalizer.denormalize(targets['target']).cpu().numpy()
-                        truth[~targets['target_valid'].cpu().numpy()] = np.nan
-                        truths.append(truth)
-                        truth_xyz.append(self.physics_truth_xyz(reg, mask, segment).cpu().numpy())
         finally:
             self.model.train(backbone_training)
             self.down_model.train(head_training)
         if not self.down_results['val']:
             raise RuntimeError("Validation yielded no batches; cannot select a checkpoint")
         avg_loss = float(np.mean(self.down_results['val']))
-        if self.physics_config is not None:
-            self.last_validation_physics = summarize_native(
-                np.concatenate(predictions), np.concatenate(truths), self.regression_target_stats['task'],
-                self.physics_config, np.concatenate(truth_xyz))
-            expected = getattr(self, 'validation_truth_support_hash', None)
-            if expected is not None and self.last_validation_physics['truth_support_hash'] != expected:
-                raise ValueError('Validation truth sample changed since occupancy preflight')
         if self.log_to_screen:
             print(f"\nValidation Loss: {avg_loss:.4f}")
         return avg_loss
 
-    def _save_checkpoint(self, filename, epoch, is_best, loss, publish=True):
+    def _save_checkpoint(self, filename, epoch, loss):
         checkpoint = {
             'epoch': epoch,
             'global_step': getattr(self, "global_step", None),
@@ -1449,6 +1241,7 @@ class DownstreamTrainer():
             'optimizer_state_dict': self.down_optimizer.state_dict(),
             'scheduler_state_dict': self.down_scheduler.state_dict(),
             'best_loss': self.best_loss,
+            'best_stopping_loss': getattr(self, 'best_stopping_loss', self.best_loss),
             'best_step': getattr(self, "best_step", None),
             'best_epoch': getattr(self, "best_epoch", None),
             'current_loss': loss,
@@ -1456,8 +1249,6 @@ class DownstreamTrainer():
             'best_loss_epoch': getattr(self, 'best_loss_epoch', None),
             'checkpoint_selection': self.checkpoint_selection,
             'physics_checkpoint_config': self.physics_config,
-            'physics_validation_summary': getattr(self, 'last_validation_physics', None),
-            'physics_checkpoint_summary_path': getattr(self.params, 'physics_checkpoint_summary', None),
             'regression_task': self.regression_target_stats["task"],
             'regression_target_columns': self.regression_target_stats["columns"],
             'regression_target_stats': self.regression_target_stats["path"],
@@ -1471,8 +1262,7 @@ class DownstreamTrainer():
 
         checkpoint_path = os.path.abspath(os.path.join(self.params.checkpoint_dir, filename))
         torch.save(checkpoint, checkpoint_path)
-        if publish:
-            self.params["trained_checkpoint_path"] = checkpoint_path
+        self.params["trained_checkpoint_path"] = checkpoint_path
         return checkpoint_path
 
     def load_checkpoint(self, checkpoint_path, inference=False):
@@ -1515,9 +1305,8 @@ class DownstreamTrainer():
         self.loaded_checkpoint_metadata = {key: checkpoint.get(key) for key in (
             "epoch", "global_step", "current_loss", "physics_checkpoint_config",
             "physics_validation_summary", "physics_checkpoint_summary_path", "checkpoint_selection")}
-        if not inference and checkpoint.get("physics_checkpoint_config") not in (None, self.physics_config):
-            raise ValueError("Resume physics configuration differs from checkpoint")
-        # Resume starts a new comparison history: past cohorts may no longer be available.
+        if not inference and checkpoint.get("checkpoint_selection") == "physics":
+            raise ValueError("Cannot resume width-selected training; start a new validation-loss run")
         # 3. Handle DDP keys
         state_dict = checkpoint['model_state_dict']
         if "weighted_avg_weights" in state_dict:
@@ -1547,6 +1336,7 @@ class DownstreamTrainer():
     
             self.startEpoch = checkpoint.get('epoch', 0) + 1
             self.best_loss = checkpoint.get('best_loss', float('inf'))
+            self.best_stopping_loss = checkpoint.get('best_stopping_loss', self.best_loss)
             self.best_loss_step = checkpoint.get('best_loss_step')
             self.best_loss_epoch = checkpoint.get('best_loss_epoch')
             self.best_step = checkpoint.get('best_step', None)

@@ -7,7 +7,7 @@ def configure_validation(params):
     """Resolve in place before constructing loaders; keep the existing test root.
 
     Explicit max_val_batches must not silently shrink the requested sample.
-    The dataset can contain fewer accepted tracks; occupancy preflight measures it.
+    The dataset can contain fewer accepted tracks; evaluation reports actual counts.
     """
     params.setdefault('limit_test_data', True)
     params.setdefault('limit_test_size', DEFAULT_VALIDATION_SAMPLES)
@@ -28,26 +28,3 @@ def configure_validation(params):
                              'Increase/remove it or explicitly reduce limit_test_size.')
     params['drop_last_test'] = False
     return params
-
-
-def preserve_validation_rng(loader):
-    """Context for a truth-only pass, including a shared DataLoader generator."""
-    from contextlib import contextmanager
-    import random
-    import numpy as np
-    import torch
-
-    @contextmanager
-    def preserved():
-        generator = getattr(loader, 'generator', None)
-        generator_state = generator.get_state() if generator is not None else None
-        python_state, numpy_state = random.getstate(), np.random.get_state()
-        try:
-            with torch.random.fork_rng(devices=[]):
-                yield
-        finally:
-            random.setstate(python_state)
-            np.random.set_state(numpy_state)
-            if generator is not None:
-                generator.set_state(generator_state)
-    return preserved()

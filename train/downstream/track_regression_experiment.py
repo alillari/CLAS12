@@ -23,6 +23,7 @@ sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from fm4npp.utils import YParams
 from fm4npp.artifact_paths import artifact_path
+from train.downstream.regression_utils import validate_regression_training
 from train.downstream.validation_config import configure_validation
 from train.downstream.physics_checkpoints import MOMENTUM_TASKS, resolve_config as resolve_physics_config, selection_mode
 
@@ -141,11 +142,12 @@ def _write_json(path: str, payload: dict[str, Any]) -> None:
 
 def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
     params = YParams(os.path.abspath(config.yaml_config), config.config)
+    validate_regression_training(params.params)
 
     if not hasattr(params, "task"):
         raise ValueError(
             "YAML config must define task: one of ['mom', 'momentum', "
-            "'p', 'theta', 'phi', 'pt_phi_eta', 'p_phi_theta', "
+            "'pt_phi_eta', 'p_phi_theta', "
             "'3vertex', '3vtx', 'Zvtx', 'Zvertex']"
         )
 
@@ -186,9 +188,8 @@ def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
     params["checkpoint_selection"] = selection_mode(params.params)
     if params.task in MOMENTUM_TASKS:
         params["physics_checkpoint"] = resolve_physics_config(params.task, getattr(params, "physics_checkpoint", None))
-    if params.checkpoint_selection == "physics":
-        for key, value in configure_validation(dict(params.params)).items():
-            params[key] = value
+    for key, value in configure_validation(dict(params.params)).items():
+        params[key] = value
     return params
 
 
@@ -225,13 +226,10 @@ def train_experiment(
         selection = {
             "checkpoint_selection": trainer.checkpoint_selection,
             "checkpoint_selection_status": getattr(params, "checkpoint_selection_status", "validation_loss"),
-            "physics_checkpoint_summary": getattr(params, "physics_checkpoint_summary", None),
-            "selected_physics_metrics": getattr(params, "selected_physics_metrics", None),
             "best_loss_step": trainer.best_loss_step,
             "best_loss_epoch": trainer.best_loss_epoch,
             "validation_sample_limit": params.limit_test_size if getattr(params, "limit_test_data", False) else None,
             "validation_batch_size": params.valid_batch_size,
-            "validation_support": getattr(params, "validation_support", None),
         }
         artifact_summary = {
             **selection,

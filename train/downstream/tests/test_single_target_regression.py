@@ -162,15 +162,14 @@ class SingleTargetRegressionTest(unittest.TestCase):
                 self.assertEqual(stats["columns"], list(regression_target_columns(task)))
                 np.testing.assert_allclose(stats["mean"], transform_regression_target_numpy(raw, task)[0])
 
-    def test_presets_construct_single_output_heads(self):
+    def test_historical_scalar_heads_remain_evaluable_without_training_presets(self):
         root = Path(__file__).resolve().parents[3]
         for family in ("adapteronly", "pretrained"):
             configs = YAML(typ="safe").load(root / "scripts" / "configs" /
                                              f"mamba_clas12_track_regression_{family}.yaml")
             for task in ("p", "theta", "phi"):
-                config = configs[f"clas12_track_regression_{family}_{task}_only"]
-                self.assertEqual(config["task"], task)
-                self.assertEqual(resolve_regression_loss(task, config["regression_loss"]), "huber")
+                self.assertNotIn(f"clas12_track_regression_{family}_{task}_only", configs)
+                self.assertEqual(resolve_regression_loss(task), "huber")
                 head = MambaTrackRegressionHead(
                     input_dim=128, num_layers=0, num_embedder_layers=0,
                     num_output_dim=regression_output_dim(task),

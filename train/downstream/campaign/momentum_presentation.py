@@ -81,12 +81,24 @@ def model_catalog(manifest, run_ids):
 
 
 def unique_baseline(rows, keys):
-    """Repeated evaluations are duplicates, never extra baseline statistics."""
+    """Deduplicate baselines, tolerating rounding only in continuous metrics."""
     if not rows:
         return None
     first = rows[0]
+    metric_keys = {"mae", "rmse", "r2", "fit_mean", "fit_sigma",
+                   "fit_mean_error", "fit_sigma_error"}
+
+    def matches(key, left, right):
+        if left == right:
+            return True
+        if key not in metric_keys:
+            return False
+        left, right = number(left), number(right)
+        return (left is not None and right is not None
+                and math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-8))
+
     for row in rows[1:]:
-        if any(row.get(k) != first.get(k) for k in keys):
+        if any(not matches(k, row.get(k), first.get(k)) for k in keys):
             raise ValueError("COATJAVA values/populations differ across runs; plot separate campaigns or subsets.")
     return first
 

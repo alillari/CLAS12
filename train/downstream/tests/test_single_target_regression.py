@@ -150,6 +150,29 @@ class SingleTargetRegressionTest(unittest.TestCase):
             empty = trainer.build_regression_targets(reg, mask, torch.zeros_like(segment))
             self.assertFalse(empty["target_valid"].any())
 
+    def test_native_truth_independent_of_subset_statistics(self):
+        trainer = DownstreamTrainer.__new__(DownstreamTrainer)
+        reg = torch.tensor([[[-.8481779, .00980509, -.06962054],
+                             [-.8481779, .00980509, -.06962054],
+                             [9., 9., 9.]]])
+        mask = torch.ones((1, 3), dtype=torch.bool)
+        segment = torch.tensor([[True, True, False]])
+        for task in ("mom", "p_phi_theta", "pt_phi_eta", "p", "theta", "phi"):
+            trainer.params = SimpleNamespace(task=task)
+            trainer.regression_target_stats = {"task": task}
+            dim = regression_output_dim(task)
+            native = []
+            for mean, std in ((0., 1.), (10., .3), (5., 0.)):
+                normalizer = RegressionTargetNormalizer(dim, [mean]*dim, [std]*dim)
+                trainer.down_model = SimpleNamespace(target_normalizer=normalizer)
+                batch = trainer.build_regression_targets(reg, mask, segment)
+                native.append(batch["native_target"].clone())
+                torch.testing.assert_close(batch["target"], normalizer.normalize(native[-1]))
+            for other in native[1:]:
+                torch.testing.assert_close(native[0], other, rtol=0, atol=0)
+            expected = transform_regression_target_torch(reg[:, :1], task)[:, 0]
+            torch.testing.assert_close(native[0], expected)
+
     def test_stats_generator_accepts_each_single_target_on_ragged_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

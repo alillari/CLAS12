@@ -959,9 +959,11 @@ class DownstreamTrainer():
         down_model = self.down_model
         if isinstance(down_model, torch.nn.parallel.DistributedDataParallel):
             down_model = down_model.module
+        native_target = target
         target = down_model.target_normalizer.normalize(target)
 
         return {
+            "native_target": native_target,
             "target": target,
             "target_valid": counts > 0,
         }

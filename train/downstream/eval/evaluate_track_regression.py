@@ -2081,9 +2081,9 @@ def main():
             target_batch = trainer.build_regression_targets(
                 regression, mask, target_segment_mask
             )
-            normalized_truth = target_batch["target"]
             prediction_native = trainer.down_model.target_normalizer.denormalize(prediction).cpu().numpy()
-            truth_native = trainer.down_model.target_normalizer.denormalize(normalized_truth).cpu().numpy()
+            # Evaluation truth must not depend on training-subset normalization.
+            truth_native = target_batch["native_target"].cpu().numpy().copy()
             truth_native[~target_batch["target_valid"].cpu().numpy()] = np.nan
             if single_target:
                 physical_prediction = single_target_to_physical_numpy(prediction_native, regression_task)

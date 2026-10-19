@@ -68,8 +68,7 @@ def main() -> None:
 
     if result["checkpoint_path"] is None:
         raise RuntimeError(
-            f"No checkpoint passed selection ({result['checkpoint_selection_status']}). "
-            f"Inspect {result['physics_checkpoint_summary']} and {result['artifact_summary']}."
+            f"No finite validation-loss checkpoint was saved. Inspect {result['artifact_summary']}."
         )
 
 

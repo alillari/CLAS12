@@ -24,6 +24,7 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "train" / "downstream"))
+from regression_utils import validate_regression_training
 from physics_checkpoints import MOMENTUM_TASKS, resolve_config as resolve_physics_config, selection_mode
 from validation_config import configure_validation
 try:
@@ -300,8 +301,8 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     params['checkpoint_selection'] = selection_mode(params)
     if params.get('task') in MOMENTUM_TASKS:
         params['physics_checkpoint'] = resolve_physics_config(params['task'], params.get('physics_checkpoint'))
-    if params['checkpoint_selection'] == 'physics':
-        configure_validation(params)
+    validate_regression_training(params)
+    configure_validation(params)
     write_yaml(Path(run["model_yaml"]), {run["model_config"]: params})
 
 

@@ -5,15 +5,8 @@
 # Shared defaults
 # ---------------------------------------------------------------------------
 default: &default
-  # Physics checkpoint policy: see train/downstream/PHYSICS_CHECKPOINTS.md.
-  checkpoint_selection: physics
-  physics_checkpoint:
-    min_bin_entries: 200
-    min_valid_bins: null  # all configured bins; lower explicitly for sparse studies
-    guardrails: {B_macro: null, B_worst: null, T_macro: null}
-    require_configured_guardrails: false  # provisional width selection when unset
-    width_tie_atol: 1.0e-6
-    width_tie_rtol: 0.0
+  checkpoint_selection: validation_loss
+  input_representation: center_only
   # Set CLAS12_ARTIFACT_ROOT to move all run artifacts without editing this file.
   # For downstream track regression, this directory must contain at least:
   #   features_pretrain/, features_test/
@@ -144,30 +137,6 @@ default: &default
 clas12_track_regression_adapteronly:
   <<: *default
 
-# Single-target ablation: one output, Huber(delta=1) in log(p) or radians.
-# Generate each task-specific statistics file with the matched data selection.
-clas12_track_regression_adapteronly_p_only:
-  <<: *default
-  model_version: clas12_track_regression_adapteronly_p_only
-  task: p
-  regression_loss: huber
-  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_event_segment_mctrue_min12.json
-
-clas12_track_regression_adapteronly_theta_only:
-  <<: *default
-  model_version: clas12_track_regression_adapteronly_theta_only
-  task: theta
-  regression_loss: huber
-  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_theta_event_segment_mctrue_min12.json
-
-clas12_track_regression_adapteronly_phi_only:
-  <<: *default
-  model_version: clas12_track_regression_adapteronly_phi_only
-  task: phi
-  regression_loss: huber
-  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_phi_event_segment_mctrue_min12.json
-
-
 clas12_track_regression_adapteronly_pt_phi_eta:
   <<: *default
   model_version: clas12_track_regression_adapteronly_pt_phi_eta
@@ -180,65 +149,8 @@ clas12_track_regression_adapteronly_p_phi_theta:
   task: p_phi_theta
   regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta_event_segment_mctrue_min12.json
 
-# Opt-in v7 center-only objective: Huber(delta p / p, delta theta, wrapped
-# delta phi), each divided by one global COATJAVA 68% half-width.  This uses
-# the p_relative field already present in the reference stats JSON.
-clas12_track_regression_adapteronly_p_phi_theta_relative_resolution_huber_v1:
-  <<: *default
-  model_version: clas12_track_regression_adapteronly_p_phi_theta_relative_resolution_huber_v1
-  task: p_phi_theta
-  regression_loss: physical_resolution_relative_huber
-  regression_target_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta_event_segment_mctrue_min12_v7_01.json
-  regression_loss_reference_stats: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_loss_reference_cvttraj_p_phi_theta_event_segment_mctrue_min12.json
-  data_root: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  data_root_train: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  data_root_test: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  stat_dir: /home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/
-  input_representation: center_only
-
-# Minimal v7 measurement-geometry ablation.  The loader retains the same
-# normalized center-only points for serialization and targets, while returning
-# typed row-aligned endpoint/detector-layer/pitch sidecars to the adapter head.
-# Generate geometry_pitch_stats with
-# train/downstream/scripts/compute_clas12_geometry_pitch_stats.py before launch.
-clas12_track_regression_adapteronly_geometry_v1:
-  <<: *default
-  model_version: clas12_track_regression_adapteronly_geometry_v1
-  data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  input_representation: clas12_geometry_v1
-  geometry_pitch_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/clas12_geometry_pitch_stats_v7_01.json
-
-clas12_track_regression_adapteronly_geometry_v1_p_phi_theta:
-  <<: *default
-  model_version: clas12_track_regression_adapteronly_geometry_v1_p_phi_theta
-  task: p_phi_theta
-  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta_event_segment_mctrue_min12_v7_01.json
-  data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  input_representation: clas12_geometry_v1
-  geometry_pitch_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/clas12_geometry_pitch_stats_v7_01.json
-
-# Opt-in directional-objective ablation. Generate regression_loss_reference_stats
-# with compute_regression_loss_reference_stats.py before selecting this config.
-clas12_track_regression_adapteronly_geometry_v1_p_phi_theta_physical_resolution:
-  <<: *default
-  model_version: clas12_track_regression_adapteronly_geometry_v1_p_phi_theta_physical_resolution
-  task: p_phi_theta
-  regression_loss: physical_resolution_l1
-  regression_target_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_target_stats_p_phi_theta_event_segment_mctrue_min12_v7_01.json
-  regression_loss_reference_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/regression_loss_reference_cvttraj_p_phi_theta_event_segment_mctrue_min12.json
-  data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  data_root_train: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  data_root_test: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v7_01/
-  input_representation: clas12_geometry_v1
-  geometry_pitch_stats: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/stats/clas12_geometry_pitch_stats_v7_01.json
-
-# Mike-compatible v7 token packing.  Unlike clas12_geometry_v1, this is the
-# exact four-auxiliary-value input expected by a pos_plus_aux pretrained
-# backbone: local strip direction plus either physical length or pitch.
+# Compatibility recipes for position-plus-auxiliary pretrained checkpoints:
+# local strip direction plus either physical length or pitch.
 clas12_track_regression_adapteronly_pos_plus_aux_length_p_phi_theta: &pos_plus_aux_length_adapter
   <<: *default
   model_version: clas12_track_regression_adapteronly_pos_plus_aux_length_p_phi_theta

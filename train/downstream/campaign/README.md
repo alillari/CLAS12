@@ -4,9 +4,10 @@ This directory contains local campaign tools for training CLAS12 track-regressio
 adapters on a folder of pretrained Mamba backbones and then running the physics
 evaluation for each adapter.
 
-For one-output `p`, `theta`, and `phi` ablations, see
-[Single-target regression](../SINGLE_TARGET_REGRESSION.md) for loss definitions,
-config presets, matched statistics generation, and evaluation behavior.
+New momentum campaigns use the center-only Cartesian `mom` baseline and select
+by finite validation loss. See [the checkpoint policy](../PHYSICS_CHECKPOINTS.md).
+[Historical single-target checkpoints](../SINGLE_TARGET_REGRESSION.md) retain
+evaluation and cached residual plotting support.
 
 ### Inspect paired single-head residuals
 
@@ -785,68 +786,33 @@ If a run fails, inspect:
 <campaign_dir>/logs/<run_id>.eval.stdout.log
 ```
 
-## Single-target campaigns with macro checkpoint selection
+## Validation and configuration overrides
 
-Select `clas12_track_regression_adapteronly_p_only`, `_theta_only`, or `_phi_only`
-with `--adapter-only-model-config`; pretrained equivalents use
-`--pretrained-model-config clas12_track_regression_pretrained_<target>_only`.
-Generate the matching statistics files on the training machine first.
-Use a distinct campaign name for each target when generating separate manifests.
+Validation defaults to 50,000 accepted event-segments with batch size 128,
+independent of the training label budget and training batch size. It reads the
+configured `data_root_test`; evaluation `--max-samples` is a separate limit.
+Use `--validation-samples` and `--validation-batch-size` to change the validation
+cohort explicitly. `max_val_batches` defaults to null; a cap that would truncate
+the requested validation sample is rejected. The final partial batch is kept.
 
-Validation now defaults to a fixed **50,000 accepted tracks/event-segments**, with
-`valid_batch_size: 128`, independent of both the training label budget and training
-batch size. It still reads `data_root_test`; a separate validation folder/split is
-deferred. `--max-samples` controls subsequent evaluation, not training validation.
+Training saves the checkpoint with lowest finite validation loss. It no longer
+requires occupancy in every physics bin, saves all validation checkpoints or
+writes a validation Pareto ledger. Final validation covers short runs that reach
+the epoch cap before their next validation interval. Old single-target training
+presets and `checkpoint_selection: physics` are rejected for new training.
 
-```bash
-/home/alessio/miniconda3/envs/fm4npp/bin/python \
-  train/downstream/campaign/build_track_regression_manifest.py \
-  --adapter-only-only \
-  --campaign-name p_only_macro \
-  --artifact-root /path/to/artifacts \
-  --adapter-only-model-config clas12_track_regression_adapteronly_p_only \
-  --eventnumber 1000,10000,100000 \
-  --validation-samples 50000 \
-  --validation-batch-size 128 \
-  --training-override 'physics_checkpoint.tail_threshold=0.10' \
-  --training-override 'physics_checkpoint.guardrails={B_macro: null, B_worst: null, T_macro: null}'
-```
-
-`--validation-samples` sets `limit_test_size`; `--validation-batch-size` sets
-`valid_batch_size`. Both can also be set in the base model YAML or manifest's
-`training_overrides`. `limit_test_data: false` explicitly requests the entire
-accepted test dataset. Defaults use `max_val_batches: null`; an explicit batch
-cap that would truncate the requested validation sample is rejected. Set the
-sample limit itself when a smaller validation budget is intended.
-
-Before the first optimizer step, training reads the validation truth once and
-writes `validation_support.json` alongside its checkpoint history. This reports
-requested/actual counts, every truth-bin occupancy, invalid/out-of-range truth,
-and a hash of the ordered truth sample. If too few bins pass the configured
-occupancy requirement, training stops with the report path. Increase validation
-statistics or explicitly revise the truth range/binning and minimum valid bins;
-there is no automatic relaxation. Subsequent validation must match this truth
-sample. The extra pass does not run model inference or consume the training RNG.
-The existing partial-final-batch behavior is preserved.
-
-### Nested overrides
-
-`--training-override` accepts YAML scalars, lists and mappings, plus dotted paths.
-Quote the whole expression to protect it from shell interpretation. For example:
+`--training-override` accepts YAML scalars, lists, mappings and dotted paths.
+Mappings merge recursively; lists/scalars replace. Entries apply in command
+order, after the base model YAML and before per-run overrides. For example:
 
 ```text
---training-override 'physics_checkpoint.bin_edges=[0.25, 0.5, 1.0, 1.5, 2.0, 3.0]'
---training-override 'physics_checkpoint.guardrails.B_macro=null'
---training-override 'physics_checkpoint={min_bin_entries: 200, require_configured_guardrails: false}'
+--training-override 'limit_test_size=50000'
+--training-override 'valid_batch_size=128'
+--training-override 'checkpoint_selection=validation_loss'
 ```
 
-Mappings merge recursively; lists and scalars replace the previous value. CLI
-entries apply in order. Rendering merges base YAML, campaign overrides, then
-per-run overrides, so changing one guardrail preserves the other limits and bin
-settings. In a manually edited manifest, use actual nested YAML mappings rather
-than literal dotted keys. Unknown physics settings and invalid bin definitions
-fail during rendering. Omitted guardrails retain their inherited values; use
-`null` to disable a particular limit explicitly.
+Use actual nested mappings in manually edited manifests instead of literal
+dotted keys. Physics bin/units settings remain evaluation diagnostics.
 
 ### Campaign reports and plots
 
@@ -858,17 +824,16 @@ After training/evaluation, normal collation (or `--collate-only`) writes:
   acceptable checkpoint.
 - `physics_checkpoint_metrics.csv`: separate `validation_selected` and
   `evaluation` rows, with units, full bin edges, policy ID and truth-sample hash.
-- `physics_campaign_summary.json`: full validation histories, occupancy reports
-  and evaluation diagnostics, including per-bin metrics.
-- `physics_checkpoint_history.jsonl`: every checkpoint from every run, with its
-  validation selection/Pareto flags.
+- `physics_campaign_summary.json`: evaluation diagnostics and any available
+  historical validation histories, including per-bin metrics.
+- `physics_checkpoint_history.jsonl`: historical validation ledgers when
+  available, with their original selection/Pareto flags.
 
-Each run's `<checkpoint_stem>_physics_report.json` points to its current history
-and occupancy report. Collation can follow these pointers on relocated mounts,
-and prefers them over older artifact summaries after a rerun. Missing legacy
-reports remain unavailable; rejected checkpoints are not used to fill selected
-metric columns. Runs that fail preflight can still be inspected with
-`--collate-only`.
+New runs provide evaluation physics metrics and validation-loss selection
+metadata. Historical `<checkpoint_stem>_physics_report.json` pointers and
+all-checkpoint ledgers remain readable, including on relocated mounts. Missing
+validation ledgers remain unavailable; evaluation metrics do not fill selected
+validation columns. `--collate-only` can inspect both historical and new runs.
 
 ```bash
 /home/alessio/miniconda3/envs/fm4npp/bin/python \

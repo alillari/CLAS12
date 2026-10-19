@@ -37,6 +37,23 @@ class MomentumPresentationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "differ across runs"):
                 unique_baseline([row, changed], ("mae", "n"))
 
+    def test_baseline_rounding_tolerance_preserves_population_checks(self):
+        row = dict(mae=0.0804122010421248, rmse=.2, r2=.8,
+                   n=497839, comparison_truth="mctrue_inner_hit")
+        keys = tuple(row)
+        rounded = dict(row, mae=0.08041220074995052, rmse=.20000001, r2=.80000001)
+        self.assertIs(unique_baseline([row, rounded], keys), row)
+        for changed in (dict(rounded, n=497840),
+                        dict(rounded, comparison_truth="other_truth"),
+                        dict(rounded, mae=.08042), dict(rounded, mae=None)):
+            with self.assertRaisesRegex(ValueError, "differ across runs"):
+                unique_baseline([row, changed], keys)
+        fit = dict(fit_mean=0., fit_sigma=.02, fit_mean_error=.001,
+                   fit_sigma_error=.001, n=200, fit_status="ok")
+        self.assertIs(unique_baseline([fit, dict(fit, fit_mean=1e-9)], tuple(fit)), fit)
+        with self.assertRaisesRegex(ValueError, "differ across runs"):
+            unique_baseline([fit, dict(fit, fit_status="failed")], tuple(fit))
+
     def test_no_mixed_unit_native_loss_used_for_physical_errors(self):
         raw = []
         for variable, unit in (("p_gev", "GeV"), ("theta_deg", "deg"), ("phi_deg", "deg")):

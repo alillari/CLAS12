@@ -33,7 +33,10 @@ def collect_run(run):
     pointer = checkpoint.with_name(checkpoint.stem + '_physics_report.json')
     artifact_path = Path(run.get('artifact_summary', Path(run['evaluation_dir']).parent / 'train' / 'artifacts.json'))
     artifact = read_json(artifact_path) if artifact_path.is_file() else {}
-    current = read_json(pointer) if pointer.is_file() else {}
+    loss_selection = artifact.get('checkpoint_selection') == 'validation_loss'
+    # A new loss-selected run may reuse a directory with an old physics pointer.
+    # Its artifact summary is authoritative; that old ledger describes other weights.
+    current = read_json(pointer) if pointer.is_file() and not loss_selection else {}
     ledger_value = current.get('checkpoint_summary') if current else artifact.get('physics_checkpoint_summary')
     ledger_path = report_path(ledger_value, run)
     ledger = read_json(ledger_path) if ledger_path else None
@@ -56,9 +59,9 @@ def collect_run(run):
         raise ValueError(f'Multiple selected checkpoints in {ledger_path}')
     selected = selected[0] if selected else None
     table = dict(training_target_task=task, checkpoint_selection_status=status,
-                 selected_step=selected.get('step') if selected else None,
-                 selected_epoch=selected.get('epoch') if selected else None,
-                 selected_validation_loss=selected.get('validation_loss') if selected else None,
+                 selected_step=selected.get('step') if selected else artifact.get('best_step') if loss_selection else None,
+                 selected_epoch=selected.get('epoch') if selected else artifact.get('best_epoch') if loss_selection else None,
+                 selected_validation_loss=selected.get('validation_loss') if selected else artifact.get('best_loss') if loss_selection else None,
                  physics_checkpoint_summary=str(ledger_path) if ledger_path else None,
                  validation_support=str(support_path) if support_path else None,
                  validation_n_samples=(support or {}).get('n_samples'),

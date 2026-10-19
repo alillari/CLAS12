@@ -281,90 +281,20 @@ def load_regression_target_stats(path, task):
         "angular_indices": list(regression_angular_indices(task)),
         "phi_pairs": [list(pair) for pair in regression_phi_pairs(task)],
     }
-
-
-def load_regression_loss_reference_stats(path, task, momentum_residual="absolute"):
-    """Load the opt-in physical-resolution reference for ``p_phi_theta``.
-
-    This is deliberately separate from target standardization statistics.  The
-    latter describe the MC-label distribution; this artifact records a matched
-    conventional-reconstruction residual scale in physical units.
-    """
-    path = Path(path)
-    with path.open() as stream:
-        stats = json.load(stream)
-
-    expected_task = "p_phi_theta"
-    if canonical_regression_task(task) != expected_task:
+def validate_regression_training(params):
+    """Reject retired experimental recipes before opening data or training."""
+    task = canonical_regression_task(params.get("task", "mom"))
+    if task in SINGLE_TARGET_TASKS:
         raise ValueError(
-            "Physical-resolution losses are currently defined only for "
-            f"{expected_task!r}, not {canonical_regression_task(task)!r}"
+            "Single-target momentum training is retired; use task=mom. "
+            "Historical scalar checkpoints remain evaluable."
         )
-    if momentum_residual not in {"absolute", "relative"}:
-        raise ValueError(f"Unknown momentum residual mode {momentum_residual!r}")
-    if stats.get("schema") != "clas12_regression_loss_reference_v1":
+    if params.get("input_representation", "center_only") not in {"center_only", "clas12_pos_plus_aux_v1"}:
+        raise ValueError("Use center_only or clas12_pos_plus_aux_v1; endpoint-geometry training is retired.")
+    if resolve_regression_loss(task, params.get("regression_loss")) not in {"mse", "mae", "huber"}:
+        raise ValueError("Use regression_loss=mae, mse or huber; physical-resolution losses are retired.")
+    if params.get("checkpoint_selection", "validation_loss") != "validation_loss":
         raise ValueError(
-            f"Unexpected regression loss-reference schema in {path}: "
-            f"{stats.get('schema')!r}"
+            "Training selects by validation_loss; physics checkpoint selection is retired. "
+            "Physics metrics remain evaluation diagnostics."
         )
-    if canonical_regression_task(stats.get("task", "")) != expected_task:
-        raise ValueError(
-            f"Loss-reference task in {path} is {stats.get('task')!r}, "
-            f"expected {expected_task!r}"
-        )
-
-    residuals = stats.get("residuals")
-    if not isinstance(residuals, dict):
-        raise ValueError(f"Loss-reference file {path} has no residuals object")
-
-    momentum_key = (
-        ("p_scale_gev", "p_absolute_gev", "GeV")
-        if momentum_residual == "absolute"
-        else ("p_scale_relative", "p_relative", "fraction")
-    )
-    keys = {
-        momentum_key[0]: (momentum_key[1], momentum_key[2]),
-        "theta_scale_rad": ("theta_rad", "rad"),
-        "phi_scale_rad": ("phi_rad_wrapped", "rad"),
-    }
-    loaded = {}
-    for output_name, (name, unit) in keys.items():
-        payload = residuals.get(name)
-        if not isinstance(payload, dict):
-            raise ValueError(f"Loss-reference file {path} is missing residual {name!r}")
-        if payload.get("unit") != unit:
-            raise ValueError(
-                f"Loss-reference residual {name!r} in {path} has unit "
-                f"{payload.get('unit')!r}, expected {unit!r}"
-            )
-        try:
-            value = float(payload["central_width_68"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(
-                f"Loss-reference residual {name!r} in {path} lacks a finite "
-                "central_width_68"
-            ) from exc
-        if not np.isfinite(value) or value <= 0.0:
-            raise ValueError(
-                f"Loss-reference residual {name!r} in {path} must have a "
-                f"positive finite central_width_68, got {value!r}"
-            )
-        loaded[output_name] = value
-
-    try:
-        momentum_scale = float(stats["target_momentum_scale_to_gev"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Loss-reference file {path} lacks target_momentum_scale_to_gev"
-        ) from exc
-    if not np.isfinite(momentum_scale) or momentum_scale <= 0.0:
-        raise ValueError(
-            f"Loss-reference file {path} has invalid target_momentum_scale_to_gev "
-            f"{momentum_scale!r}"
-        )
-    loaded.update({
-        "path": str(path),
-        "target_momentum_scale_to_gev": momentum_scale,
-        "reference_method": stats.get("reference_method"),
-    })
-    return loaded

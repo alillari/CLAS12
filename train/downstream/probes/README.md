@@ -1,7 +1,7 @@
 # Downstream Probe Diagnostics
 
 This directory contains diagnostic tools for understanding CLAS12 downstream
-track-regression behavior, especially the case where a pretrained backbone plus
+track-regression and track-finding behavior, especially the case where a pretrained backbone plus
 adapter underperforms an adapter-only model.
 
 These tools are not training entrypoints for production adapters. They are
@@ -148,6 +148,15 @@ Required:
 Optional:
 
 - `--pattern`: checkpoint glob used when searching directories, default `*.pth`.
+- `--campaign_dir`: use a campaign's `manifest.yaml` instead of positional paths.
+  Selects the saved `adapter_checkpoint` for each pretrained run and explicitly
+  excludes adapter-only runs (their allocated mixer is unused). Paths are rebased
+  against the manifest's `campaign_dir`, so mounted campaigns work without edits.
+  Missing selected checkpoints and inconsistent depth/width metadata fail clearly.
+- `--completed_only`: with `--campaign_dir`, select only pretrained runs with a
+  training artifact containing a positive `final_step`, a matching saved checkpoint,
+  and an evaluation `summary.json`. In-progress runs are listed in the JSON under
+  `skipped`, with a reason. This is useful for a campaign that is still running.
 
 ### Example
 
@@ -171,17 +180,37 @@ python train/downstream/probes/audit_layer_weights.py \
 ### Outputs
 
 - `layer_weight_audit.csv`: one row per checkpoint/layer.
+- `layer_weight_summary.csv`: one row per checkpoint, including projection widths.
 - `layer_weight_audit.json`: checkpoint-level summaries and skipped files.
-- `layer_weight_heatmap.png`: softmax layer weights by checkpoint.
+- `layer_weight_heatmap.png` / `.pdf`: softmax layer weights by checkpoint.
+
+Track-finding campaign example (also supported for regression campaigns):
+
+```bash
+python train/downstream/probes/audit_layer_weights.py \
+  --campaign_dir /path/to/track_finding_campaign \
+  --completed_only \
+  --output_dir /path/to/probe_outputs/track_finding_layer_weights
+```
+
+Campaign rows are sorted by backbone width and labeled-event count. The JSON
+records excluded adapter-only runs with `adapter_only_mixer_unused`. Direct
+checkpoint mode remains available for historical audits; without a manifest it
+cannot establish whether a nonempty mixer was actually used. Only load trusted
+training checkpoints, since their saved metadata requires PyTorch pickle loading.
+No model forward, dataset, retraining, or GPU is required.
 
 Important columns:
 
 - `softmax_weight`: normalized contribution of that layer.
 - `top_layer`: layer with the largest learned weight.
+- `layer` / `top_layer` retain zero-based indexing for compatibility;
+  `layer_1based` / `top_layer_1based` and plot ticks use one-based indexing.
 - `top_weight`: softmax weight of the top layer.
 - `entropy`: layer-mixture entropy.
-- `effective_layers`: `exp(entropy)`, the approximate number of layers being
-  used.
+- `effective_layers`: `exp(entropy)`, the effective number of mixture coefficients.
+- `projection_input_dim` / `projection_output_dim`: dimensions of the learned
+  linear map after mixing and LayerNorm, read from its checkpoint tensor.
 
 ### Interpretation
 
@@ -192,7 +221,10 @@ Important columns:
 - Low effective-layer count means the adapter mostly relies on a small number of
   layers.
 
-This audit alone does not prove that the selected layer is physically good. Use
+These are learned scalar coefficients, not activation-normalized contributions,
+feature importance, or causal ablations. Layer norms, correlations, and the
+downstream projection also affect the representation. This audit alone does not
+prove that the selected layer is physically good. Use
 it alongside the linear probe: if the best linear-probe layer differs strongly
 from the adapter's learned top layer, that is evidence to investigate the adapter
 layer mixer or downstream optimization.

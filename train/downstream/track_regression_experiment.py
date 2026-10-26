@@ -140,8 +140,12 @@ def _write_json(path: str, payload: dict[str, Any]) -> None:
         json.dump(json_safe(payload), stream, indent=2, allow_nan=False)
 
 
+from backbone_finetuning import validate_backbone_finetuning
+
+
 def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
     params = YParams(os.path.abspath(config.yaml_config), config.config)
+    validate_backbone_finetuning(params.params, config.usepretrain)
     validate_regression_training(params.params)
 
     if not hasattr(params, "task"):
@@ -237,6 +241,9 @@ def train_experiment(
             "run_num": config.run_num,
             "yaml_config": os.path.abspath(config.yaml_config),
             "usepretrain": bool(config.usepretrain),
+            "backbone_unfreeze_last_n": getattr(params, "backbone_unfreeze_last_n", 0),
+            "backbone_lr_scale": getattr(params, "backbone_lr_scale", 0.1),
+            "backbone_trainable_parameters": getattr(params, "backbone_trainable_parameters", 0),
             "pretrained_ckpt": params.pretrained_ckpt,
             "experiment_dir": getattr(params, "experiment_dir", None),
             "checkpoint_dir": os.path.abspath(params.checkpoint_dir),

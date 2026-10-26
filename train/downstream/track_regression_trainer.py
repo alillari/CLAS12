@@ -33,6 +33,9 @@ from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
 from fm4npp.models.mamba2 import Mamba2
 
+from backbone_finetuning import (validate_backbone_finetuning, configure_backbone,
+    backbone_features, restore_tuned_backbone, ScaledGroupScheduler)
+
 from model import *
 from loss import *
 from downstream_util import *
@@ -97,6 +100,10 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
         
         self.params = params
+        self.backbone_unfreeze_last_n = validate_backbone_finetuning(
+            params.params, bool(getattr(params, "pretrained_ckpt", None)))
+        if self.backbone_unfreeze_last_n and self.world_size != 1:
+            raise ValueError("Partial backbone tuning currently requires one process")
         input_representation = getattr(params, "input_representation", "center_only")
         if input_representation == "clas12_pos_plus_aux_v1":
             if getattr(params, "embed_method", None) != "pos_plus_aux":
@@ -454,6 +461,7 @@ class DownstreamTrainer():
             print("No pretrained checkpoint provided; using randomly initialized backbone.")
             self.resumed = False
 
+        configure_backbone(self.model, self.backbone_unfreeze_last_n)
         self.startEpoch = 0
         self.epoch = self.startEpoch
         self.logs = {}
@@ -620,6 +628,7 @@ class DownstreamTrainer():
         ###%%%%%%%
         # Debugging
         validate_regression_training(self.params.params)
+        validate_backbone_finetuning(self.params.params, pretrain)
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
         self.bwd_hooks = register_param_backward_nan_hooks(self.model)
         ###%%%%%%%%
@@ -687,9 +696,13 @@ class DownstreamTrainer():
         
         initialize_mamba2(self.down_model, 3, num_residuals=1)
 
-        self.down_optimizer = optim.AdamW(self.down_model.parameters(), 
-                                         lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
-                                         weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001))) 
+        self.backbone_trainable_parameters = configure_backbone(
+            self.model, self.backbone_unfreeze_last_n)
+        groups = [{"params": self.down_model.parameters()}]
+        if self.backbone_trainable_parameters:
+            groups.append({"params": self.backbone_trainable_parameters})
+        self.down_optimizer = optim.AdamW(groups, lr=self.params.max_lr,
+            weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001)))
         
         self.grad_clip_value = float(getattr(self.params, "grad_clip_value", 1.0))
         torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=self.grad_clip_value)
@@ -746,6 +759,12 @@ class DownstreamTrainer():
                 f"got {scheduler_mode!r}"
             )
 
+
+        if self.backbone_unfreeze_last_n:
+            self.down_scheduler = ScaledGroupScheduler(self.down_scheduler,
+                [1.0, float(getattr(self.params, "backbone_lr_scale", 0.1))])
+        self.params["backbone_trainable_parameters"] = sum(
+            p.numel() for p in self.backbone_trainable_parameters)
 
         # Add safe global class
         from ruamel.yaml.scalarfloat import ScalarFloat
@@ -1000,9 +1019,8 @@ class DownstreamTrainer():
         self.down_optimizer.zero_grad()
         model_input = self._representation_input(grouped, inputdict)
         if pretrain:
-            with torch.no_grad():
-                _, pre_embed, _ = self.model(model_input, return_z=True)
-            feature = torch.stack(pre_embed)
+            feature = backbone_features(self.model, model_input,
+                tune=bool(getattr(self, "backbone_unfreeze_last_n", 0)))
             pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
         else:
             pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
@@ -1024,11 +1042,9 @@ class DownstreamTrainer():
 
         loss = losses['loss']
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            self.down_model.parameters(),
-            max_norm=self.grad_clip_value,
-            norm_type=2.0,
-        )
+        for group in self.down_optimizer.param_groups:
+            torch.nn.utils.clip_grad_norm_(group["params"],
+                max_norm=self.grad_clip_value, norm_type=2.0)
 
         self.down_optimizer.step()
         return loss.item()
@@ -1258,6 +1274,13 @@ class DownstreamTrainer():
             'params': vars(self.params)  # Save all hyperparameters
         }
 
+        checkpoint["backbone_unfreeze_last_n"] = getattr(self, "backbone_unfreeze_last_n", 0)
+        checkpoint["backbone_lr_scale"] = getattr(self.params, "backbone_lr_scale", 0.1)
+        if checkpoint["backbone_unfreeze_last_n"]:
+            # Full backbone makes the tuned checkpoint self-contained and avoids
+            # accidentally evaluating a tuned adapter against original features.
+            checkpoint["backbone_state_dict"] = self.model.state_dict()
+
         # Handle DistributedDataParallel wrapper
         if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
             checkpoint['model_state_dict'] = self.down_model.module.state_dict()
@@ -1330,6 +1353,9 @@ class DownstreamTrainer():
                 f"mambaversion={getattr(self.params, 'mambaversion', None)}"
             ) from exc
     
+        restore_tuned_backbone(self.model, checkpoint,
+            getattr(self.params, "backbone_unfreeze_last_n", 0))
+
         # 5. If not inference mode, load optimizer/scheduler states
         if not inference:
             self.down_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

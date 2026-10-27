@@ -1,9 +1,10 @@
 # CLAS12 pretraining
 
-The shared research branch combines the downstream workflows from `adapter-dev`
-with the active CLAS12 pretraining path from `mike` at `38c82ec`. Adapter-only and
-pretrained-adapter training retain their existing entrypoints and campaign
-configuration. See [downstream campaigns](../downstream/campaign/README.md).
+This pretraining path was first integrated on `integration-adapter-pretrain`
+from Mike's `mike` branch at `38c82ec`, then combined with the current CLAS12
+research baseline on `main`. Adapter-only and pretrained-adapter training retain
+their established entrypoints and campaign configurations. See
+[downstream campaigns](../downstream/campaign/README.md).
 
 This integration preserves the existing pretraining experiment behavior. In
 particular, the loader keeps **1–50 points per event**, calibrated 12-band
@@ -81,7 +82,8 @@ support to every downstream head or change existing adapter configuration.
 
 The donor loader, legacy values/offsets reader, trainer, and three active recipe
 files come from Mike. The shared backbone, embeddings, calibration, downstream
-loaders, adapters, evaluators, and campaigns remain those of `adapter-dev`.
+loaders, adapters, evaluators, and campaigns retain the current `main`
+implementation (formerly `adapter-dev`).
 
 The only trainer compatibility change removes unsupported band-classification
 constructor arguments and rejects that retired mode explicitly. Continuous

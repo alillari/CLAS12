@@ -170,7 +170,10 @@ def init_down_model(params, device):
     # The trainable tracking decoder uses a fixed latent space.  input_dim is
     # the pretrained backbone width and is bridged by input_proj.
     adapter_embed_dim = int(getattr(params, "adapter_embed_dim", 256))
+    from fm4npp.models.mamba_config import adapter_options
+
     return MambaAttentionHead(
+        **adapter_options(params),
         input_dim=params.embed_dim,
         embed_dim=adapter_embed_dim,
         num_layers=int(getattr(params, "num_adapter_layers", 0)),

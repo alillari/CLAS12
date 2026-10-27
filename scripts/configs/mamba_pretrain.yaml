@@ -90,6 +90,7 @@ mamba_5m:
 # ============================================================================
 mamba2_5m:
   <<: *default
+  backbone_version: mamba2
   embed_dim: 256
   num_layers_backbone: 12
   d_state: 128                           # Larger state space for Mamba2
@@ -108,6 +109,21 @@ mamba2_5m:
   min_lr: 0.00002
   dropout: 0.1
   save_version: mamba2_5m
+
+# Mamba3 SISO. CUDA execution is required; blocks use BF16 internally.
+# Parameter counts differ from Mamba1/2 at equal width/depth.
+mamba3_siso:
+  <<: *default
+  backbone_version: mamba3
+  embed_dim: 256
+  num_layers_backbone: 12
+  d_state: 128
+  expand: 2
+  headdim: 64
+  ngroups: 1
+  chunk_size: 64
+  is_mimo: false
+  save_version: mamba3_siso
 
 # ============================================================================
 # Smaller Mamba Configuration for Testing (~1.5M parameters)

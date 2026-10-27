@@ -25,7 +25,11 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
-from fm4npp.models.mambagpt import MambaGPT, Mamba1GPT
+from fm4npp.models.mamba_config import (
+    adapter_options, backbone_version, build_backbone, architecture_metadata,
+    legacy_initialization_parameters, optimizer_parameters,
+    uses_mamba3, validate_checkpoint_architecture,
+)
 from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
 from fm4npp.models.mamba2 import Mamba2
@@ -223,48 +227,13 @@ class DownstreamTrainer():
 
         # get the pretrained model
         self.klen = self.params.klen
-        if self.params.mambaversion == 'mamba1':
-            self.model = Mamba1GPT(embed_dim=self.params.embed_dim, num_layers=self.params.num_layers_backbone,
-                                d_state=self.params.d_state, d_conv=4, expand=2, klen=self.klen, dropout=self.params.dropout,
-                                embed_method=self.params.embed_method, pe_method=self.params.pe_method)
-        elif self.params.mambaversion == 'longformer':
-            self.model = LongformerGPT(
-                embed_dim=self.params.embed_dim,
-                num_layers=self.params.num_layers_backbone,
-                num_heads=self.params.num_heads_backbone,
-                window_size=getattr(self.params, 'window_size', 256),
-                mlp_ratio=getattr(self.params, 'mlp_ratio', 2.0),
-                klen=self.klen,
-                dropout=self.params.dropout,
-                embed_method=self.params.embed_method,
-                pe_method=self.params.pe_method
-            )
-        elif self.params.mambaversion == 'linformer':
-            self.model = LinformerGPT(
-                embed_dim=self.params.embed_dim,
-                num_layers=self.params.num_layers_backbone,
-                num_heads=self.params.num_heads_backbone,
-                seq_len=getattr(self.params, 'seq_len', 512),
-                proj_dim=getattr(self.params, 'proj_dim', 256),
-                mlp_ratio=getattr(self.params, 'mlp_ratio', 2.0),
-                klen=self.klen,
-                dropout=self.params.dropout,
-                embed_method=self.params.embed_method,
-                pe_method=self.params.pe_method
-            )
-        else:
-            self.model = MambaGPT(embed_dim=self.params.embed_dim, num_layers=self.params.num_layers_backbone,
-                    d_state=self.params.d_state, d_conv=4, expand=2, klen=self.klen, dropout=self.params.dropout,
-                    embed_method=self.params.embed_method, pe_method=self.params.pe_method)
-        
-
-
+        self.model = build_backbone(self.params)
 
         def initialize_mamba2(model, d_state, embed_dim):
             """ Properly initializes Mamba v2 to ensure stable learning. """
             
             with torch.no_grad():
-                for name, param in model.named_parameters():
+                for name, param in legacy_initialization_parameters(model):
 
                     if "lin_B" in name:
                         param.normal_(mean=0.0, std=(d_state / embed_dim)**0.5)
@@ -285,11 +254,11 @@ class DownstreamTrainer():
         Nx = getattr(self.params, 'd_state', 16)
 
         # Only initialize Mamba models with Mamba-specific initialization
-        if self.params.mambaversion in ['mamba1', 'mamba2']:
+        if backbone_version(self.params) in ['mamba1', 'mamba2']:
             initialize_mamba2(self.model, Nx, Nu)
         else:
             if self.world_rank == 0:
-                print(f"✅ {self.params.mambaversion.capitalize()} Model Initialized")
+                print(f"✅ {backbone_version(self.params).capitalize()} Model Initialized")
 
         self.model = self.model.to(self.device)
         if self.world_rank == 0:
@@ -320,12 +289,12 @@ class DownstreamTrainer():
             else:
                 params_else.append(p)
                 
-        self.optimizer = torch.optim.AdamW([
+        self.optimizer = torch.optim.AdamW(optimizer_parameters(self.model, [
             {"params": params_a,   "lr": self.params.min_lr * Nu},                   # e.g. for A
             {"params": params_b,   "lr": self.params.min_lr * Nx / (Nu**0.5)},       # e.g. for B
             {"params": params_c,   "lr": self.params.min_lr * (Nu**0.5) / Nx},       # e.g. for C
             {"params": params_else,"lr": self.params.min_lr},
-        ], weight_decay=0.1, betas=(0.9, 0.95))
+        ]), weight_decay=0.1, betas=(0.9, 0.95))
 
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
         backbone_cycle_steps = int(getattr(self.params, 'total_steps', 200))
@@ -496,6 +465,7 @@ class DownstreamTrainer():
         # decoder matrix with the backbone.
         adapter_embed_dim = int(getattr(self.params, "adapter_embed_dim", 256))
         self.down_model = MambaAttentionHead(
+            **adapter_options(self.params),
             input_dim=self.params.embed_dim,
             embed_dim=adapter_embed_dim,
             num_layers=int(getattr(self.params, "num_adapter_layers", 0)),
@@ -518,7 +488,7 @@ class DownstreamTrainer():
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
         print(f"Total parameters in down_model: {total_params}")
-        self.down_optimizer = optim.AdamW(self.down_model.parameters(), 
+        self.down_optimizer = optim.AdamW(optimizer_parameters(self.down_model),
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
                                          weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001))) 
         
@@ -751,7 +721,7 @@ class DownstreamTrainer():
 
         def initialize_mamba2(model, num_layers, num_residuals=1):
             """ Properly initializes Mamba v2 to ensure stable learning. """
-            for name, param in model.named_parameters():
+            for name, param in legacy_initialization_parameters(model):
             
                 # Stable State-Space Matrix (A_t)
                 if "A" in name:  
@@ -784,6 +754,7 @@ class DownstreamTrainer():
         # Only input_proj depends on the frozen backbone's feature width.
         adapter_embed_dim = int(getattr(self.params, "adapter_embed_dim", 256))
         self.down_model = MambaAttentionHead(
+            **adapter_options(self.params),
             input_dim=self.params.embed_dim,
             embed_dim=adapter_embed_dim,
             num_layers=int(getattr(self.params, "num_adapter_layers", 0)),
@@ -809,7 +780,7 @@ class DownstreamTrainer():
         total_params = sum(p.numel() for p in self.down_model.parameters())
         print(f"Total parameters in down_model: {total_params}")
 
-        self.down_optimizer = optim.AdamW(self.down_model.parameters(), 
+        self.down_optimizer = optim.AdamW(optimizer_parameters(self.down_model),
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
                                          weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001))) 
         
@@ -1577,6 +1548,8 @@ class DownstreamTrainer():
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.down_model.state_dict(),
+            'backbone_architecture': architecture_metadata(self.model),
+            'adapter_architecture': architecture_metadata(self.down_model),
             'best_loss': self.best_loss,
             'best_ARI': getattr(self, "best_ARI", None),
             'best_step': getattr(self, "best_step", None),
@@ -1631,14 +1604,18 @@ class DownstreamTrainer():
             raise ValueError("Validation snapshots are for inference/selection; resume training from a full checkpoint.")
 
         # 3. Handle DDP keys
+        validate_checkpoint_architecture(
+            checkpoint, self.down_model, 'adapter',
+            backbone=self.model if getattr(self.params, 'pretrained_ckpt', None) else None,
+        )
         state_dict = checkpoint['model_state_dict']
         new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
 
         # 4. Load model weights
         if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
-            self.down_model.module.load_state_dict(new_state_dict, strict=False)
+            self.down_model.module.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
         else:
-            self.down_model.load_state_dict(new_state_dict, strict=False)
+            self.down_model.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
 
         # Load LoRA weights if present
         if self.use_lora and 'lora_state_dict' in checkpoint:
@@ -1698,6 +1675,7 @@ class DownstreamTrainer():
             device_str = str(self.device)
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
         validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
+        validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}
         #try:
             #self.model.load_state_dict(checkpoint['model_state'])

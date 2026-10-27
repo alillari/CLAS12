@@ -21,6 +21,7 @@ DOWNSTREAM_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
+from fm4npp.models.mamba_config import backbone_version, adapter_options
 from fm4npp.utils import YParams
 from fm4npp.artifact_paths import artifact_path
 from train.downstream.track_finding_contract import validate_track_finding_modes
@@ -206,6 +207,8 @@ def train_experiment(
                 getattr(params, "num_prototypes", getattr(params, "max_gt_classes", None))
             ),
             "mambaversion": json_safe(getattr(params, "mambaversion", None)),
+            "backbone_version": backbone_version(params),
+            "adapter_version": adapter_options(params)["adapter_version"],
             "track_target_mode": json_safe(getattr(params, "track_target_mode", "signal_only")),
             "validation_ari_mode": json_safe(getattr(params, "validation_ari_mode", "signal")),
             "hostname": socket.gethostname(),

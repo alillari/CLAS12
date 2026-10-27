@@ -1,13 +1,9 @@
 """
-Mamba1 Training Script - Simplified Mamba (no μ-transfer, FP32)
-Uses Mamba1GPT for O(n) complexity with state space model
+Mamba pretraining (legacy module name retained for existing launchers).
+Mamba1 remains the default; Mamba2 and Mamba3 SISO are explicit selections.
 
-Key features:
-1. Uses Mamba1GPT with state space blocks
-2. Standard AdamW optimizer
-3. Target: 2M-5M parameters
-4. FP32 training
-5. Batch size adjusted for 40GB GPU
+The next-point objective and AdamW recipe are shared. Mamba1/2 retain FP32
+execution; Mamba3 blocks manage BF16 locally. See train/MAMBA_SUPPORT.md.
 """
 
 import os
@@ -25,7 +21,10 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
-from fm4npp.models.mambagpt import Mamba1GPT
+from fm4npp.models.mamba_config import (
+    backbone_version, build_backbone, architecture_metadata,
+    optimizer_parameters, validate_checkpoint_architecture,
+)
 from fm4npp.datasets.dataset_pretrain import get_data_loader
 from fm4npp.utils import *
 
@@ -78,7 +77,8 @@ class Trainer():
             self.world_size = dist.get_world_size()
 
         self.device = torch.device(f'cuda:{self.local_rank}' if torch.cuda.is_available() else 'cpu')
-        torch.cuda.set_device(self.local_rank)
+        if self.device.type == 'cuda':
+            torch.cuda.set_device(self.local_rank)
 
         # Setup directories
         exp_dir = os.path.join(*[self.root_dir, self.config, self.run_num])
@@ -117,31 +117,25 @@ class Trainer():
         self.train_data_loader, self.train_sampler, self.valid_data_loader, _ = \
             get_data_loader(self.params, dist.is_initialized())
 
-        # Create model - Using Mamba1GPT  
+        # Keep the historical Mamba1 default for existing launchers/configs.
         self.klen = self.params.klen
-        d_state = getattr(self.params, 'd_state', 16)
-
-        self.model = Mamba1GPT(
-            embed_dim=self.params.embed_dim,
-            num_layers=self.params.num_layers_backbone,
-            d_state=d_state,
-            klen=self.klen,
-            dropout=self.params.dropout,
-            embed_method=self.params.embed_method,
-            pe_method=self.params.pe_method
-        )
+        version = backbone_version(self.params, default='mamba1')
+        if version not in {'mamba1', 'mamba2', 'mamba3'}:
+            raise ValueError('This pretraining entrypoint supports Mamba1, Mamba2, and Mamba3 SISO')
+        self.model = build_backbone(self.params, default='mamba1')
 
         # Standard initialization
-        with torch.no_grad():
-            for name, param in self.model.named_parameters():
-                if "norm.weight" in name:
-                    init.ones_(param)
-                elif "bias" in name:
-                    init.zeros_(param)
+        if version == 'mamba1':
+            with torch.no_grad():
+                for name, param in self.model.named_parameters():
+                    if "norm.weight" in name:
+                        init.ones_(param)
+                    elif "bias" in name:
+                        init.zeros_(param)
 
         if self.world_rank == 0:
-            print(f"✅ Mamba1GPT Model Initialized")
-            print(f"   D state: {d_state}")
+            print(f"✅ {version} Model Initialized")
+            print(f"   Architecture: {architecture_metadata(self.model)}")
 
         self.model = self.model.to(self.device)
 
@@ -160,7 +154,7 @@ class Trainer():
         # Standard optimizer (no μ-transfer)
         # Simple AdamW with single learning rate for all parameters
         self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+            optimizer_parameters(self.model),
             lr=self.params.min_lr,
             weight_decay=0.1,
             betas=(0.9, 0.95)
@@ -170,7 +164,8 @@ class Trainer():
             print(f"✅ Using standard AdamW optimizer (no μ-transfer scaling)")
             print(f"   Learning rate: {self.params.min_lr}")
 
-        # No mixed precision for Mamba1 (testing simplification alone)
+        # Mamba1/2 keep their existing precision; Mamba3 blocks execute in BF16
+        # locally and return FP32 to the existing prediction/loss path.
 
         # Learning rate scheduler
         self.scheduler = CosineAnnealingWarmupRestarts(
@@ -215,7 +210,8 @@ class Trainer():
             if self.world_rank == 0:
                 print(f"Loading checkpoint from {self.checkpoint_path}")
 
-            checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
+            validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
 
             try:
                 self.model.load_state_dict(checkpoint['model_state'])
@@ -226,6 +222,9 @@ class Trainer():
                     self.model.load_state_dict(checkpoint['model_state'])
 
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'scheduler_state_dict' in checkpoint:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            self.best_loss = checkpoint.get('best_loss', self.best_loss)
             self.iters = checkpoint['iters']
             self.startEpoch = checkpoint['epoch'] + 1
 
@@ -242,21 +241,20 @@ class Trainer():
         except:
             model_state = self.model.state_dict()
 
-        torch.save({
+        payload = {
             'iters': self.iters,
             'epoch': self.epoch,
             'model_state': model_state,
             'optimizer_state_dict': self.optimizer.state_dict(),
-        }, checkpoint_path)
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'best_loss': self.best_loss,
+            'backbone_architecture': architecture_metadata(self.model),
+        }
+        torch.save(payload, checkpoint_path)
 
         if is_best:
             best_path = checkpoint_path.replace('.tar', '_best.tar')
-            torch.save({
-                'iters': self.iters,
-                'epoch': self.epoch,
-                'model_state': model_state,
-                'optimizer_state_dict': self.optimizer.state_dict(),
-            }, best_path)
+            torch.save(payload, best_path)
             if self.world_rank == 0:
                 print(f"Saved best checkpoint to {best_path}")
         else:
@@ -284,13 +282,13 @@ class Trainer():
             b, c = grouped.size(0), grouped.size(-1)
 
             # Prepare targets
-            targets = grouped.reshape(b, -1, 3)[:, :, 1:].to(self.device)
+            targets = grouped.reshape(b, -1, c).to(self.device)
             klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
             grouped = grouped.reshape(b, -1, c).to(self.device)
 
             self.model.zero_grad()
 
-            # Forward pass (FP32 - no mixed precision)
+            # Mamba3 manages BF16 inside each block.
             point_pred = self.model(grouped)
 
             # Handle rep_aaai logic
@@ -374,7 +372,7 @@ class Trainer():
         with torch.no_grad():
             for i, (grouped, _, knearest) in enumerate(self.valid_data_loader):
                 b, c = grouped.size(0), grouped.size(-1)
-                targets = grouped.reshape(b, -1, 4)[:, :, 1:].to(self.device)
+                targets = grouped.reshape(b, -1, c).to(self.device)
                 klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
                 grouped = grouped.reshape(b, -1, c).to(self.device)
 
@@ -440,13 +438,11 @@ class Trainer():
         """Launch training"""
         if self.world_rank == 0:
             print("="*80)
-            print("STARTING LONGFORMER TRAINING")
+            print("STARTING MAMBA PRETRAINING")
             print("="*80)
-            print(f"Model: Mamba1GPT")
+            print(f"Model: {backbone_version(self.params, default='mamba1')}")
             print(f"Embed dim: {self.params.embed_dim}")
             print(f"Num layers: {self.params.num_layers_backbone}")
-            print(f"Num heads: {getattr(self.params, 'num_heads_backbone', 4)}")
-            print(f"Window size: {getattr(self.params, 'window_size', 256)}")
             print(f"Learning rate: {self.params.min_lr}")
             print(f"Total steps: {self.params.total_steps}")
             print("="*80)

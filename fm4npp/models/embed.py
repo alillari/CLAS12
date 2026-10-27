@@ -72,8 +72,59 @@ class EmbedderPosOnly(nn.Module):
         self.embed = CoordinateEmbedder(method = pe_method, n_continuous_dim = 3, target_dim = embed_dim, learnable_projection = learnable_projection)
 
     def forward(self, neighborhood):
-        out = self.embed(neighborhood[..., 1:4])       
-        return out
+        # CLAS12: input is 3 columns [eta, phi, r], no energy column to skip.
+        # (was neighborhood[..., 1:4], which assumed a leading E column.)
+        out = self.embed(neighborhood)
+        # Return a 2-tuple to match EmbedderAdd/EmbedderConcat's (out, pos_embed)
+        # contract — Mamba1GPT.forward unpacks `x, pos = self.embedder(x)`.
+        # pos_embed == out here, since position is the only signal.
+        return out, out
+
+
+class EmbedderPosPlusAux(nn.Module):
+    """Mike-compatible additive embedding for normalized CLAS12 tokens.
+
+    Inputs are ``[eta, phi, r, s_r, s_phi, s_z, scalar]`` by default.  The
+    three center coordinates retain the existing coordinate encoder, while
+    measurement context uses a learned projection.  Keeping the paths
+    separate makes this an opt-in extension of ``pos_only`` rather than a
+    reinterpretation of its frozen positional projection.
+    """
+
+    def __init__(self, pe_method, embed_dim, pos_dim=3, aux_dim=4,
+                 learnable_projection=False):
+        super().__init__()
+        if pos_dim <= 0 or aux_dim <= 0:
+            raise ValueError("pos_dim and aux_dim must be positive")
+        self.pos_dim = int(pos_dim)
+        self.aux_dim = int(aux_dim)
+        self.embed = CoordinateEmbedder(
+            method=pe_method,
+            n_continuous_dim=self.pos_dim,
+            target_dim=embed_dim,
+            learnable_projection=learnable_projection,
+        )
+        self.pos_norm = nn.LayerNorm(embed_dim)
+        self.aux_proj = nn.Linear(self.aux_dim, embed_dim, bias=False)
+        self.aux_norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, neighborhood):
+        expected_width = self.pos_dim + self.aux_dim
+        if neighborhood.size(-1) != expected_width:
+            raise ValueError(
+                "EmbedderPosPlusAux expected "
+                f"{expected_width} token columns (pos_dim={self.pos_dim}, "
+                f"aux_dim={self.aux_dim}), got {neighborhood.size(-1)}"
+            )
+        pos = neighborhood[..., :self.pos_dim]
+        aux = neighborhood[..., self.pos_dim:]
+        pos_embed = self.pos_norm(self.embed(pos))
+        aux_embed = self.aux_norm(self.aux_proj(aux))
+        return pos_embed + aux_embed, pos_embed
+
+
+
+
         
 class CoordinateEmbedder(nn.Module):
     """

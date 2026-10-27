@@ -35,6 +35,15 @@ from fm4npp.models.linformer_gpt import LinformerGPT
 
 from trackinghead import *
 from loss import *
+from downstream_util import get_early_stopping_config
+from track_finding_metrics import MatchConfig, EventMetricAccumulator, event_track_metrics, summarize_event_metrics
+from train.downstream.track_finding_contract import validate_track_finding_modes
+from train.downstream.track_finding_history import ValidationHistory
+from track_finding_targets import (
+    SIGNAL_ONLY,
+    build_track_instance_targets,
+    validation_ari_metric,
+)
 
 
 class DownstreamTrainer():
@@ -50,7 +59,7 @@ class DownstreamTrainer():
 
     """ trainer class """
     def __init__(self, params, args):
-        
+        validate_track_finding_modes(vars(params), source="track-finding model")
         ''' init vars for distributed training (ddp) and logging'''
         self.root_dir = args.root_dir
         self.global_log_dir = os.path.join(args.root_dir, args.global_log_dir)
@@ -319,11 +328,16 @@ class DownstreamTrainer():
         ], weight_decay=0.1, betas=(0.9, 0.95))
 
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+        backbone_cycle_steps = int(getattr(self.params, 'total_steps', 200))
+        backbone_warmup_steps = min(
+            int(getattr(self.params, 'warmup_steps', 20)),
+            max(0, backbone_cycle_steps - 1),
+        )
         self.scheduler = CosineAnnealingWarmupRestarts(self.optimizer,
-                                          first_cycle_steps=getattr(self.params, 'total_steps', 200),
+                                          first_cycle_steps=backbone_cycle_steps,
                                           max_lr=self.params.max_lr,
                                           min_lr=self.params.min_lr,
-                                          warmup_steps=self.params.warmup_steps)
+                                          warmup_steps=backbone_warmup_steps)
 
         
         # get the dataloaders
@@ -341,9 +355,13 @@ class DownstreamTrainer():
         self.resumed = False
 
         ##### Pretraining checkpoint
-        print("Loading checkpoint %s"%self.params.pretrained_ckpt)
-        self.restore_checkpoint(self.params.pretrained_ckpt)
-        self.resumed = True
+        if self.params.pretrained_ckpt is not None:
+            print("Loading checkpoint %s" % self.params.pretrained_ckpt)
+            self.restore_checkpoint(self.params.pretrained_ckpt, load_optimizer_state=False)
+            self.resumed = True
+        else:
+            print("No pretrained checkpoint provided; using randomly initialized backbone.")
+            self.resumed = False
 
         # LoRA: apply low-rank adapters to frozen backbone
         if getattr(self.params, 'use_lora', False):
@@ -393,6 +411,71 @@ class DownstreamTrainer():
             dist.destroy_process_group()
         print("Cleanup complete. All resources released.")
 
+    def _load_loss_reweight_stats(self):
+        if not getattr(self.params, "loss_reweight", False):
+            self.loss_bin = None
+            self.loss_weight = None
+            return
+        self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
+        self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
+
+    def _unpack_batch(self, batch):
+        if isinstance(batch, dict):
+            return (
+                batch["points"],
+                batch["target"],
+                batch.get("knearest_points"),
+                batch.get("reg_target"),
+            )
+        if len(batch) == 3:
+            grouped, label, knearest = batch
+            return grouped, label, knearest, None
+        if len(batch) == 4:
+            return batch
+        raise ValueError(f"Unexpected track-finding batch with {len(batch)} elements")
+
+    def _build_track_targets(self, labels, mask):
+        return build_track_instance_targets(
+            labels,
+            mask,
+            mode=str(getattr(self.params, "track_target_mode", SIGNAL_ONLY)),
+            background_label=int(getattr(self.params, "background_label", -1)),
+        )
+
+    def _batch_adjusted_rand(self, inverse_valid_list, assignments, mask):
+        mode = str(getattr(self.params, "validation_ari_mode", "signal"))
+        metric_name = validation_ari_metric(mode)
+        rows = self._batch_event_metrics(inverse_valid_list, assignments, mask)
+        scores = [row[metric_name] for row in rows if row.get(metric_name) is not None]
+        return float(np.mean(scores)) if scores else 0.0
+
+    def _batch_event_metrics(self, inverse_valid_list, assignments, mask, classes=None):
+        del inverse_valid_list
+        labels = getattr(self, "_last_labels_for_metrics", None)
+        if labels is None:
+            return []
+        config = MatchConfig(
+            background_label=int(getattr(self.params, "background_label", -1)),
+            iou_threshold=float(getattr(self.params, "match_iou_threshold", 0.5)),
+            min_purity=float(getattr(self.params, "match_min_purity", 0.5)),
+            min_efficiency=float(getattr(self.params, "match_min_efficiency", 0.5)),
+        )
+        rows = []
+        for batch_idx in range(labels.size(0)):
+            pred_signal = None
+            if classes is not None:
+                pred_signal = classes[batch_idx] != 0
+            rows.append(event_track_metrics(
+                labels[batch_idx].detach().cpu().numpy(),
+                assignments[batch_idx].detach().cpu().numpy(),
+                valid_mask=mask[batch_idx].detach().cpu().numpy(),
+                pred_signal_mask=(
+                    pred_signal.detach().cpu().numpy() if pred_signal is not None else None
+                ),
+                config=config,
+            ))
+        return rows
+
     def inference(self, checkpoint_path, pretrain=True, logfile=None, save_csv=False, csv_output_path=None):
         """Initialize model and load weights for inference"""
         # 1. Initialize model architecture
@@ -406,24 +489,50 @@ class DownstreamTrainer():
         #    num_prototypes=self.params.max_gt_classes
         #).to(self.device)
 
-        self.down_model = MambaAttentionHead(input_dim=self.params.embed_dim, num_layers=0,
-                                  num_embedder_layers= self.params.num_embedder_layers, 
-                                  d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_prototypes = self.params.max_gt_classes, dropout= self.params.downstream_dropout).to(self.device)
+        # The frozen backbone can have any representation width, but the
+        # trainable tracking decoder must remain a shared-capacity adapter.
+        # Project backbone features into this fixed latent space, matching the
+        # original FM4NPP tracking-head design, rather than widening every
+        # decoder matrix with the backbone.
+        adapter_embed_dim = int(getattr(self.params, "adapter_embed_dim", 256))
+        self.down_model = MambaAttentionHead(
+            input_dim=self.params.embed_dim,
+            embed_dim=adapter_embed_dim,
+            num_layers=int(getattr(self.params, "num_adapter_layers", 0)),
+            num_embedder_layers=int(getattr(self.params, "num_embedder_layers", 0)),
+            d_state=int(getattr(self.params, "adapter_d_state", getattr(self.params, "d_state", 64))),
+            d_conv=int(getattr(self.params, "adapter_d_conv", getattr(self.params, "d_conv", 4))),
+            expand=int(getattr(self.params, "adapter_expand", getattr(self.params, "expand", 2))),
+            num_feature_layers=self.params.num_layers_backbone,
+            num_output_dim=adapter_embed_dim,
+            num_prototypes=int(getattr(self.params, "num_prototypes", self.params.max_gt_classes)),
+            num_heads=int(getattr(self.params, "num_heads_decoder", 4)),
+            ffn_dim=int(getattr(self.params, "ffn_dim", 512)),
+            num_self_attn_layers=int(getattr(self.params, "num_self_attn_layers", 2)),
+            softmax_mask=bool(getattr(self.params, "softmax_mask", False)),
+            do_masked_attn=bool(getattr(self.params, "do_masked_attn", True)),
+            embed_method=getattr(self.params, "embed_method", "add"),
+            pe_method=getattr(self.params, "pe_method", "nerf"),
+            dropout=getattr(self.params, "downstream_dropout", 0.0),
+        ).to(self.device)
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
         print(f"Total parameters in down_model: {total_params}")
         self.down_optimizer = optim.AdamW(self.down_model.parameters(), 
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
-                                         weight_decay=0.0001) 
+                                         weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001))) 
         
-        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=1.0)
+        self.grad_clip_value = float(getattr(self.params, "grad_clip_value", 1.0))
+        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=self.grad_clip_value)
 
 
+        scheduler_steps = int(getattr(self.params, "scheduler_first_cycle_steps", getattr(self.params, "first_cycle_steps", 200)))
+        warmup_steps = min(int(getattr(self.params, "warmup_steps", 20)), max(0, scheduler_steps - 1))
         self.down_scheduler = CosineAnnealingWarmupRestarts(self.down_optimizer,
-                                          first_cycle_steps=200,
+                                          first_cycle_steps=scheduler_steps,
                                           max_lr=self.params.max_lr,
                                           min_lr=self.params.min_lr,
-                                          warmup_steps=20)
+                                          warmup_steps=warmup_steps)
 
         self.matcher = PointHungarianMatcher(
             cost_class=1,
@@ -459,13 +568,16 @@ class DownstreamTrainer():
         
         # Lists for CSV data collection
         csv_data = []
+        amp_enabled = torch.cuda.is_available() and self.use_amp
         
         with torch.no_grad():  # Disable gradient calculation
-            for i, (grouped, label, knearest, reg) in enumerate(tqdm(self.val_data_loader)):
+            for i, batch in enumerate(tqdm(self.val_data_loader)):
+                grouped, label, knearest, reg = self._unpack_batch(batch)
             #for i, (grouped, label, knearest) in enumerate(tqdm(self.train_data_loader)):
                 #reg = 0
                 #validate for 500 samples
-                if i > 20000:
+                max_eval_batches = getattr(self.params, "max_eval_batches", 20001)
+                if max_eval_batches is not None and i >= int(max_eval_batches):
                     break
                 b, c = grouped.size(0), grouped.size(-1)
                 labels = label.to(self.device)
@@ -473,30 +585,8 @@ class DownstreamTrainer():
                 mask = grouped[..., 0] != -100  # B X N
                 # One-hot encode the labels using the inverse mapping
                 #one_hot_labels = F.one_hot(inverse_indices, num_classes=n_gt_classes).float().to(self.device) # B X N X C_gt
-                targets = []
-                for batch_idx in range(b):
-                    # Get labels for this sample
-                    sample_labels = labels[batch_idx]
-                    
-                    # Find unique labels for this specific sample
-                    unique_labels, inverse_indices = torch.unique(
-                        sample_labels, 
-                        sorted=True, 
-                        return_inverse=True
-                    )
-                    n_gt_classes = unique_labels.numel()
-                    
-                    #if n_gt_classes > self.params.max_gt_classes:
-                    #    continue
-                        
-                    # Create one-hot encoding for this sample
-                    sample_one_hot = F.one_hot(inverse_indices, num_classes=n_gt_classes).float()
-                    
-                    # Convert to dictionary format
-                    targets.append({
-                        "masks": sample_one_hot.permute(1, 0).to(self.device),  # (n_gt_classes, N)
-                        "labels": torch.ones(n_gt_classes, dtype=torch.long).to(self.device)  # (n_gt_classes,)
-                    })
+                targets, inverse_valid_list = self._build_track_targets(labels, mask)
+                self._last_labels_for_metrics = labels
 
                 with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
                     if pretrain:
@@ -507,7 +597,7 @@ class DownstreamTrainer():
                         pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
                         #pred_logit = self.down_model(grouped, feature, pretrain=pretrain) #B X N X C_classes
                     else:
-                        pred_dict = self.down_model(grouped, feature=None)
+                        pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
                         #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
                     #softmax it to the prob
                     #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
@@ -542,12 +632,6 @@ class DownstreamTrainer():
                         for point_idx in valid_indices:
                             point_idx = point_idx.item()
                             
-                            # Extract regression target components
-                            reg_point = reg[batch_idx, point_idx]  # 8 values
-                            px, py, pz = reg_point[0].item(), reg_point[1].item(), reg_point[2].item()
-                            vtx_x, vtx_y, vtx_z = reg_point[3].item(), reg_point[4].item(), reg_point[5].item()
-                            q, e = reg_point[6].item(), reg_point[7].item()
-                            
                             # Get segmentation target (track ID)
                             seg_target_point = label[batch_idx, point_idx].item()
                             
@@ -555,29 +639,33 @@ class DownstreamTrainer():
                             pred_assignment = pred_assignments[batch_idx, point_idx].item()
                             confidence = max_probs[batch_idx, point_idx].item()
                             
-                            # Get point coordinates
-                            point_coords = grouped[batch_idx, point_idx]  # 4 values (E, x, y, z)
-                            E, x, y, z = point_coords[0].item(), point_coords[1].item(), point_coords[2].item(), point_coords[3].item()
-                            
-                            csv_data.append({
+                            point_coords = grouped[batch_idx, point_idx]
+                            row = {
                                 'batch_idx': i,  # Global batch index from data loader
                                 'point_idx': point_idx,
-                                'E': E,
-                                'x': x, 
-                                'y': y,
-                                'z': z,
-                                'px': px,
-                                'py': py,
-                                'pz': pz,
-                                'vtx_x': vtx_x,
-                                'vtx_y': vtx_y,
-                                'vtx_z': vtx_z,
-                                'charge': q,
-                                'energy': e,
                                 'seg_target': seg_target_point,
                                 'pred_assignment': pred_assignment,
                                 'confidence': confidence
-                            })
+                            }
+                            if point_coords.numel() == 3:
+                                row.update({
+                                    'eta': point_coords[0].item(),
+                                    'phi': point_coords[1].item(),
+                                    'r': point_coords[2].item(),
+                                })
+                            elif point_coords.numel() >= 4:
+                                row.update({
+                                    'E': point_coords[0].item(),
+                                    'x': point_coords[1].item(),
+                                    'y': point_coords[2].item(),
+                                    'z': point_coords[3].item(),
+                                })
+                            if reg is not None:
+                                reg_point = reg[batch_idx, point_idx]
+                                reg_names = ["px", "py", "pz", "vtx_x", "vtx_y", "vtx_z", "energy"]
+                                for ridx, name in enumerate(reg_names[:reg_point.numel()]):
+                                    row[name] = reg_point[ridx].item()
+                            csv_data.append(row)
                 
                 losses = compute_point_loss(
                     outputs=outputs,
@@ -587,7 +675,14 @@ class DownstreamTrainer():
                     no_object_class=0
                 )
 
-                avg_ARI += adjusted_rand_score(inverse_indices.squeeze().cpu().numpy(), inference_result["assignments"].squeeze().cpu().numpy())
+                metric_rows = self._batch_event_metrics(
+                    inverse_valid_list,
+                    inference_result["assignments"],
+                    mask,
+                    classes=inference_result["classes"],
+                )
+                metric_summary = summarize_event_metrics(metric_rows)
+                avg_ARI += float(metric_summary.get("ari_signal") or 0.0)
                 # Compute loss and get matching indices
                 loss = losses["loss_matched_ce"] * self.loss_matched_ce_weight + losses["loss_unmatched_ce"] * self.loss_unmatched_ce_weight + losses["loss_dice"] * self.loss_dice_weight + losses["loss_focal"] * self.loss_focal_weight
                 avg_loss += loss
@@ -640,7 +735,14 @@ class DownstreamTrainer():
         return segmentation_result, seg_target, point_feature, reg_target
 
 
-    def train(self, pretrain = True, train_from_checkpoint = False, checkpoint_path = None):
+    def train(
+        self,
+        pretrain=True,
+        train_from_checkpoint=False,
+        checkpoint_path=None,
+        optuna_trial=None,
+        metrics_callback=None,
+    ):
         ###%%%%%%%
         # Debugging
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
@@ -678,9 +780,29 @@ class DownstreamTrainer():
             print(f"✅ Mamba v2 Model Initialized (Safe Scaling for {num_layers} Layers")
                 
     
-        self.down_model = MambaAttentionHead(input_dim=self.params.embed_dim, num_layers=0,
-                                  num_embedder_layers= self.params.num_embedder_layers, 
-                                  d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_prototypes = self.params.max_gt_classes).to(self.device)
+        # Keep the training head in the same fixed latent space as inference.
+        # Only input_proj depends on the frozen backbone's feature width.
+        adapter_embed_dim = int(getattr(self.params, "adapter_embed_dim", 256))
+        self.down_model = MambaAttentionHead(
+            input_dim=self.params.embed_dim,
+            embed_dim=adapter_embed_dim,
+            num_layers=int(getattr(self.params, "num_adapter_layers", 0)),
+            num_embedder_layers=int(getattr(self.params, "num_embedder_layers", 0)),
+            d_state=int(getattr(self.params, "adapter_d_state", getattr(self.params, "d_state", 64))),
+            d_conv=int(getattr(self.params, "adapter_d_conv", getattr(self.params, "d_conv", 4))),
+            expand=int(getattr(self.params, "adapter_expand", getattr(self.params, "expand", 2))),
+            num_feature_layers=self.params.num_layers_backbone,
+            num_output_dim=adapter_embed_dim,
+            num_prototypes=int(getattr(self.params, "num_prototypes", self.params.max_gt_classes)),
+            num_heads=int(getattr(self.params, "num_heads_decoder", 4)),
+            ffn_dim=int(getattr(self.params, "ffn_dim", 512)),
+            num_self_attn_layers=int(getattr(self.params, "num_self_attn_layers", 2)),
+            softmax_mask=bool(getattr(self.params, "softmax_mask", False)),
+            do_masked_attn=bool(getattr(self.params, "do_masked_attn", True)),
+            embed_method=getattr(self.params, "embed_method", "add"),
+            pe_method=getattr(self.params, "pe_method", "nerf"),
+            dropout=getattr(self.params, "downstream_dropout", 0.0),
+        ).to(self.device)
         
         initialize_mamba2(self.down_model, 3, num_residuals=1)
 
@@ -689,15 +811,18 @@ class DownstreamTrainer():
 
         self.down_optimizer = optim.AdamW(self.down_model.parameters(), 
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
-                                         weight_decay=0.0001) 
+                                         weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001))) 
         
-        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=1.0)
+        self.grad_clip_value = float(getattr(self.params, "grad_clip_value", 1.0))
+        torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=self.grad_clip_value)
 
+        scheduler_steps = int(getattr(self.params, "scheduler_first_cycle_steps", getattr(self.params, "first_cycle_steps", self.params.max_epochs)))
+        warmup_steps = min(int(getattr(self.params, "warmup_steps", 20)), max(0, scheduler_steps - 1))
         self.down_scheduler = CosineAnnealingWarmupRestarts(self.down_optimizer,
-                                          first_cycle_steps=self.params.max_epochs,
+                                          first_cycle_steps=scheduler_steps,
                                           max_lr=self.params.max_lr,
                                           min_lr=self.params.min_lr,
-                                          warmup_steps=self.params.warmup_steps)
+                                          warmup_steps=warmup_steps)
         # Initialize matcher ------------------------------------------------------
         self.matcher = PointHungarianMatcher(
             cost_class=self.params.loss_matched_ce_weight,
@@ -727,29 +852,69 @@ class DownstreamTrainer():
             self.down_model.eval()
             print(f"✅ Model loaded from {checkpoint_path}")
 
-        log_file_path = os.path.join(self.params.checkpoint_dir, self.params.log_file_name)
+        os.makedirs(self.params.checkpoint_dir, exist_ok=True)
+        log_file_path = os.path.abspath(os.path.join(self.params.checkpoint_dir, self.params.log_file_name))
+        self.params["training_log_path"] = log_file_path
 
-        checkpoint_file_name = self.params.log_file_name.split('.')[0] + '_checkpoint.pth'
+        checkpoint_file_name = getattr(
+            self.params,
+            "checkpoint_file_name",
+            self.params.log_file_name.split('.')[0] + '_checkpoint.pth',
+        )
+        self.params["trained_checkpoint_path"] = os.path.abspath(
+            os.path.join(self.params.checkpoint_dir, checkpoint_file_name)
+        )
         
         if self.log_to_screen:
             print("Starting training loop...")
 
+        validation_ari_mode = str(getattr(self.params, "validation_ari_mode", "signal"))
+        if validation_ari_mode not in {"signal", "inclusive"}:
+            raise ValueError("validation_ari_mode must be 'signal' or 'inclusive'")
+        validation_ari_label = f"ARI_{validation_ari_mode}_option2"
+
         # Always create log file and write header
         with open(log_file_path, "w") as f:
-            f.write("Epoch\tTrain_Loss\tVal_Loss\tARI\tARI_2\tmatched_CE\tUnmatched_CE\tDice\tFocal\tTime\n")
+            if getattr(self.params, "max_optimizer_steps", None) is None:
+                f.write(
+                    "Epoch\tTrain_Loss\tVal_Loss\tARI_"
+                    f"{validation_ari_mode}_option1\t{validation_ari_label}"
+                    "\tmatched_CE\tUnmatched_CE\tDice\tFocal\tTime\n"
+                )
+            else:
+                f.write(
+                    "Step\tEpoch\tTrain_Loss\tVal_Loss\tARI_"
+                    f"{validation_ari_mode}_option1\t{validation_ari_label}\tLR\tTime\n"
+                )
      
         self.best_loss = np.inf
         self.best_ARI = 0
+        self.best_step = None
+        self.best_epoch = None
+        self.global_step = 0
         self.down_results = {'epoch': 0, 'train': [], 'val': [], 'ARI': [], 'ARI_2': [],  'loss_matched_ce': [], 'loss_unmatched_ce': [], 'loss_dice': [], 'loss_focal': []}
         
-        #early stopping
-        self.patience = 15
-        self.min_delta = 1e-4
+        # early stopping
+        self.patience, self.min_delta, self.warmup_steps = get_early_stopping_config(
+            self.params,
+            default_patience=15,
+            default_min_delta=1e-4,
+            default_warmup_steps=60,
+        )
         self.stagnation_counter = 0
-        self.warmup_steps = 60
+        self._validation_history = None
 
-        self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
-        self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
+        self._load_loss_reweight_stats()
+
+        if getattr(self.params, "max_optimizer_steps", None) is not None:
+            self._train_by_optimizer_step(
+                pretrain=pretrain,
+                log_file_path=log_file_path,
+                checkpoint_file_name=checkpoint_file_name,
+                optuna_trial=optuna_trial,
+                metrics_callback=metrics_callback,
+            )
+            return
         
         for epoch in range(self.startEpoch, self.params.max_epochs):
             self.down_results['epoch'] = epoch
@@ -791,14 +956,24 @@ class DownstreamTrainer():
             if self.log_to_screen:
                 print(f"Epoch {epoch}/{self.params.max_epochs-1} | Time: {epoch_time:.2f}s")
                 print(f"  Train Loss: {train_epoch_loss:.6f} | Val Loss: {val_epoch_loss:.6f}")
-                print(f"  ARI: {avg_ari:.6f} | ARI_2: {avg_ari_2:.6f}")
+                print(
+                    f"  ARI ({validation_ari_mode}, option 1): {avg_ari:.6f} | "
+                    f"ARI ({validation_ari_mode}, option 2): {avg_ari_2:.6f}"
+                )
                 print(f"  Matched CE: {avg_matched_ce:.6f} | Unmatched CE: {avg_unmatched_ce:.6f}")
                 print(f"  Dice: {avg_dice:.6f} | Focal: {avg_focal:.6f}")
                 print(f"  Best Loss: {self.best_loss:.6f} | Best ARI: {self.best_ARI:.6f}")
                 print("-" * 80)
             #if (epoch_loss < self.best_loss) or (avg_ari_2 > self.best_ARI):
-            if (epoch_loss < (self.best_loss - self.min_delta)):
+            improved = (avg_ari_2 > self.best_ARI + self.min_delta) or (
+                abs(avg_ari_2 - self.best_ARI) <= self.min_delta
+                and epoch_loss < (self.best_loss - self.min_delta)
+            )
+            if improved:
                 self.best_loss = epoch_loss
+                self.best_ARI = avg_ari_2
+                self.best_epoch = epoch
+                self.best_step = self.global_step
                 self._save_checkpoint(
                     filename=checkpoint_file_name,
                     epoch=epoch,
@@ -806,23 +981,332 @@ class DownstreamTrainer():
                     loss=epoch_loss
                 )
                 self.stagnation_counter = 0
-            elif (avg_ari_2 > self.best_ARI):
-                self.best_ARI = avg_ari_2
-                self._save_checkpoint(
-                    filename=checkpoint_file_name,
-                    epoch=epoch,
-                    is_best=True,
-                    loss=epoch_loss
-                )
             elif epoch>= self.warmup_steps:
                 self.stagnation_counter += 1
-                if self.stagnation_counter >= self.patience:
-                    print(f"Early stopping triggered at epoch {epoch} due to no improvement in validation loss for {self.patience} epochs.")
-                    print(f"Best validation loss: {self.best_loss:.4f}, current loss: {epoch_loss:.4f}")
-                    break
+            self._persist_validation(epoch, self.global_step, epoch_loss, avg_ari_2, improved, train_epoch_loss)
+            if not improved and epoch >= self.warmup_steps and self.stagnation_counter >= self.patience:
+                print(f"Early stopping triggered at epoch {epoch} after {self.patience} validations without improvement.")
+                break
             self.down_scheduler.step()
+            if metrics_callback is not None:
+                metrics_callback({
+                    "step": self.global_step,
+                    "epoch": epoch,
+                    "train/loss": float(train_epoch_loss),
+                    "val/loss": float(val_epoch_loss),
+                    "val/ari": float(avg_ari_2),
+                    f"val/ari_{validation_ari_mode}_option1": float(avg_ari),
+                    f"val/ari_{validation_ari_mode}_option2": float(avg_ari_2),
+                    "lr": float(self._current_lr()),
+                    "best/val_ari": float(self.best_ARI),
+                    "best/val_loss": float(self.best_loss),
+                    "best/step": self.best_step,
+                    **self._validation_metric_callback(),
+                })
 
             
+
+    def _current_lr(self):
+        return self.down_optimizer.param_groups[0]["lr"]
+
+    def _validation_metric_callback(self):
+        return {
+            f"val/option{option}/{metric}": value
+            for option, summary in getattr(self, "_last_validation_metrics", {}).items()
+            for metric, value in summary.items()
+        }
+
+    def _persist_validation(self, epoch, step, val_loss, val_ari, improved, train_loss=None):
+        if getattr(self, "world_rank", 0) != 0:
+            return
+        if getattr(self, "_validation_history", None) is None:
+            params = self.params
+            metadata = {
+                "training_log": params.training_log_path,
+                "model_config": getattr(params, "model_version", None),
+                "model_yaml": getattr(params, "_yaml_filename", None),
+                "pretrained_checkpoint": getattr(params, "pretrained_ckpt", None),
+                "data_root_test": getattr(params, "data_root_test", getattr(params, "data_root", None)),
+                "seed": getattr(params, "seed", None),
+                "max_validation_events": getattr(params, "max_validation_events", None),
+                "max_val_batches": getattr(params, "max_val_batches", None),
+                "max_optimizer_steps": getattr(params, "max_optimizer_steps", None),
+                "validation_split_role": "model_selection",
+                "world_size": getattr(self, "world_size", 1),
+            }
+            self._validation_history = ValidationHistory(params.training_log_path, metadata)
+            params.validation_history_dir = str(self._validation_history.directory)
+            params.validation_metrics_jsonl = str(self._validation_history.jsonl_path)
+            params.validation_metrics_csv = str(self._validation_history.csv_path)
+            print(f"Validation history: {self._validation_history.directory}")
+        summaries = getattr(self, "_last_validation_metrics", {})
+        record = {
+            "step": int(step), "epoch": int(epoch),
+            "lr": float(self._current_lr()), "train_loss": train_loss, "val_loss": val_loss,
+            "val_loss_event_mean": getattr(self, "_last_validation_loss_event_mean", None),
+            "selection_metric": validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal")),
+            "selection_option": 2, "selection_score": val_ari,
+            "selection_aggregation": "mean_of_batch_event_means",
+            "selected_best": bool(improved),
+            "assignment_threshold": float(getattr(self.params, "assignment_threshold", 0.0)),
+            "match_iou_threshold": float(getattr(self.params, "match_iou_threshold", 0.5)),
+            "match_min_purity": float(getattr(self.params, "match_min_purity", 0.5)),
+            "match_min_efficiency": float(getattr(self.params, "match_min_efficiency", 0.5)),
+        }
+        for option in (1, 2):
+            summary = summaries.get(option, EventMetricAccumulator().summary())
+            record.update({f"option{option}_{key}": value for key, value in summary.items()})
+        record.update({f"val_{key}": value for key, value in getattr(self, "_last_validation_loss_components", {}).items()})
+
+        def save_snapshot(path, validation_record):
+            payload = self._checkpoint_payload(epoch, val_loss, inference_only=True)
+            payload["validation_record"] = validation_record
+            # Unique history directory and exclusive creation prevent replacement.
+            with path.open("xb") as stream:
+                torch.save(payload, stream)
+
+        self._validation_history.append(
+            record,
+            checkpoint_writer=save_snapshot if bool(getattr(self.params, "save_validation_checkpoints", True)) else None,
+        )
+
+    def _compute_batch_loss(self, batch, pretrain=False, train=False):
+        grouped, label, _knearest, _reg = self._unpack_batch(batch)
+        b, c = grouped.size(0), grouped.size(-1)
+        labels = label.to(self.device)
+        grouped = grouped.reshape(b, -1, c).to(self.device)
+        mask = grouped[..., 0] != -100
+        targets, inverse_valid_list = self._build_track_targets(labels, mask)
+        self._last_labels_for_metrics = labels
+
+        if pretrain:
+            if train and self.use_lora:
+                _, pre_embed, _ = self.model(grouped, return_z=True)
+            else:
+                with torch.no_grad():
+                    _, pre_embed, _ = self.model(grouped, return_z=True)
+            feature = torch.stack(pre_embed)
+            pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+        else:
+            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+
+        outputs = {
+            "pred_probs": pred_dict["class_probs"],
+            "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1),
+        }
+        losses = compute_point_loss(
+            outputs=outputs,
+            targets=targets,
+            mask=mask,
+            matcher=self.matcher,
+            no_object_class=0,
+        )
+        loss = (
+            losses["loss_matched_ce"] * self.loss_matched_ce_weight
+            + losses["loss_unmatched_ce"] * self.loss_unmatched_ce_weight
+            + losses["loss_dice"] * self.loss_dice_weight
+            + losses["loss_focal"] * self.loss_focal_weight
+        )
+        for aux_dict in pred_dict.get("aux_list", []):
+            aux_outputs = {
+                "pred_probs": aux_dict["class_probs"],
+                "pred_masks": aux_dict["mask_probs"].permute(0, 2, 1),
+            }
+            losses_aux = compute_point_loss(
+                outputs=aux_outputs,
+                targets=targets,
+                mask=mask,
+                matcher=self.matcher,
+                no_object_class=0,
+            )
+            loss = loss + (
+                losses_aux["loss_matched_ce"] * self.loss_matched_ce_weight
+                + losses_aux["loss_unmatched_ce"] * self.loss_unmatched_ce_weight
+                + losses_aux["loss_dice"] * self.loss_dice_weight
+                + losses_aux["loss_focal"] * self.loss_focal_weight
+            )
+
+        inference_result = assign_points_to_masks(
+            outputs,
+            option=int(getattr(self.params, "assignment_option", 2)),
+            threshold=float(getattr(self.params, "assignment_threshold", 0.0)),
+        )
+        metric_rows = self._batch_event_metrics(
+            inverse_valid_list,
+            inference_result["assignments"],
+            mask,
+            classes=inference_result["classes"],
+        )
+        metrics = summarize_event_metrics(metric_rows)
+        return loss, losses, metrics
+
+    def _record_validation_result(
+        self,
+        val_loss,
+        val_ari,
+        checkpoint_file_name,
+        epoch,
+        step,
+        optuna_trial=None,
+        train_loss=None,
+    ):
+        has_finite_validation = np.isfinite(val_loss) and np.isfinite(val_ari)
+        improved = has_finite_validation and (
+            self.best_step is None
+            or val_ari > self.best_ARI + self.min_delta
+            or (
+                abs(val_ari - self.best_ARI) <= self.min_delta
+                and val_loss < (self.best_loss - self.min_delta)
+            )
+        )
+        if improved:
+            self.best_loss = val_loss
+            self.best_ARI = val_ari
+            self.best_epoch = epoch
+            self.best_step = step
+            self._save_checkpoint(
+                filename=checkpoint_file_name,
+                epoch=epoch,
+                is_best=True,
+                loss=val_loss,
+            )
+            self.stagnation_counter = 0
+        elif step >= self.early_stopping_min_steps:
+            self.stagnation_counter += 1
+
+        self._persist_validation(epoch, step, val_loss, val_ari, improved, train_loss)
+
+        if optuna_trial is not None:
+            optuna_trial.report(float(val_ari), int(step))
+            if step >= self.early_stopping_min_steps and optuna_trial.should_prune():
+                try:
+                    import optuna
+                except ImportError as exc:
+                    raise RuntimeError("Optuna pruning requested, but optuna is not installed") from exc
+                raise optuna.TrialPruned()
+
+    def _train_by_optimizer_step(
+        self,
+        pretrain,
+        log_file_path,
+        checkpoint_file_name,
+        optuna_trial=None,
+        metrics_callback=None,
+    ):
+        max_optimizer_steps = int(self.params.max_optimizer_steps)
+        val_interval_steps = int(getattr(self.params, "val_interval_steps", max_optimizer_steps))
+        if val_interval_steps < 1:
+            raise ValueError("val_interval_steps must be >= 1")
+        self.early_stopping_min_steps = int(getattr(
+            self.params,
+            "early_stopping_min_steps",
+            getattr(self.params, "early_stopping_warmup_steps", 0),
+        ))
+        max_epochs = int(getattr(self.params, "max_epochs", 10**9))
+        validation_ari_mode = str(getattr(self.params, "validation_ari_mode", "signal"))
+
+        for epoch in range(self.startEpoch, max_epochs):
+            self.down_results['epoch'] = epoch
+            self.down_results['train'] = []
+            self.down_results['val'] = []
+            self.down_results['ARI'] = []
+            self.down_results['ARI_2'] = []
+            self.epoch = epoch
+            if dist.is_initialized():
+                self.train_sampler.set_epoch(epoch)
+            self.model.train() if self.use_lora else self.model.eval()
+            self.down_model.train()
+            self.starttime = time.time()
+            max_train_batches = getattr(self.params, "max_train_batches", None)
+            for i, batch in enumerate(tqdm(self.train_data_loader)):
+                if max_train_batches is not None and i >= int(max_train_batches):
+                    break
+                if self.global_step >= max_optimizer_steps:
+                    break
+
+                if self.use_lora:
+                    self.lora_optimizer.zero_grad()
+                self.down_optimizer.zero_grad()
+                loss, _losses, _metrics = self._compute_batch_loss(
+                    batch,
+                    pretrain=pretrain,
+                    train=True,
+                )
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.down_optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.down_model.parameters(),
+                    max_norm=self.grad_clip_value,
+                    norm_type=2.0,
+                )
+                self.scaler.step(self.down_optimizer)
+                if self.use_lora:
+                    self.scaler.step(self.lora_optimizer)
+                self.scaler.update()
+                self.down_scheduler.step()
+                self.global_step += 1
+                self.iters += 1
+                self.down_results['train'].append(loss.item())
+
+                should_validate = (
+                    self.global_step % val_interval_steps == 0
+                    or self.global_step >= max_optimizer_steps
+                )
+                if should_validate:
+                    val_loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
+                    # Both columns use validation_ari_mode; their suffixes
+                    # identify assignment policies, not signal/inclusive ARI.
+                    val_ari_option1 = float(np.mean(self.down_results["ARI"])) if self.down_results["ARI"] else 0.0
+                    val_ari_option2 = float(np.mean(self.down_results["ARI_2"])) if self.down_results["ARI_2"] else 0.0
+                    train_loss = float(np.mean(self.down_results["train"]))
+                    elapsed = time.time() - self.starttime
+                    with open(log_file_path, "a") as f:
+                        f.write(
+                            f"{self.global_step}\t{epoch}\t{train_loss:.8f}\t"
+                            f"{val_loss:.8f}\t{val_ari_option1:.8f}\t{val_ari_option2:.8f}\t"
+                            f"{self._current_lr():.8e}\t{elapsed:.2f}\n"
+                        )
+                    self._record_validation_result(
+                        val_loss,
+                        val_ari_option2,
+                        checkpoint_file_name,
+                        epoch=epoch,
+                        step=self.global_step,
+                        optuna_trial=optuna_trial,
+                        train_loss=train_loss,
+                    )
+                    if metrics_callback is not None:
+                        metrics_callback({
+                            "step": self.global_step,
+                            "epoch": epoch,
+                            "train/loss": train_loss,
+                            "val/loss": float(val_loss),
+                            "val/ari": val_ari_option2,
+                            f"val/ari_{validation_ari_mode}_option1": val_ari_option1,
+                            f"val/ari_{validation_ari_mode}_option2": val_ari_option2,
+                            "lr": float(self._current_lr()),
+                            "best/val_ari": float(self.best_ARI),
+                            "best/val_loss": float(self.best_loss),
+                            "best/step": self.best_step,
+                            **self._validation_metric_callback(),
+                        })
+                    if self.stagnation_counter >= self.patience:
+                        print(
+                            "Early stopping triggered at step "
+                            f"{self.global_step} after {self.patience} validation checks without improvement."
+                        )
+                        return
+                    self.down_results['train'] = []
+                    self.down_results['val'] = []
+                    self.down_results['ARI'] = []
+                    self.down_results['ARI_2'] = []
+                    self.starttime = time.time()
+
+            if self.global_step >= max_optimizer_steps:
+                return
+
+        print(f"Reached max_epochs={max_epochs} before max_optimizer_steps={max_optimizer_steps}.")
+
 
     def downstream_end_to_end_one_epoch(self, pretrain = False):
         tr_time = 0
@@ -835,8 +1319,10 @@ class DownstreamTrainer():
         # Buffers for logs
         tr_start = time.time()
         start_idx = 0
-        for i, (grouped, label, knearest) in enumerate(tqdm(self.train_data_loader)):
-            if i> 10000:
+        for i, batch in enumerate(tqdm(self.train_data_loader)):
+            grouped, label, knearest, _ = self._unpack_batch(batch)
+            max_train_batches = getattr(self.params, "max_train_batches", 10001)
+            if max_train_batches is not None and i >= int(max_train_batches):
                 break
             #only work for b ==1 now
             self.iters += 1
@@ -845,30 +1331,8 @@ class DownstreamTrainer():
             grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
             mask = grouped[..., 0] != -100 # B X N
 
-            targets = []
-            for batch_idx in range(b):
-                # Get labels for this sample
-                sample_labels = labels[batch_idx]
-                
-                # Find unique labels for this specific sample
-                unique_labels, inverse_indices = torch.unique(
-                    sample_labels, 
-                    sorted=True, 
-                    return_inverse=True
-                )
-                n_gt_classes = unique_labels.numel()
-                
-                #if n_gt_classes > self.params.max_gt_classes:
-                #    continue
-                    
-                # Create one-hot encoding for this sample
-                sample_one_hot = F.one_hot(inverse_indices, num_classes=n_gt_classes).float()
-                
-                # Convert to dictionary format
-                targets.append({
-                    "masks": sample_one_hot.permute(1, 0).to(self.device),  # (n_gt_classes, N)
-                    "labels": torch.ones(n_gt_classes, dtype=torch.long).to(self.device)  # (n_gt_classes,)
-                })
+            targets, _ = self._build_track_targets(labels, mask)
+            self._last_labels_for_metrics = labels
             
 
             if self.use_lora:
@@ -888,7 +1352,7 @@ class DownstreamTrainer():
                     pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None)
+                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
                     #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
                 #softmax it to the prob
                 #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
@@ -948,6 +1412,7 @@ class DownstreamTrainer():
             if self.use_lora:
                 self.scaler.step(self.lora_optimizer)
             self.scaler.update()
+            self.global_step += 1
 
             self.down_results['train'].append(loss.item())
 
@@ -958,42 +1423,54 @@ class DownstreamTrainer():
         total_samples = 0
         amp_enabled = torch.cuda.is_available() and self.use_amp
 
+        max_validation_events = getattr(self.params, "max_validation_events", None)
+        if max_validation_events is not None:
+            max_validation_events = int(max_validation_events)
+            if max_validation_events < 1:
+                raise ValueError("max_validation_events must be positive or None")
+        validated_events = 0
+        accumulators = {option: EventMetricAccumulator() for option in (1, 2)}
+        loss_totals = {key: 0.0 for key in ("loss_matched_ce", "loss_unmatched_ce", "loss_dice", "loss_focal")}
+        total_event_loss = 0.0
+        self._last_validation_metrics = {}
+
         with torch.no_grad():  # Disable gradient calculation
-            for i, (grouped, label, knearest) in enumerate(tqdm(self.val_data_loader)):
-                #validate for 500 samples
-                if i > 1000:
+            for i, batch in enumerate(tqdm(self.val_data_loader)):
+                if (
+                    max_validation_events is not None
+                    and validated_events >= max_validation_events
+                ):
+                    break
+                grouped, label, knearest, _ = self._unpack_batch(batch)
+                max_val_batches = getattr(self.params, "max_val_batches", 1001)
+                if max_val_batches is not None and i >= int(max_val_batches):
                     break
                 b, c = grouped.size(0), grouped.size(-1)
+                if max_validation_events is not None:
+                    remaining = max_validation_events - validated_events
+                    if remaining < b:
+                        # All collated fields are batch-major tensors.  Slice
+                        # the final partial batch before its forward pass so
+                        # validation is an exact event count, independent of
+                        # batch size.
+                        if isinstance(batch, dict):
+                            batch = {
+                                key: (value[:remaining] if torch.is_tensor(value) and value.ndim > 0 and value.size(0) == b else value)
+                                for key, value in batch.items()
+                            }
+                        else:
+                            batch = tuple(
+                                value[:remaining] if torch.is_tensor(value) and value.ndim > 0 and value.size(0) == b else value
+                                for value in batch
+                            )
+                        grouped, label, knearest, _ = self._unpack_batch(batch)
+                        b, c = grouped.size(0), grouped.size(-1)
                 labels = label.to(self.device)
                 grouped = grouped.reshape(b, -1, c).to(self.device)  # B X N X C
                 mask = grouped[..., 0] != -100  # B X N
                 # One-hot encode the labels using the inverse mapping
-                targets = []
-                inverse_indices_list = []
-                for batch_idx in range(b):
-                    # Get labels for this sample
-                    sample_labels = labels[batch_idx]
-                    
-                    # Find unique labels for this specific sample
-                    unique_labels, inverse_indices = torch.unique(
-                        sample_labels, 
-                        sorted=True, 
-                        return_inverse=True
-                    )
-                    inverse_indices_list.append(inverse_indices)
-                    n_gt_classes = unique_labels.numel()
-                    
-                    #if n_gt_classes > self.params.max_gt_classes:
-                    #    continue
-                        
-                    # Create one-hot encoding for this sample
-                    sample_one_hot = F.one_hot(inverse_indices, num_classes=n_gt_classes).float()
-                    
-                    # Convert to dictionary format
-                    targets.append({
-                        "masks": sample_one_hot.permute(1, 0).to(self.device),  # (n_gt_classes, N)
-                        "labels": torch.ones(n_gt_classes, dtype=torch.long).to(self.device)  # (n_gt_classes,)
-                    })
+                targets, inverse_valid_list = self._build_track_targets(labels, mask)
+                self._last_labels_for_metrics = labels
 
                 with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
                     if pretrain:
@@ -1004,7 +1481,7 @@ class DownstreamTrainer():
                         pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
                         #pred_logit = self.down_model(grouped, feature, pretrain=pretrain) #B X N X C_classes
                     else:
-                        pred_dict = self.down_model(grouped, feature=None)
+                        pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
                         #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
                     #softmax it to the prob
                     #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
@@ -1023,20 +1500,44 @@ class DownstreamTrainer():
                     matcher=self.matcher,
                     no_object_class=0
                 )
-                inference_result = assign_points_to_masks(outputs, option=1)
+                # Checkpoint selection must use the same assignment policy as
+                # final evaluation.  In particular, assignment_threshold is
+                # applied *after* the query masks/classes are predicted: it
+                # turns low-confidence point assignments into background.  If
+                # validation silently used 0.0 here while evaluation reported
+                # (for example) 0.2, "best checkpoint" and reported metrics
+                # would describe different operating points.
+                assignment_threshold = float(
+                    getattr(self.params, "assignment_threshold", 0.0)
+                )
+                inference_result = assign_points_to_masks(
+                    outputs,
+                    option=1,
+                    threshold=assignment_threshold,
+                )
                 segmentation_result = inference_result["assignments"]
                 
-                infrence_result_opt2 = assign_points_to_masks(outputs, option=2)
+                infrence_result_opt2 = assign_points_to_masks(
+                    outputs,
+                    option=2,
+                    threshold=assignment_threshold,
+                )
                 segmentation_result_opt2 = infrence_result_opt2["assignments"]
                 #calculate adjust rand score between segmentation result and label
                 
-                for j in range(b):
-                    adjusted_rand_index = adjusted_rand_score(inverse_indices_list[j].cpu().numpy(), segmentation_result[j].cpu().numpy())
-                    adjusted_rand_index_opt2 = adjusted_rand_score(inverse_indices_list[j].cpu().numpy(), segmentation_result_opt2[j].cpu().numpy())
-                    
-
-                adjusted_rand_index /= b
-                adjusted_rand_index_opt2 /= b
+                ari_metric = validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal"))
+                batch_ari = {}
+                for option, assignments in ((1, segmentation_result), (2, segmentation_result_opt2)):
+                    # Preserve the existing assignment-policy diagnostic and
+                    # checkpoint-selection aggregation; accumulate full event
+                    # metrics separately, without re-running inference/matching.
+                    rows = self._batch_event_metrics(inverse_valid_list, assignments, mask)
+                    scores = [row[ari_metric] for row in rows if row.get(ari_metric) is not None]
+                    batch_ari[option] = float(np.mean(scores)) if scores else 0.0
+                    for row in rows:
+                        accumulators[option].add(row)
+                adjusted_rand_index = batch_ari[1]
+                adjusted_rand_index_opt2 = batch_ari[2]
                 #print(adjusted_rand_index)
                 # Compute loss and get matching indices
                 loss = losses["loss_matched_ce"] * self.loss_matched_ce_weight + losses["loss_unmatched_ce"] * self.loss_unmatched_ce_weight + losses["loss_dice"] * self.loss_dice_weight + losses["loss_focal"] * self.loss_focal_weight
@@ -1051,11 +1552,20 @@ class DownstreamTrainer():
                 self.down_results['loss_unmatched_ce'].append(losses["loss_unmatched_ce"].item())
                 self.down_results['loss_dice'].append(losses["loss_dice"].item())
                 self.down_results['loss_focal'].append(losses["loss_focal"].item())
+                validated_events += b
+                total_event_loss += float(loss.item()) * b
+                for key in loss_totals:
+                    loss_totals[key] += float(losses[key].item()) * b
 
 
 
         # Final validation metrics
         avg_loss = np.mean(self.down_results['val'])
+        self._last_validation_metrics = {option: accumulator.summary() for option, accumulator in accumulators.items()}
+        self._last_validation_loss_components = {
+            key: value / validated_events if validated_events else None for key, value in loss_totals.items()
+        }
+        self._last_validation_loss_event_mean = total_event_loss / validated_events if validated_events else None
 
         # Print validation results
         if self.log_to_screen:
@@ -1063,16 +1573,25 @@ class DownstreamTrainer():
 
         return avg_loss
 
-    def _save_checkpoint(self, filename, epoch, is_best, loss):
+    def _checkpoint_payload(self, epoch, loss, inference_only=False):
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.down_model.state_dict(),
-            'optimizer_state_dict': self.down_optimizer.state_dict(),
-            'scheduler_state_dict': self.down_scheduler.state_dict(),
             'best_loss': self.best_loss,
+            'best_ARI': getattr(self, "best_ARI", None),
+            'best_step': getattr(self, "best_step", None),
+            'best_epoch': getattr(self, "best_epoch", None),
+            'global_step': getattr(self, "global_step", None),
             'current_loss': loss,
+            'track_target_mode': getattr(self.params, "track_target_mode", SIGNAL_ONLY),
+            'validation_ari_mode': getattr(self.params, "validation_ari_mode", "signal"),
             'params': vars(self.params)  # Save all hyperparameters
         }
+        checkpoint['inference_only'] = inference_only
+        checkpoint['validation_metrics'] = getattr(self, '_last_validation_metrics', {})
+        if not inference_only:
+            checkpoint['optimizer_state_dict'] = self.down_optimizer.state_dict()
+            checkpoint['scheduler_state_dict'] = self.down_scheduler.state_dict()
 
         # Handle DistributedDataParallel wrapper
         if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
@@ -1082,7 +1601,13 @@ class DownstreamTrainer():
             lora_state = {k: v for k, v in self.model.state_dict().items()
                           if 'lora_A' in k or 'lora_B' in k}
             checkpoint['lora_state_dict'] = lora_state
-            checkpoint['lora_optimizer_state_dict'] = self.lora_optimizer.state_dict()
+            if not inference_only:
+                checkpoint['lora_optimizer_state_dict'] = self.lora_optimizer.state_dict()
+
+        return checkpoint
+
+    def _save_checkpoint(self, filename, epoch, is_best, loss):
+        checkpoint = self._checkpoint_payload(epoch, loss)
 
         torch.save(checkpoint, os.path.join(self.params.checkpoint_dir, filename))
 
@@ -1101,6 +1626,9 @@ class DownstreamTrainer():
 
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
+        if checkpoint.get('inference_only', False) and not inference:
+            raise ValueError("Validation snapshots are for inference/selection; resume training from a full checkpoint.")
 
         # 3. Handle DDP keys
         state_dict = checkpoint['model_state_dict']
@@ -1127,6 +1655,10 @@ class DownstreamTrainer():
 
             self.startEpoch = checkpoint.get('epoch', 0) + 1
             self.best_loss = checkpoint.get('best_loss', float('inf'))
+            self.best_ARI = checkpoint.get('best_ARI', 0) or 0
+            self.best_step = checkpoint.get('best_step', None)
+            self.best_epoch = checkpoint.get('best_epoch', None)
+            self.global_step = checkpoint.get('global_step', 0) or 0
 
         # 6. Log info
         if self.log_to_screen:
@@ -1159,8 +1691,13 @@ class DownstreamTrainer():
 
     
             
-    def restore_checkpoint(self, checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location='cuda:{}'.format(self.device), weights_only=False)
+    def restore_checkpoint(self, checkpoint_path, load_optimizer_state=True):
+        if isinstance(self.device, int):
+            device_str = f'cuda:{self.device}' if torch.cuda.is_available() else 'cpu'
+        else:
+            device_str = str(self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}
         #try:
             #self.model.load_state_dict(checkpoint['model_state'])
@@ -1172,12 +1709,14 @@ class DownstreamTrainer():
         #        new_state_dict[name] = val 
         #    self.model.load_state_dict(new_state_dict)
 
-        self.iters = checkpoint['iters']
-        self.startEpoch = checkpoint['epoch']+1 if self.iters % len(self.train_data_loader) == 0 else checkpoint['epoch']
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if self.scheduler is not None:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-
-
-
+        if load_optimizer_state:
+            self.iters = checkpoint['iters']
+            self.startEpoch = checkpoint['epoch']+1 if self.iters % len(self.train_data_loader) == 0 else checkpoint['epoch']
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if self.scheduler is not None:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        else:
+            self.iters = 0
+            self.startEpoch = 0
+            if self.world_rank == 0:
+                print("✅ Loaded pretrained weights only (optimizer state not loaded)")

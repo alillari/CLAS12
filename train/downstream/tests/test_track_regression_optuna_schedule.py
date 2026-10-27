@@ -1,0 +1,175 @@
+import sys
+import unittest
+from argparse import Namespace
+from pathlib import Path
+import json
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+
+from train.downstream.tuning.run_track_regression_optuna import (
+    cosine_hold_search_range,
+    fixed_overrides,
+    parse_trial_seeds,
+    scheduler_first_cycle_steps,
+    validate_training_controls,
+    validate_effective_inputs,
+    validate_study_contract,
+    study_contract,
+)
+from train.downstream.tuning.track_regression_search_space import (
+    suggest_adapteronly_optimizer_params,
+)
+
+
+def args_for_schedule(max_steps=30000, n_cycles=1):
+    return Namespace(
+        max_optimizer_steps=max_steps,
+        n_cycles=n_cycles,
+        scheduler_first_cycle_steps=None,
+        val_interval_steps=1000,
+        early_stopping_min_steps=3000,
+        early_stopping_patience=20,
+        max_val_batches=500,
+        max_train_batches=None,
+        num_data_workers=None,
+        data_root=None,
+        data_root_test=None,
+        stat_dir=None,
+        regression_target_stats=None,
+        eventnumber=100000,
+        train_batch_size=128,
+        n_trials=1,
+        scheduler_mode="cosine_restarts",
+        anneal_steps_min=None,
+        anneal_steps_max=None,
+        anneal_steps_step=None,
+    )
+
+
+class TrackRegressionOptunaScheduleTest(unittest.TestCase):
+    def test_cycle_lengths_are_exact_partitions(self):
+        self.assertEqual(scheduler_first_cycle_steps(30000, 1), 30000)
+        self.assertEqual(scheduler_first_cycle_steps(30000, 2), 15000)
+        self.assertEqual(scheduler_first_cycle_steps(30000, 3), 10000)
+
+    def test_non_integral_cycle_partition_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "divisible"):
+            scheduler_first_cycle_steps(30000, 7)
+
+    def test_fixed_overrides_use_requested_cycle_count(self):
+        overrides = fixed_overrides(args_for_schedule(n_cycles=3))
+        self.assertEqual(overrides["max_optimizer_steps"], 30000)
+        self.assertEqual(overrides["scheduler_first_cycle_steps"], 10000)
+
+    def test_explicit_seven_k_cycle_is_allowed(self):
+        args = args_for_schedule(n_cycles=None)
+        args.scheduler_first_cycle_steps = 7000
+        overrides = fixed_overrides(args)
+        self.assertEqual(overrides["scheduler_first_cycle_steps"], 7000)
+
+    def test_cosine_hold_adds_no_restart_period(self):
+        args = args_for_schedule(max_steps=20000, n_cycles=None)
+        args.scheduler_mode = "cosine_hold"
+        args.anneal_steps_min = 5000
+        args.anneal_steps_max = 16000
+        args.anneal_steps_step = 1000
+        validate_training_controls(args)
+        self.assertEqual(cosine_hold_search_range(args), (5000, 16000, 1000))
+        overrides = fixed_overrides(args)
+        self.assertEqual(overrides["scheduler_mode"], "cosine_hold")
+        self.assertNotIn("scheduler_first_cycle_steps", overrides)
+
+    def test_cosine_hold_rejects_restart_controls(self):
+        args = args_for_schedule(max_steps=20000, n_cycles=2)
+        args.scheduler_mode = "cosine_hold"
+        args.anneal_steps_min = 5000
+        args.anneal_steps_max = 16000
+        args.anneal_steps_step = 1000
+        with self.assertRaisesRegex(ValueError, "cannot use --n-cycles"):
+            validate_training_controls(args)
+
+    def test_cosine_hold_search_space_samples_anneal_endpoint(self):
+        class Trial:
+            def suggest_float(self, _name, low, _high, **_kwargs):
+                return low
+
+            def suggest_int(self, _name, low, _high, **_kwargs):
+                return low
+
+        params = suggest_adapteronly_optimizer_params(
+            Trial(),
+            scheduler_mode="cosine_hold",
+            anneal_steps_min=5000,
+            anneal_steps_max=16000,
+            anneal_steps_step=1000,
+        )
+        self.assertEqual(params["scheduler_anneal_steps"], 5000)
+
+    def test_trial_seeds_are_nonempty_and_deduplicated(self):
+        self.assertEqual(parse_trial_seeds("11,17,11,23"), (11, 17, 23))
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            parse_trial_seeds(" , ")
+
+    def test_study_contract_rejects_incompatible_resume(self):
+        class Study:
+            def __init__(self):
+                self.user_attrs = {}
+                self.trials = []
+
+            def set_user_attr(self, key, value):
+                self.user_attrs[key] = value
+
+        study = Study()
+        contract = {"n_cycles": 1, "trial_seeds": [11, 17, 23]}
+        validate_study_contract(study, contract)
+        validate_study_contract(study, contract)
+        with self.assertRaisesRegex(ValueError, "different execution contract"):
+            validate_study_contract(study, {"n_cycles": 3, "trial_seeds": [11, 17, 23]})
+
+    def test_physics_study_contract_is_rejected_before_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = args_for_schedule()
+            yaml_path = Path(tmp, 'model.yaml'); yaml_path.write_text('task: mom')
+            stats = Path(tmp, 'stats.json'); stats.write_text('{}')
+            args.yaml_config = str(yaml_path); args.config = 'mom'
+            args.trial_seeds = '11,17'; args.seed_objective = 'mean'
+            params = dict(data_root=tmp, data_root_test=tmp, stat_dir=tmp,
+                          regression_target_stats=str(stats), task='mom')
+            legacy = study_contract(args, params)
+            self.assertEqual(legacy['contract_version'], 1)
+            with self.assertRaisesRegex(ValueError, 'physics checkpoint selection is retired'):
+                study_contract(args, dict(params, checkpoint_selection='physics'))
+
+    def test_input_preflight_rejects_stats_from_different_mount(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            root.mkdir()
+            stats_path = Path(tmp) / "stats.json"
+            stats_path.write_text(json.dumps({
+                "task": "p_phi_theta",
+                "split": "pretrain",
+                "data_root": str(Path(tmp) / "other_data"),
+                "filters": {
+                    "low_thr": 1,
+                    "high_thr": 100,
+                    "adapter_sample_mode": "event_segment",
+                    "segment_target_source": "mctrue",
+                    "segment_min_clusters": 12,
+                    "segment_exact_clusters": False,
+                },
+            }))
+            params = {
+                "data_root": str(root),
+                "data_root_train": str(root),
+                "data_root_test": str(root),
+                "regression_target_stats": str(stats_path),
+                "task": "p_phi_theta",
+            }
+            with self.assertRaisesRegex(ValueError, "different data root"):
+                validate_effective_inputs(params)
+
+
+if __name__ == "__main__":
+    unittest.main()

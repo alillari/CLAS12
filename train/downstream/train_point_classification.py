@@ -11,10 +11,9 @@ import torch
 
 # ensure your fm4npp modules can be found
 sys.path.append('../..')
-sys.path.append('/home/shuhang/FM4NPP/FM4NPP')
-sys.path.append('/home/shuhang/FM4NPP/FM4NPP/train/downstream')
 
 from fm4npp.utils import YParams
+from fm4npp.artifact_paths import artifact_path
 from point_classification_trainer import DownstreamTrainer
 
 def main():
@@ -22,11 +21,13 @@ def main():
     parser.add_argument("--yaml_config", default='', type=str, help="Path to YAML config file")
     parser.add_argument("--config", default='', type=str, help="Model config name")
     parser.add_argument("--run_num", default='0', type=str, help="Sub run number")
-    parser.add_argument("--root_dir", default='/home/shuhang/FM4NPP/downstream_log/', type=str, help="Root dir to store results")
+    parser.add_argument("--root_dir", default=artifact_path("downstream_log"), type=str, help="Root dir to store results")
     parser.add_argument("--global_log_dir", default='globallogs', type=str, help="Global dir to store logging only")
-    parser.add_argument("--eventnumber", default=70000, type=int, help="downstream training event number")
-    parser.add_argument("--usepretrain", default=True, type=str, help="use pretrain model")
+    parser.add_argument("--eventnumber", default=50000, type=int, help="downstream training event number")
+    parser.add_argument("--usepretrain", action="store_true", help="use pretrain model")
     parser.add_argument("--train_batch_size", default=32, type=int, help="train batch size")
+    parser.add_argument("--pretrained_ckpt", default=None, type=str, help="Optional path to pretrained checkpoint if --usepretrain is set.")
+    parser.add_argument("--task", default="pid", choices=["pid", "nid"], help="Point classification task.")
     args = parser.parse_args()
 
     # Mapping from model name to log file and checkpoint paths
@@ -81,20 +82,36 @@ def main():
 
     # Initialize parameters
     params = YParams(os.path.abspath(args.yaml_config), args.config)
+    params.task = args.task
+    params.num_output_classes = 5 if args.task == "pid" else 2
+
     params.continue_from_best = True
     params.batch_size = int(args.train_batch_size)
     params.limit_data = True
     params.limit_size = int(args.eventnumber)
     params.valid_batch_size = 1
-    params.pretrained_ckpt = model2ckpt[args.config]
-    params.log_file_name = f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}.log"
-    params.num_embedder_layers = 0
 
+    if args.usepretrain:
+        params.pretrained_ckpt = args.pretrained_ckpt or model2ckpt.get(args.config)
+
+        if params.pretrained_ckpt is None:
+            raise ValueError(
+                f"--usepretrain was set, but no checkpoint was provided and "
+                f"args.config={args.config!r} is not in model2ckpt."
+            )
+    else:
+        params.pretrained_ckpt = None
+
+    params.log_file_name = (
+        f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}.log"
+    )
+    params.num_embedder_layers = 0
+     
     # Launch and train
     trainer = DownstreamTrainer(params, args)
     trainer.launch()
     checkpoint_path = None
-    trainer.train(pretrain=True, train_from_checkpoint=False, checkpoint_path=checkpoint_path)
+    trainer.train(pretrain=args.usepretrain, train_from_checkpoint=False, checkpoint_path=checkpoint_path)
 
     # Cleanup
     trainer.cleanup()

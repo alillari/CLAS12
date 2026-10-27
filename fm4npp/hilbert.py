@@ -301,3 +301,183 @@ def decode(hilberts, num_dims, num_bits):
 
     # Return them in the expected shape.
     return flat_locs.reshape((*orig_shape, num_dims))
+# ============================================================
+# CLAS12-specific addition: radius-band grouping + 2D Hilbert ordering.
+#
+# The default policy is the calibrated 12-band boundary table used by Mike's
+# current pretraining. The older 6-band exact-center policy is retained under
+# band_config="legacy6" for older backbones/configs.
+# ============================================================
+
+import json as _json
+import os as _os
+
+
+CLAS12_LEGACY6_LAYER_RADII_RAW = [
+    6.52944,    # BST region 1
+    9.28923,    # BST region 2
+    12.03261,   # BST region 3
+    14.76460,   # BMT region 1
+    19.26460,   # BMT region 2
+    22.26460,   # BMT region 3
+]
+
+# Single shared band half-width, chosen as the worst-case observed
+# deviation across all 6 layers (BST region 1), rounded up for margin.
+# Given in RAW (unnormalized) units.
+CLAS12_LEGACY6_LAYER_DELTA_RAW = 0.3
+
+# r_lim used by TPCBatchDataset.apply_norm for CLAS12 (see
+# CLAS12_CHANGES.md "Normalization bounds" section) -- must match exactly,
+# since assign_clas12_layer is called on r AFTER apply_norm has already run
+# (confirmed: apply_norm executes before the space-filling-order branch in
+# __getitem__). Keeping this constant here, alongside the layer radii, so
+# the raw->normalized conversion below always stays consistent with
+# whatever r_lim TPCBatchDataset actually uses.
+CLAS12_R_LIM_MIN = 6.0
+CLAS12_R_LIM_MAX = 23.0
+CLAS12_DEFAULT_BAND_CONFIG = "calibrated12"
+
+
+def _normalize_r(r_raw, r_min=CLAS12_R_LIM_MIN, r_max=CLAS12_R_LIM_MAX):
+    """Same min-max formula as TPCBatchDataset.minmax_normalize."""
+    return (r_raw - r_min) / (r_max - r_min)
+
+
+
+CLAS12_LEGACY6_LAYER_RADII = [_normalize_r(r) for r in CLAS12_LEGACY6_LAYER_RADII_RAW]
+CLAS12_LEGACY6_LAYER_DELTA = CLAS12_LEGACY6_LAYER_DELTA_RAW / (CLAS12_R_LIM_MAX - CLAS12_R_LIM_MIN)
+
+
+def _calibration_path():
+    return _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)),
+        "..",
+        "dev_scripts",
+        "clas12_band_calibration.json",
+    )
+
+
+def load_clas12_band_calibration(path=None):
+    path = path or _calibration_path()
+    with open(path) as stream:
+        cal = _json.load(stream)
+    centers_raw = cal["band_centers_raw_cm"]
+    boundaries_raw = cal["band_boundaries_raw_cm"]
+    r_threshold_raw = cal["suggested_r_threshold_raw_cm"]
+    return {
+        "layer_radii_raw": centers_raw,
+        "layer_radii": [_normalize_r(r) for r in centers_raw],
+        "boundaries_raw": boundaries_raw,
+        "boundaries": [_normalize_r(b) for b in boundaries_raw],
+        "r_threshold_raw": r_threshold_raw,
+        "r_threshold": r_threshold_raw / (CLAS12_R_LIM_MAX - CLAS12_R_LIM_MIN),
+        "n_bands": len(centers_raw),
+    }
+
+
+_CLAS12_CALIBRATION = load_clas12_band_calibration()
+CLAS12_LAYER_RADII_RAW = _CLAS12_CALIBRATION["layer_radii_raw"]
+CLAS12_LAYER_RADII = _CLAS12_CALIBRATION["layer_radii"]
+CLAS12_BAND_BOUNDARIES = _CLAS12_CALIBRATION["boundaries"]
+CLAS12_KNNN_R_THRESHOLD = _CLAS12_CALIBRATION["r_threshold"]
+
+
+def assign_clas12_layer_legacy6(
+    r,
+    layer_radii=CLAS12_LEGACY6_LAYER_RADII,
+    delta=CLAS12_LEGACY6_LAYER_DELTA,
+):
+    layer_radii_t = torch.tensor(layer_radii, dtype=r.dtype, device=r.device)  # (L,)
+    diffs = torch.abs(r.unsqueeze(-1) - layer_radii_t.unsqueeze(0))  # (N, L)
+    in_band = diffs <= delta  # (N, L)
+
+    n_bands_hit = in_band.sum(dim=-1)  # (N,)
+    assert torch.all(n_bands_hit == 1), (
+        "Found {} point(s) not matching exactly one CLAS12 layer band "
+        "(0 or 2+ matches). This indicates corrupted input data -- "
+        "check raw r values.".format((n_bands_hit != 1).sum().item())
+    )
+
+    layer_idx = in_band.float().argmax(dim=-1)  # (N,)
+    return layer_idx
+
+
+def assign_clas12_layer_calibrated12(r, boundaries=CLAS12_BAND_BOUNDARIES):
+    boundaries_t = torch.tensor(boundaries, dtype=r.dtype, device=r.device)
+    return torch.bucketize(r.contiguous(), boundaries_t)
+
+
+def assign_clas12_layer(r, band_config=CLAS12_DEFAULT_BAND_CONFIG):
+    if band_config in {"calibrated12", "12", "default"}:
+        return assign_clas12_layer_calibrated12(r)
+    if band_config in {"legacy6", "6"}:
+        return assign_clas12_layer_legacy6(r)
+    raise ValueError(f"Unsupported CLAS12 band_config={band_config!r}")
+
+
+def clas12_band_hilbert_order(
+    phi,
+    eta,
+    r,
+    num_bits=10,
+    scaler=1e4,
+    band_config=CLAS12_DEFAULT_BAND_CONFIG,
+):
+    """
+    Order CLAS12 points by: (1) exact layer band [guaranteed, zero
+    cross-layer interleaving], then (2) 2D Hilbert curve over (phi, eta)
+    within each band [locality-preserving angular tie-break].
+
+    Params:
+    -------
+     phi, eta, r: 1D tensors of shape (N,), already in whatever normalized
+                  range apply_norm produces (expected ~[0,1] each, but this
+                  function only requires phi/eta to be non-negative after
+                  scaling -- see note below).
+     num_bits: bits of precision per axis for the 2D Hilbert encoding.
+               10 bits = 1024 distinct values per axis, comfortably more
+               resolution than needed for typical per-layer point counts.
+     scaler: float-to-integer scaling factor applied to phi/eta before
+             quantizing to the Hilbert hypercube. Must be large enough
+             that distinct phi/eta values don't collapse to the same
+             integer, but produce values < 2**num_bits after scaling.
+     band_config: "calibrated12" (default) or "legacy6".
+
+    Returns:
+    --------
+     sorter: 1D long tensor of shape (N,), the permutation that orders
+             the input points as described above. Apply via
+             tensor[sorter] to any (N, ...) array aligned with phi/eta/r.
+
+    Note on phi/eta sign: phi and eta can be negative (e.g. phi in
+    [-pi, pi]). Since encode() requires non-negative integer coordinates,
+    this function shifts both by a fixed offset before scaling. If phi/eta
+    are passed in already normalized to [0, 1] (i.e. apply_norm has already
+    run), no offset is needed -- this is the expected calling convention.
+    """
+    N = phi.shape[0]
+    assert eta.shape[0] == N and r.shape[0] == N
+
+    layer_idx = assign_clas12_layer(r, band_config=band_config)  # (N,)
+
+    # Quantize phi/eta to non-negative integers for the 2D Hilbert encode.
+    # Expects phi, eta already normalized to [0, 1] (apply_norm convention) --
+    # if not, shift to non-negative range before calling this function.
+    locs = torch.stack([phi, eta], dim=-1)  # (N, 2)
+    locs_int = (locs * scaler).long()
+    assert torch.all(locs_int >= 0), (
+        "phi/eta produced negative integers after scaling -- pass "
+        "already-normalized [0,1] values, or add an offset before scaling."
+    )
+    max_val = 2 ** num_bits - 1
+    locs_int = torch.clamp(locs_int, max=max_val)
+
+    hilbert_codes = encode(locs_int, num_dims=2, num_bits=num_bits)  # (N,)
+
+    # Composite sort key: layer dominates (exact, integer), Hilbert code
+    # breaks ties within a layer. Pack into one key so a single argsort
+    # produces the full two-level order in one pass.
+    composite_key = layer_idx.long() * (2 ** 48) + hilbert_codes.long()
+    sorter = torch.argsort(composite_key)
+    return sorter

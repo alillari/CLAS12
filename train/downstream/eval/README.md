@@ -1,0 +1,288 @@
+# Downstream evaluation
+
+## Track-finding background policy
+
+Track finding supports `track_target_mode: signal_only`. Background clusters
+are negative members of every signal-track mask, never a separate query target.
+The query-level no-object class and the point assignment threshold remain active.
+Both `validation_ari_mode: signal` and `validation_ari_mode: inclusive` are supported;
+inclusive ARI does not require a background query.
+
+Training log columns `ARI_signal_option1` and `ARI_signal_option2` compare
+assignment policies using signal ARI. With `validation_ari_mode: inclusive`,
+the columns are `ARI_inclusive_option1` and `ARI_inclusive_option2` instead.
+Option 1 uses mask probability; option 2 uses mask probability times query
+class confidence and excludes no-object queries. Checkpoint selection uses
+option 2 in the configured ARI mode. The callback key `val/ari` is that selected
+score; explicit `val/ari_<mode>_option1` and `val/ari_<mode>_option2` keys report
+both assignment policies. Older optimizer-step logs duplicated option 2 into
+the option-1 column; this correction applies to new logs only.
+
+The retired `unified_noise_instance` training mode and
+`truth_joint_hungarian_qualified` evaluation mode raise errors when requested
+through YAML, campaign overrides, CLI options, or adapter checkpoint metadata.
+Explicit unsupported values are never silently converted to defaults. Old
+configurations declaring `noise_attribution_mode: native` remain accepted; new
+configurations can omit that field. Checkpoints without mode metadata retain
+the historical signal-only/native default.
+
+Evaluation and threshold sweeps now score only native predictions, without
+truth-assisted query relabeling. New outputs use `metric_view: native` and stop
+writing noise-attribution reports or duplicate `*_native.csv` files. The standard
+CSV filenames remain. Summary JSON retains `native_metrics`, `native_baselines`,
+and `native_comparisons` as aliases for existing campaign plots. Existing
+checkpoints and campaign artifacts are not rewritten by this cleanup.
+
+## Track-finding validation histories and later checkpoint selection
+
+Every validation now aggregates the adapter's computed metrics for both
+assignment options: signal/inclusive ARI, track purity/efficiency, matched
+IoU/purity/efficiency, fake/miss/split/merge rates, background rejection,
+contamination, and signal loss to background. Global track purity/efficiency
+use pooled matched/predicted/truth counts. Other rates retain the evaluator's
+event-average definitions, omitting undefined values. Counts and event-averaged
+loss components are recorded too. No extra model forward pass is required.
+
+The existing ARI-based selection, loss tie-break, and early stopping rule stay
+unchanged. In particular, legacy selection averages batch-level ARI means;
+the new full-validation ARIs average individual eligible events. These can
+differ for an uneven final batch. History records keep `selection_score` and
+`selection_aggregation` separate from the full-validation metrics.
+
+Each training invocation creates a fresh directory beside its training log:
+
+```text
+<log-stem>_validation/run_<unique-id>/
+  metadata.json
+  metrics.jsonl
+  metrics.csv
+  checkpoints/validation_000001_step_000001000_epoch_000000.pth
+  ...
+```
+
+The directory is printed and included as `validation_history_dir` in the
+training artifact summary. CSV/JSONL rows include the step, epoch, learning
+rate, selection result, fixed threshold, metric matching cuts, both options'
+metrics, and the corresponding snapshot path. New invocations do not replace
+previous histories. In distributed runs the history is written by rank zero
+for its validation loader; it does not introduce cross-rank metric reduction.
+
+`save_validation_checkpoints: true` is the default. Every validation retains
+an immutable snapshot, including non-improving and early-stopping validations.
+Snapshots contain adapter weights, any active LoRA weights, configuration,
+and validation metrics. They omit optimizer/scheduler states and the frozen
+backbone. They load through the existing evaluator with `--checkpoint`; they
+are not training-resume checkpoints. The normal best checkpoint remains full.
+Keep the matching backbone checkpoint and rendered analysis/model YAMLs.
+
+To disable snapshots while retaining every metric record, set
+`save_validation_checkpoints: false`, or pass `--no-save-validation-checkpoints`
+when building a campaign. Snapshots consume disk space proportional to the
+number of validation checks.
+
+Plot one history without retraining or reevaluating:
+
+```bash
+PY=/home/alessio/miniconda3/envs/fm4npp/bin/python
+export MPLCONFIGDIR=/tmp/matplotlib-cache
+HISTORY_DIR=/path/to/checkpoints/run-name_validation/run_unique-id
+"$PY" train/downstream/campaign/plot_track_finding_validation.py \
+  --history "$HISTORY_DIR"
+```
+
+This writes PNG/PDF panels of metrics versus optimizer step and purity,
+background rejection, and fake rate versus signal ARI. `trend_summary.json`
+identifies the best snapshot for each metric and adjacent validation intervals
+where signal ARI rises while purity/background performance deteriorates.
+`--after-step 10000` restricts the analysis to later training;
+`--min-delta 0.001` sets the absolute change required to flag a trade-off.
+`--assignment-option 1` plots the membership-only diagnostic instead.
+The tool rejects mixed histories, sample-count changes, and changes in
+assignment threshold or metric matching cuts.
+
+For later evaluation of a snapshot:
+
+```bash
+"$PY" train/downstream/eval/evaluate_track_finding.py \
+  --analysis-config /path/to/run/config/analysis.yaml \
+  --checkpoint /path/to/history/checkpoints/validation_000010_step_000010000_epoch_000003.pth \
+  --output-dir /path/to/separate/snapshot_evaluation
+```
+
+The plots describe a validation trajectory, not proof of causality or an
+independent test result. Keep training/data/threshold fixed when comparing
+selection rules, and use a genuinely disjoint sample for final confirmation.
+The current selection rule can stop training early; set an adequate step/epoch
+budget and patience if the goal is to observe later degradation. Historical
+ARI-only logs cannot reconstruct discarded metrics or overwritten checkpoints.
+Momentum-binned and COATJAVA comparisons still come from the final evaluator.
+
+## Track-regression evaluation
+
+Run the standalone adapter-only campaign example from any working directory:
+
+```bash
+python train/downstream/eval/evaluate_track_regression.py \
+  --analysis-config train/downstream/eval/track_regression_analysis_adapteronly.yaml
+```
+
+For normal campaign execution, use the per-run
+`<campaign_dir>/runs/<run_id>/config/analysis.yaml` generated by
+`train/downstream/campaign/run_track_regression_campaign.py`. Those rendered
+configs carry the exact run checkpoint, model YAML, training log, output
+directory, and pretrained-backbone flag for the campaign row.
+
+The YAML controls the model configuration, checkpoint, unit conversions,
+sample count, binning, and output location. Command-line overrides are
+available for the checkpoint, output directory, and sample count.
+
+The checked-in YAMLs use the current campaign directory structure. Set
+`CLAS12_ARTIFACT_ROOT` or `CLAS12_CAMPAIGN_NAME` to point the standalone
+examples at a different campaign:
+
+```bash
+export CLAS12_ARTIFACT_ROOT=/path/to/result_deep_storage
+export CLAS12_CAMPAIGN_NAME=campaign_3_cluster_track_regression
+```
+
+The track-regression YAMLs derive paths from that root:
+
+- campaign: `{artifact_root}/campaigns/<campaign-name>`
+- run config: `<campaign-dir>/runs/<run-id>/config/analysis.yaml`
+- checkpoint: `<campaign-dir>/runs/<run-id>/checkpoints/<run-id>_adapter_checkpoint.pth`
+- evaluation: `<campaign-dir>/runs/<run-id>/evaluation`
+
+Pretrained standalone evaluation also needs `CLAS12_PRETRAIN_ROOT` when the
+pretrained checkpoint root differs from the checked-in example.
+
+After per-run evaluations finish, campaign collation writes:
+
+- `<campaign-dir>/summary/campaign_headline_metrics.jsonl`
+- `<campaign-dir>/summary/run_table.csv`
+- `<campaign-dir>/summary/delta_p_over_p_fits.csv` when per-run fit files exist
+- `<campaign-dir>/summary/delta_theta_fits.csv` when per-run fit files exist
+
+The analysis writes:
+
+- `predictions.csv.gz`: one row per evaluated track, including entrance adapter
+  output, innermost-hit MC truth, the `cvt_entrance_*` benchmark, explicitly
+  labelled `legacy_*` auxiliary vectors (diagnostic only), PID, charge,
+  event/track identifiers, source file, and hit count;
+- `summary.json`: global component, momentum, transverse-momentum, direction,
+  resolution, tail, ML-regression, training-history, and data-consistency
+  metrics;
+- `ml_metrics.csv`: final evaluation-set MAE, RMSE, median absolute error,
+  95th-percentile absolute error, and bias for Adapter and the CVT entrance
+  benchmark;
+- `ml_metrics_summary.json`: the same ML metrics in nested JSON form;
+- `campaign_headline_metrics.jsonl`: flat, campaign-friendly headline rows
+  with run metadata, RMSE/MAE/bias/tail metrics, and component R² values;
+- `training_history.csv`: parsed epoch, train-loss, validation-loss, and
+  epoch-time values when the checkpoint training log is available;
+- `binned_metrics.csv`: momentum, polar-angle, and PID differential metrics;
+- `delta_p_over_p_fits.csv` and `delta_theta_fits.csv`: Gaussian residual fits
+  in configured true-momentum bins for detailed momentum and polar-angle
+  resolution plots;
+- `plots/`: residual and resolution plots.
+
+`plots/ml/` contains ML-oriented diagnostics:
+
+- `training_curves.png`: train and validation loss versus epoch, inferred from
+  the checkpoint sibling log unless `training_log` is set explicitly in the
+  YAML;
+- `ml_error_bars_components.png`: component-space `px`, `py`, `pz` error
+  metrics;
+- `ml_error_bars_kinematics.png`: derived `p`, `pT`, `theta`, wrapped `phi`,
+  and `eta` error metrics;
+- `absolute_error_cdf.png`: cumulative absolute-error distributions, which
+  make the median and tail behavior directly comparable across methods.
+
+`plots/physics_2d/` contains side-by-side Adapter and CVT entrance benchmark 2D residual
+figures for spherical momentum `p`, cylindrical transverse momentum `pT`,
+`theta`, wrapped `phi`, and pseudorapidity `eta`. Both methods use identical
+axes and color normalization. For every reconstructed quantity, its residual
+is plotted against all five true kinematic variables, so cross-dependencies
+such as momentum resolution versus `theta` or `eta` are visible.
+
+The same directory contains direct per-track error comparisons. Their x-axis
+is the absolute CVT error, their y-axis is the absolute Adapter error, and the
+diagonal means equal performance. Tracks below the diagonal favor the Adapter;
+the annotated percentage reports how often that occurs.
+
+`plots/` also contains detailed one-dimensional fit summaries:
+
+- `delta_p_over_p_vs_true_p.png`, `delta_p_over_p_mean_vs_true_p.png`, and
+  `delta_p_over_p_sigma_vs_true_p.png` fit `(p_reco - p_true) / p_true` in
+  true-momentum bins and display the mean/sigma as percentages;
+- `delta_theta_vs_true_p.png`, `delta_theta_mean_vs_true_p.png`, and
+  `delta_theta_sigma_vs_true_p.png` fit `theta_reco - theta_true` in the same
+  style of true-momentum bins and display the mean/sigma in degrees.
+
+`plots/delta_p_over_p_fits/` and `plots/delta_theta_fits/` retain one diagnostic
+PNG for every fitted method and true-momentum bin. Each image shows the full
+finite-residual distribution on a log-count scale, the quantile boundaries,
+the exact trimmed histogram supplied to `curve_fit`, its Gaussian overlay, and
+the saved fit status, sample counts, mean, sigma, and covariance errors. Sparse
+or failed fits are also written so missing summary points remain auditable.
+
+The current CLAS12 dataset stores MC entrance momentum in MeV and auxiliary
+reconstruction momentum in GeV. Those conversions are explicit in the YAML.
+CUDA is required by the installed Mamba/causal-convolution forward kernels.
+
+All momentum evaluation now uses `MC::True` and raw adapter output at the
+innermost matched CVT hit. There is no DOCA transport or charge-dependent
+rotation. The stored conventional benchmark uses `cvt_benchmark_p` and
+`cvt_benchmark_theta` from `CVT::Tracks`, and `cvttraj_entrance_phi` from
+`atan2(cy,cx)` of the selected same-track `CVT::Trajectory` entrance row.
+The evaluator reads these fields by name from `metadata.json:aux_target_layout`
+and constructs the comparison vector using that entrance phi. It does not use
+the trajectory bank's diagnostic `phi` field or `CVT::Tracks.phi0`.
+
+This is explicitly a p/theta/entrance-phi benchmark, not a claim that all three
+values come from `CVT::Trajectory`. The current 20-column product stores the
+full trajectory momentum only in separate diagnostics. Missing entrance phi
+produces a missing CVT benchmark, with no DOCA fallback. Row selection tests
+only the three entrance benchmark columns, so missing legacy values cannot
+select a different comparison row. Momentum scaling applies to p only;
+theta and phi remain radians when constructing the vector.
+
+The `cvt` method key is retained for campaign compatibility. Legacy
+`CVTRec::Tracks` and `REC::Particle` vectors have no entrance-phi counterpart
+in this product and are excluded from all performance metrics. Their stored
+vectors, and the original CVT vector, are exported only under `legacy_*` names.
+`MC::Particle` remains generator-level diagnostic information. Charge is used
+only for differential labels; a fallback charge never changes a prediction.
+
+### Retiring historical DOCA evaluation
+
+Commit `d5afc99` (2026-07-13) introduced swingback into the evaluator. The old
+defaults used `mctrue_swingback_doca`, 6.5 cm, 5 T, positive polarity, and a
+positive-charge fallback. The evaluator consumed the first 16 auxiliary
+columns and ignored the later entrance-phi benchmark. This affected wrapped
+phi, px/py, opening-angle, vector-error, and related binned/ML metrics. Native
+target metrics remained at the entrance. Swingback nominally preserved p,
+pT, pz, and theta, but invalid transport/charge masks could change the sample
+population. The physical-loss reference statistics script already used the
+entrance tuple and needs no objective change.
+
+New summaries, headline rows, and fit tables carry
+`evaluation_contract: clas12_momentum_entrance_v1`. Old rendered analysis YAMLs
+are migrated at load time with a notice: `comparison_truth` becomes
+`mctrue_inner_hit`, `swingback_enabled` becomes false, and transport parameters
+are discarded. The retired transport code has been removed.
+
+Campaign runs automatically reevaluate completed checkpoints whose summaries
+lack the new contract; they do not need retraining. Collation and plotting
+reject legacy/unversioned outputs so DOCA and entrance results cannot be mixed.
+For an explicit evaluation-only refresh:
+
+```bash
+PY=/home/alessio/miniconda3/envs/fm4npp/bin/python
+"$PY" train/downstream/campaign/run_track_regression_campaign.py \
+  --manifest /path/to/campaign/manifest.yaml --skip-train --force-eval
+MPLCONFIGDIR=/tmp/matplotlib-cache "$PY" \
+  train/downstream/campaign/plot_track_regression_campaign.py \
+  --campaign-dir /path/to/campaign --plot-suite all
+```
+
+These changes do not rewrite historical reports until reevaluation is run.

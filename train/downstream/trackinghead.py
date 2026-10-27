@@ -107,6 +107,8 @@ class MambaAttentionHead(nn.Module):
         self.return_embedding = return_embedding
         if embed_method == 'concat':
             Embedder = EmbedderConcat
+        elif embed_method == 'pos_only':
+            Embedder = EmbedderPosOnly
         else:
             Embedder = EmbedderAdd
 
@@ -172,7 +174,7 @@ class MambaAttentionHead(nn.Module):
             nn.Linear(embed_dim, num_output_dim)
         )
 
-        self.embedder = Embedder(pe_method = 'nerf', embed_dim=input_dim)
+        self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim)
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
     def make_predictions(self, refined_protos, point_features):
@@ -257,6 +259,8 @@ class MambaAttentionHead(nn.Module):
             x = torch.einsum('bsnd,n->bsd', x, weights)
         else:
             x = self.embedder(x)
+            if isinstance(x, tuple):
+                x = x[0]
             for layer in self.mamba_embedder_layers:
                 x = layer(x) + x
             x = self.embedder_norm(x)

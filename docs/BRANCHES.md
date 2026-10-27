@@ -9,9 +9,9 @@ audit references.
 
 | Branch | Audited head | Purpose / intended disposition |
 | --- | --- | --- |
-| `main` | `ffe8d6a33a364a465c203766c4bae0cc7310f787` | Original FM4NPP baseline at audit; intended to become shared CLAS12 research baseline after review |
-| `adapter-dev` | `3b9170780c16f9fbe9e999fd0ea9037d34bc8267` | Main downstream, adapters, evaluation, campaigns and tests; planned foundation for new `main` |
-| `integration-adapter-pretrain` | `47722abdcf41bb68f7dd706195a45d68c31dd47c` | Mike's CLAS12 pretraining integrated with common adapters; changes require reconciliation with later `adapter-dev` commits |
+| `main` | `38d6f5683dfdb9938190024085c13ba2720d532f` (PR #1) | Canonical shared CLAS12 research baseline; contains the full former `adapter-dev` history |
+| `adapter-dev` | `3b9170780c16f9fbe9e999fd0ea9037d34bc8267` | Retired; fully incorporated into `main` by PR #1. Remote branch can be deleted after checking local clones |
+| `integration-adapter-pretrain` | `47722abdcf41bb68f7dd706195a45d68c31dd47c` | Historical pretraining integration; preserved as parent of PR #2's proposed merge commit |
 | `mike` | `38c82ec06265a530a4efccc853bba085d0742875` | Collaborator's independent work; do not rewrite or automatically merge |
 | `archive/upstream-fm4npp-2026-02-28` | `ffe8d6a33a364a465c203766c4bae0cc7310f787` | Historical preservation of upstream baseline |
 
@@ -38,14 +38,23 @@ Before archiving an experiment, record:
 
 ## Integration cautions
 
-The current `adapter-dev` includes simplifications from October 2026 that are
+The current `main` contains simplifications from October 2026 that are
 not present in the September experiment forks. Merging an entire older experiment
 branch can restore retired code or undo fixes. Prefer small, reviewed patches,
 cherry-picks where appropriate, and targeted tests.
 
-The pretraining integration itself explicitly leaves some trainer and distributed
-behavior unresolved. Bringing its pretraining-specific changes into a current
+The pretraining integration, proposed separately in PR #2, explicitly leaves
+some trainer and distributed behavior unresolved. Bringing its pretraining-specific changes into a current
 baseline does not imply that its older downstream files should replace newer ones.
 
 The `mike` branch contains tracked generated files under `data/`.
 Its existing history is preserved; do not bring its entire data tree onto `main`.
+
+## Retirement note
+
+PR #1 merged `adapter-dev` into `main` with all its commits. GitHub branch
+`adapter-dev` is no longer an active development line. Deleting that remote
+branch does **not** remove its commits from `main`, and does not remove local
+branches on colleagues' machines. Start new work from `main`. The original
+upstream commit is preserved at `archive/upstream-fm4npp-2026-02-28`.
+

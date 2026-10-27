@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
-from fm4npp.models.mamba2 import Mamba2
+from fm4npp.models.mamba_config import build_mamba_block
 
 
 class SelfAttentionBlock(nn.Module):
@@ -96,8 +96,9 @@ class MambaAttentionHead(nn.Module):
     def __init__(self, input_dim, embed_dim=256, num_layers=3, d_state=64, d_conv=4, expand=2, 
                  num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
                  num_feature_layers=15, num_output_dim=256, num_prototypes=10, num_heads=4, ffn_dim=512,
-                 num_self_attn_layers=2, softmax_mask=False, do_masked_attn=True, return_embedding=False, embed_method='add', pe_method = 'nerf', dropout=0.0):
+                 num_self_attn_layers=2, softmax_mask=False, do_masked_attn=True, return_embedding=False, embed_method='add', pe_method = 'nerf', dropout=0.0, *, adapter_version="mamba2", adapter_block_kwargs=None):
         super().__init__()
+        self.adapter_version = adapter_version
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.num_prototypes = num_prototypes
@@ -126,7 +127,8 @@ class MambaAttentionHead(nn.Module):
         self.mamba_layers = nn.ModuleList([
             nn.Sequential(
                 RMSNorm(embed_dim),
-                Mamba2(
+                build_mamba_block(
+                    adapter_version, block_kwargs=adapter_block_kwargs,
                     d_model=embed_dim,
                     d_state=d_state,
                     d_conv=d_conv,
@@ -140,7 +142,8 @@ class MambaAttentionHead(nn.Module):
         self.mamba_embedder_layers = nn.ModuleList([
             nn.Sequential(
                 RMSNorm(input_dim),
-                Mamba2(
+                build_mamba_block(
+                    adapter_version, block_kwargs=adapter_block_kwargs,
                     d_model=input_dim,
                     d_state=d_state_embedder,
                     d_conv=d_conv_embedder,

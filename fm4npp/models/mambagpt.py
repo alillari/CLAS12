@@ -2,18 +2,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from mamba_ssm import Mamba
-
-from fm4npp.models.mamba2 import Mamba2
+from fm4npp.models.mamba_config import build_mamba_block
 from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
 
 
 class MambaGPT(nn.Module):
-    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4):
+    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4, *, block_kwargs=None, block_version="mamba2"):
         super().__init__()
         assert embed_method in ['concat', 'add', 'pos_only', 'pos_plus_aux']
         self.embed_dim = embed_dim
+        self.backbone_version = block_version
         
         if embed_method == 'concat':
             Embedder = EmbedderConcat
@@ -34,7 +33,8 @@ class MambaGPT(nn.Module):
         
         self.mamba_layers = nn.ModuleList(
             [nn.Sequential(RMSNorm(embed_dim), 
-                           Mamba2(d_model=embed_dim, d_state=d_state, d_conv=d_conv, expand=expand),
+                           build_mamba_block(block_version, d_model=embed_dim, d_state=d_state,
+                                             d_conv=d_conv, expand=expand, block_kwargs=block_kwargs),
                            nn.Dropout(dropout)) 
              for _ in range(num_layers)]
         )
@@ -85,10 +85,11 @@ class MambaGPT(nn.Module):
 
 
 class Mamba1GPT(nn.Module):
-    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4):
+    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4, *, block_kwargs=None):
         super().__init__()
         assert embed_method in ['concat', 'add', 'pos_only', 'pos_plus_aux']
         self.embed_dim = embed_dim
+        self.backbone_version = "mamba1"
         if embed_method == 'concat':
             Embedder = EmbedderConcat
         elif embed_method == 'pos_only':
@@ -107,7 +108,8 @@ class Mamba1GPT(nn.Module):
             self.embedder = Embedder(pe_method = pe_method, embed_dim = embed_dim, learnable_projection = False)
         self.mamba_layers = nn.ModuleList(
             [nn.Sequential(RMSNorm(embed_dim), 
-                           Mamba(d_model=embed_dim, d_state=d_state, d_conv=d_conv, expand=expand),
+                           build_mamba_block("mamba1", d_model=embed_dim, d_state=d_state,
+                                             d_conv=d_conv, expand=expand, block_kwargs=block_kwargs),
                            nn.Dropout(dropout)) 
              for _ in range(num_layers)]
         )
@@ -152,3 +154,14 @@ class Mamba1GPT(nn.Module):
         else:
             x = self.norm(x)
             return self.output_layer(x) * out_scale
+
+
+class Mamba3GPT(MambaGPT):
+    """Mamba3 SISO with the same token/feature contract as Mamba1GPT/MambaGPT."""
+
+    def __init__(self, embed_dim=512, num_layers=12, d_state=128, d_conv=4,
+                 expand=2, klen=10, dropout=0.2, embed_method="add",
+                 pe_method="nerf", pos_dim=3, aux_dim=4, *, block_kwargs=None):
+        super().__init__(embed_dim, num_layers, d_state, d_conv, expand, klen,
+                         dropout, embed_method, pe_method, pos_dim, aux_dim,
+                         block_version="mamba3", block_kwargs=block_kwargs)

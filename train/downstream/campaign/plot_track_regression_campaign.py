@@ -156,7 +156,7 @@ def bool_value(value: Any) -> bool:
 
 def parameter_counter():
     try:
-        from fm4npp.models.mambagpt import Mamba1GPT, MambaGPT
+        from fm4npp.models.mamba_config import build_backbone
         from fm4npp.utils import count_parameters
     except Exception:
         return None
@@ -178,11 +178,11 @@ def parameter_counter():
         if key in cache:
             return cache[key]
         model_family, embed_dim, layers, d_state, d_conv, expand, klen, embed_method, pe_method = key
-        cls = Mamba1GPT if model_family == "mamba1" else MambaGPT
         with contextlib.redirect_stdout(io.StringIO()):
-            model = cls(
+            model = build_backbone(dict(
+                backbone_version=model_family,
                 embed_dim=embed_dim,
-                num_layers=layers,
+                num_layers_backbone=layers,
                 d_state=d_state,
                 d_conv=d_conv,
                 expand=expand,
@@ -190,7 +190,7 @@ def parameter_counter():
                 dropout=0.1,
                 embed_method=embed_method,
                 pe_method=pe_method,
-            )
+            ))
         cache[key] = int(count_parameters(model))
         return cache[key]
 

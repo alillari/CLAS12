@@ -215,7 +215,10 @@ def load_analysis_config(args):
 
 def build_head(trainer):
     params = trainer.params
+    from fm4npp.models.mamba_config import adapter_options
+
     return MambaTrackRegressionHead(
+        **adapter_options(params),
         input_dim=params.embed_dim,
         num_layers=1,
         num_output_dim=params.num_output_classes,

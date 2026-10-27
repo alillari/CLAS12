@@ -78,6 +78,21 @@ representation, and auxiliary feature choice. Use `clas12_pos_plus_aux_v1` for
 the current regression auxiliary path. Sharing a branch does not add auxiliary
 support to every downstream head or change existing adapter configuration.
 
+## Backbone selection and checkpoint compatibility
+
+The default for the imported recipes remains Mamba1. Set `backbone_version` to
+`mamba2` or `mamba3` to select another backbone; downstream `adapter_version`
+is independent. See [Mamba support](../MAMBA_SUPPORT.md) for block options,
+checkpoint requirements, and GPU validation. Mamba3 currently supports SISO.
+
+The existing rank-based width-transfer rule (`use_mup`) and optional offline
+W&B logging are retained. Mamba3's no-decay groups are kept separate without
+losing matrix-group learning-rate scaling. New checkpoints record parameter
+names and scheduler state; known historical single-group, rank-based, and
+Mamba3 no-decay optimizer layouts can be restored without dropping moments.
+An ambiguous legacy mapping is rejected. Resume still follows the inherited
+epoch-based data iteration; it does not restore an exact mid-epoch cursor.
+
 ## Integration boundary
 
 The donor loader, legacy values/offsets reader, trainer, and three active recipe
@@ -85,12 +100,13 @@ files come from Mike. The shared backbone, embeddings, calibration, downstream
 loaders, adapters, evaluators, and campaigns retain the current `main`
 implementation (formerly `adapter-dev`).
 
-The only trainer compatibility change removes unsupported band-classification
-constructor arguments and rejects that retired mode explicitly. Continuous
-pretraining keeps the same output shapes and checkpoint state keys. No scheduler,
-resume, distributed, target-selection, validation, filtering, or optimizer repair
-is included. The imported entrypoint should be treated as the existing
-single-process CUDA workflow; multi-process correctness and exact resume remain
+The initial integration removed unsupported band-classification constructor
+arguments and explicitly rejected that retired mode. Continuous pretraining
+retains the same output shapes and model checkpoint keys. Subsequent Mamba
+selection adds the optimizer/checkpoint compatibility described above. The
+imported target selection, filtering, validation cap, width-transfer recipe,
+and logging behavior are preserved. The entrypoint remains a single-process
+CUDA workflow; multi-process correctness and exact data-cursor resume remain
 separate follow-up work.
 
 The existing strict shared auxiliary embedder remains in place: use the shipped

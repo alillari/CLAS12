@@ -1,0 +1,20 @@
+name: Python syntax check
+
+on:
+  push:
+    branches: [main, adapter-dev]
+  pull_request:
+    branches: [main, adapter-dev]
+
+jobs:
+  python-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile Python source (no GPU or external datasets)
+        run: python -m compileall -q fm4npp train scripts dev_scripts

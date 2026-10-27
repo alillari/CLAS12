@@ -40,18 +40,18 @@ mkdir -p "$CLAS12_ARTIFACT_ROOT/pretrain/configs"
 python - <<'PY'
 import os
 from pathlib import Path
-from ruamel.yaml import YAML
+import yaml
 
-yaml = YAML(typ='safe')
+# PyYAML is already listed in requirements.txt.
 name = 'scale_w64_d12_v701aux'
 with open('scripts/configs/mamba_v701_aux_sweep.yaml') as stream:
-    params = dict(yaml.load(stream)[name])
+    params = dict(yaml.safe_load(stream)[name])
 params['data_root'] = os.environ['CLAS12_PRETRAIN_DATA']
 params['stat_dir'] = os.environ['CLAS12_PRETRAIN_STATS']
 out = Path(os.environ['CLAS12_ARTIFACT_ROOT']) / 'pretrain'
 params['checkpoint_dir'] = str(out)
 with (out / 'configs' / 'run.yaml').open('w') as stream:
-    yaml.dump({name: params}, stream)
+    yaml.safe_dump({name: params}, stream, sort_keys=False)
 PY
 
 python -m train.pretrain.nppmamba.train_multi_gpu_mamba1 \

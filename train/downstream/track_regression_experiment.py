@@ -21,6 +21,7 @@ DOWNSTREAM_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
+from fm4npp.models.mamba_config import backbone_version, adapter_options
 from fm4npp.utils import YParams
 from fm4npp.artifact_paths import artifact_path
 from train.downstream.regression_utils import validate_regression_training
@@ -256,6 +257,8 @@ def train_experiment(
             "base_dim": json_safe(getattr(params, "base_dim", None)),
             "num_layers_backbone": json_safe(getattr(params, "num_layers_backbone", None)),
             "mambaversion": json_safe(getattr(params, "mambaversion", None)),
+            "backbone_version": backbone_version(params),
+            "adapter_version": adapter_options(params)["adapter_version"],
             "hostname": socket.gethostname(),
             "git_commit": git_commit(),
             "data_root": json_safe(getattr(params, "data_root", None)),

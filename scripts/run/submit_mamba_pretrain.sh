@@ -17,7 +17,7 @@
 
 # === Configuration ===
 config_file="./scripts/configs/mamba_pretrain.yaml"
-config="mamba_5m"           # Options: mamba_5m, mamba2_5m, mamba_small
+config="mamba_5m"           # Options: mamba_5m, mamba2_5m, mamba3_siso, mamba_small
 run_num="run0"              # Run identifier
 
 # === Python Environment (UPDATE THIS) ===

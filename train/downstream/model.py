@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
-from fm4npp.models.mamba2 import Mamba2
+from fm4npp.models.mamba_config import build_mamba_block
 
 
 class RegressionTargetNormalizer(nn.Module):
@@ -188,8 +188,9 @@ class MambaAttentionHead(nn.Module):
     def __init__(self, input_dim, embed_dim=256, num_layers=3, d_state=64, d_conv=4, expand=2, 
                  num_feature_layers=15, num_output_dim=256, num_prototypes=10, num_heads=4, ffn_dim=512,
                  num_pid_classes=5, num_track_features= 4, num_jet_preposoals=5, num_jet_features=4,
-                 num_self_attn_layers=2, softmax_mask=False, do_masked_attn=True, do_holistic=True, return_embedding=False):
+                 num_self_attn_layers=2, softmax_mask=False, do_masked_attn=True, do_holistic=True, return_embedding=False, *, adapter_version="mamba2", adapter_block_kwargs=None):
         super().__init__()
+        self.adapter_version = adapter_version
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.num_prototypes = num_prototypes
@@ -213,7 +214,8 @@ class MambaAttentionHead(nn.Module):
         self.mamba_layers = nn.ModuleList([
             nn.Sequential(
                 RMSNorm(embed_dim),
-                Mamba2(
+                build_mamba_block(
+                    adapter_version, block_kwargs=adapter_block_kwargs,
                     d_model=embed_dim,
                     d_state=d_state,
                     d_conv=d_conv,
@@ -240,7 +242,7 @@ class MambaAttentionHead(nn.Module):
         # Noise prediction head go from point embedding
         self.noise_mlp = MLPHead(embed_dim, 2)
 
-        self.embedder = Embedder(embed_dim=input_dim)
+        self.embedder = EmbedderAdd(pe_method='nerf', embed_dim=input_dim)
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
     def make_predictions(self, refined_protos, point_features):
@@ -408,8 +410,9 @@ class MambaAttentionHead(nn.Module):
 class MambaHead(nn.Module):
     def __init__(self, input_dim, embed_dim=256, num_layers=3, d_state=64, d_conv=4, expand=2, 
                  num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
-                 num_feature_layers=15, num_output_dim=5, return_embedding=False, dropout=0.0):
+                 num_feature_layers=15, num_output_dim=5, return_embedding=False, dropout=0.0, *, embed_method="add", pe_method="nerf", adapter_version="mamba2", adapter_block_kwargs=None):
         super().__init__()
+        self.adapter_version = adapter_version
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
@@ -425,7 +428,8 @@ class MambaHead(nn.Module):
         self.mamba_layers = nn.ModuleList([
             nn.Sequential(
                 RMSNorm(embed_dim),
-                Mamba2(
+                build_mamba_block(
+                    adapter_version, block_kwargs=adapter_block_kwargs,
                     d_model=embed_dim,
                     d_state=d_state,
                     d_conv=d_conv,
@@ -437,7 +441,8 @@ class MambaHead(nn.Module):
         self.mamba_embedder_layers = nn.ModuleList([
             nn.Sequential(
                 RMSNorm(input_dim),
-                Mamba2(
+                build_mamba_block(
+                    adapter_version, block_kwargs=adapter_block_kwargs,
                     d_model=input_dim,
                     d_state=d_state_embedder,
                     d_conv=d_conv_embedder,
@@ -451,7 +456,10 @@ class MambaHead(nn.Module):
         # Noise prediction head go from point embedding
         self.out_mlp = MLPHead(embed_dim, num_output_dim, dropout=dropout)
 
-        self.embedder = Embedder(embed_dim=input_dim)
+        embedders = {"add": EmbedderAdd, "concat": EmbedderConcat, "pos_only": EmbedderPosOnly}
+        if embed_method not in embedders:
+            raise ValueError(f"Unknown embed_method: {embed_method}")
+        self.embedder = embedders[embed_method](pe_method=pe_method, embed_dim=input_dim)
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
 
@@ -515,8 +523,9 @@ class MambaTrackRegressionHead(nn.Module):
                  pooling="mean", embed_method="add", pe_method="nerf",
                  target_mean=None, target_std=None,
                  input_representation="center_only",
-                 pos_dim=3, aux_dim=4):
+                 pos_dim=3, aux_dim=4, *, adapter_version="mamba2", adapter_block_kwargs=None):
         super().__init__()
+        self.adapter_version = adapter_version
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
@@ -562,7 +571,8 @@ class MambaTrackRegressionHead(nn.Module):
         self.mamba_layers = nn.ModuleList([
             nn.Sequential(
                 RMSNorm(embed_dim),
-                Mamba2(
+                build_mamba_block(
+                    adapter_version, block_kwargs=adapter_block_kwargs,
                     d_model=embed_dim,
                     d_state=d_state,
                     d_conv=d_conv,
@@ -574,7 +584,8 @@ class MambaTrackRegressionHead(nn.Module):
         self.mamba_embedder_layers = nn.ModuleList([
             nn.Sequential(
                 RMSNorm(input_dim),
-                Mamba2(
+                build_mamba_block(
+                    adapter_version, block_kwargs=adapter_block_kwargs,
                     d_model=input_dim,
                     d_state=d_state_embedder,
                     d_conv=d_conv_embedder,
@@ -679,8 +690,9 @@ MambaRegressionHead = MambaTrackRegressionHead
 class AttentionHead(nn.Module):
     def __init__(self, input_dim, embed_dim=256, num_layers=3, num_heads = 4, 
                  num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
-                 num_feature_layers=15, num_output_dim=5, return_embedding=False, embed_method='add', pe_method = 'nerf', dropout=0.0, ffn_dim=512, adapter_FFN = True):
+                 num_feature_layers=15, num_output_dim=5, return_embedding=False, embed_method='add', pe_method = 'nerf', dropout=0.0, ffn_dim=512, adapter_FFN = True, *, adapter_version="mamba2", adapter_block_kwargs=None):
         super().__init__()
+        self.adapter_version = adapter_version
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
@@ -724,7 +736,8 @@ class AttentionHead(nn.Module):
         self.mamba_embedder_layers = nn.ModuleList([
             nn.Sequential(
                 RMSNorm(input_dim),
-                Mamba2(
+                build_mamba_block(
+                    adapter_version, block_kwargs=adapter_block_kwargs,
                     d_model=input_dim,
                     d_state=d_state_embedder,
                     d_conv=d_conv_embedder,

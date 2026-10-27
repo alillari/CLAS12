@@ -153,9 +153,9 @@ def nparams(r):
     if adapter(r): return None
     try:
         p=read_yaml(Path(r["model_yaml"]))[r["model_config"]]
-        from fm4npp.models.mambagpt import Mamba1GPT
+        from fm4npp.models.mamba_config import build_backbone
         from fm4npp.utils import count_parameters
-        with contextlib.redirect_stdout(io.StringIO()): m=Mamba1GPT(embed_dim=int(p["embed_dim"]),num_layers=int(p["num_layers_backbone"]),d_state=int(p.get("d_state",16)),d_conv=int(p.get("d_conv",4)),expand=int(p.get("expand",2)),klen=int(p.get("klen",1)),embed_method=p.get("embed_method","pos_only"),pe_method=p.get("pe_method","nerf"))
+        with contextlib.redirect_stdout(io.StringIO()): m=build_backbone(p, default="mamba1")
         return int(count_parameters(m))
     except Exception:return None
 def parameter_suite(rs,out):

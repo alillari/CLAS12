@@ -80,6 +80,9 @@ Typical dependencies include Python, PyTorch, CUDA-capable hardware for training
 and Mamba-related packages. See `requirements.txt` and the training scripts for
 the current working assumptions.
 
+See [Mamba support](train/MAMBA_SUPPORT.md) for independent backbone/adapter
+selection, Mamba2 pretraining, Mamba3 SISO, and checkpoint/runtime requirements.
+
 ## Research-product storage
 
 Keep source code, tests, reusable configurations, required calibration inputs,

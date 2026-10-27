@@ -61,6 +61,15 @@ corresponding FM4NPP and TPCpp-10M works as appropriate.
 `-- README.md           # Repository and storage conventions
 ```
 
+## Training workflows
+
+The shared `main` branch brings together [CLAS12 pretraining](train/pretrain/README.md)
+and [downstream adapter campaigns](train/downstream/campaign/README.md).
+It is the common starting point for ongoing CLAS12 research; new implementation
+experiments may live in separate branches. The pretraining integration preserves
+Mike's established recipes and 50-point selection; known trainer limitations
+remain documented rather than silently changing the experimental baseline.
+
 ## Setup
 
 The inherited setup notes are in `SETUP.md`, but they may not fully reflect the

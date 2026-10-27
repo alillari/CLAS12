@@ -2,9 +2,9 @@ name: Python syntax check
 
 on:
   push:
-    branches: [main, adapter-dev]
+    branches: [main]
   pull_request:
-    branches: [main, adapter-dev]
+    branches: [main]
 
 jobs:
   python-syntax:

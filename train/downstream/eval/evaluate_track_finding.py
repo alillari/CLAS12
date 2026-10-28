@@ -191,6 +191,7 @@ def init_down_model(params, device):
         do_masked_attn=bool(getattr(params, "do_masked_attn", True)),
         embed_method=getattr(params, "embed_method", "add"),
         pe_method=getattr(params, "pe_method", "nerf"),
+        pos_dim=int(getattr(params, "pos_dim", 3)), aux_dim=int(getattr(params, "aux_dim", 4)),
         dropout=float(getattr(params, "downstream_dropout", 0.0)),
     ).to(device)
 

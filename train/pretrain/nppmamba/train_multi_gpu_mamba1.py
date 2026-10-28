@@ -1,6 +1,6 @@
 """
 Mamba pretraining (legacy module name retained for existing launchers).
-Mamba1 remains the default; Mamba2 and Mamba3 SISO are explicit selections.
+Mamba1 remains the default; Mamba2, Mamba3 SISO, and causal transformers are explicit selections.
 
 The next-point objective and AdamW recipe are shared. Mamba1/2 retain FP32
 execution; Mamba3 blocks manage BF16 locally. See train/MAMBA_SUPPORT.md.
@@ -134,8 +134,8 @@ class Trainer():
         # Keep the historical Mamba1 default for existing launchers/configs.
         self.klen = self.params.klen
         version = backbone_version(self.params, default='mamba1')
-        if version not in {'mamba1', 'mamba2', 'mamba3'}:
-            raise ValueError('This pretraining entrypoint supports Mamba1, Mamba2, and Mamba3 SISO')
+        if version not in {'mamba1', 'mamba2', 'mamba3', 'transformer'}:
+            raise ValueError('This pretraining entrypoint supports Mamba1, Mamba2, Mamba3 SISO, and causal transformers')
         self.model = build_backbone(self.params, default='mamba1')
 
         # Standard initialization

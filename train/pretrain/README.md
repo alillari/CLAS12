@@ -80,6 +80,9 @@ support to every downstream head or change existing adapter configuration.
 
 ## Backbone selection and checkpoint compatibility
 
+For causal transformer pretraining with NoPE or RoPE, see
+[transformer support](../TRANSFORMER_SUPPORT.md) and `scripts/configs/transformer_pretrain.yaml`.
+
 The default for the imported recipes remains Mamba1. Set `backbone_version` to
 `mamba2` or `mamba3` to select another backbone; downstream `adapter_version`
 is independent. See [Mamba support](../MAMBA_SUPPORT.md) for block options,

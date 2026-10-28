@@ -2,7 +2,7 @@
 
 Factories return blocks directly, preserving all legacy state-dict prefixes.
 New selections are independent: backbone_version (legacy: mambaversion) and
-adapter_version. The latter controls Mamba layers, not attention decoders.
+adapter_version. The latter selects Mamba or bidirectional transformer layers.
 """
 
 from collections.abc import Mapping
@@ -11,7 +11,8 @@ import torch
 
 
 MAMBA_VERSIONS = {"mamba1", "mamba2", "mamba3"}
-BACKBONE_VERSIONS = MAMBA_VERSIONS | {"longformer", "linformer"}
+ADAPTER_VERSIONS = MAMBA_VERSIONS | {"transformer"}
+BACKBONE_VERSIONS = ADAPTER_VERSIONS | {"longformer", "linformer"}
 
 
 def value(params, key, default=None):
@@ -27,9 +28,46 @@ def backbone_version(params, default="mamba2"):
 
 def adapter_options(params):
     version = value(params, "adapter_version", "mamba2")
-    if version not in MAMBA_VERSIONS:
-        raise ValueError(f"Unknown adapter_version {version!r}; choose {sorted(MAMBA_VERSIONS)}")
-    return {"adapter_version": version, "adapter_block_kwargs": block_options(params, "adapter")}
+    if version not in ADAPTER_VERSIONS:
+        raise ValueError(f"Unknown adapter_version {version!r}; choose {sorted(ADAPTER_VERSIONS)}")
+    options = transformer_options(params, "adapter") if version == "transformer" else block_options(params, "adapter")
+    return {"adapter_version": version, "adapter_block_kwargs": options}
+
+
+def transformer_options(params, prefix):
+    return dict(
+        num_heads=value(params, "num_heads_backbone", 4) if prefix == "backbone" else value(params, "adapter_num_heads", 4),
+        sequence_encoding=value(params, f"{prefix}_sequence_encoding", "rope"),
+        rope_theta=value(params, f"{prefix}_rope_theta", 10000.),
+        mlp_ratio=value(params, f"{prefix}_mlp_ratio", 4.),
+        dropout=value(params, "dropout", .2) if prefix == "backbone" else value(params, "downstream_dropout", 0.),
+    )
+
+
+def adapter_dimensions(params):
+    """New transformer controls; preserve historical classification/regression sizes."""
+    if value(params, "adapter_version", "mamba2") == "transformer":
+        return dict(embed_dim=int(value(params, "adapter_embed_dim", 256)),
+                    num_layers=int(value(params, "num_adapter_layers", 1)))
+    return dict(embed_dim=256, num_layers=1)
+
+
+def build_adapter_layer(version, *, d_model, d_state=64, d_conv=4, expand=2, block_kwargs=None):
+    """Preserve legacy nesting/initialization; new transformer layers own residuals."""
+    if version == "transformer":
+        from fm4npp.models.transformer import TransformerBlock
+        return TransformerBlock(d_model, causal=False, **(block_kwargs or {}))
+    from fm4npp.models.rmsnorm import RMSNorm
+    return torch.nn.Sequential(
+        RMSNorm(d_model), build_mamba_block(version, d_model=d_model,
+                                          d_state=d_state, d_conv=d_conv,
+                                          expand=expand, block_kwargs=block_kwargs))
+
+
+def apply_adapter_layer(layer, x, padding_mask=None):
+    if hasattr(layer, "_transformer_config"):
+        return layer(x, padding_mask=padding_mask)
+    return layer(x) + x
 
 
 def block_options(params, prefix):
@@ -101,14 +139,20 @@ def build_mamba_block(version, *, d_model, d_state=64, d_conv=4, expand=2, block
 
 def build_backbone(params, default="mamba2"):
     # Import lazily so config inspection does not initialize CUDA extensions.
-    from fm4npp.models.mambagpt import Mamba1GPT, MambaGPT, Mamba3GPT
     version = backbone_version(params, default)
     common = dict(embed_dim=value(params, "embed_dim", 512),
                   num_layers=value(params, "num_layers_backbone", 12),
                   klen=value(params, "klen", 10), dropout=value(params, "dropout", 0.2),
                   embed_method=value(params, "embed_method", "add"),
                   pe_method=value(params, "pe_method", "nerf"))
+    if version == "transformer":
+        from fm4npp.models.transformer import TransformerGPT
+        options = transformer_options(params, "backbone")
+        common.pop("dropout")
+        return TransformerGPT(**common, **options,
+                              pos_dim=value(params, "pos_dim", 3), aux_dim=value(params, "aux_dim", 4))
     if version in MAMBA_VERSIONS:
+        from fm4npp.models.mambagpt import Mamba1GPT, MambaGPT, Mamba3GPT
         options = block_options(params, "backbone")
         d_state = options.pop("d_state", 16 if version == "mamba1" else 128 if version == "mamba3" else 64)
         d_conv = options.pop("d_conv", 4)
@@ -131,9 +175,10 @@ def build_backbone(params, default="mamba2"):
 
 
 def legacy_initialization_parameters(model):
-    """Retain legacy initialization exactly, except inside new Mamba3 blocks."""
+    """Retain legacy initialization, preserving new Mamba3/transformer block init."""
     return ((name, param) for name, param in model.named_parameters()
-            if not getattr(param, "_preserve_mamba_init", False))
+            if not getattr(param, "_preserve_mamba_init", False)
+            and not getattr(param, "_preserve_transformer_init", False))
 
 
 def uses_mamba3(model):
@@ -161,11 +206,15 @@ def optimizer_parameters(model, groups=None):
 def architecture_metadata(model):
     if isinstance(model, torch.nn.parallel.DistributedDataParallel):
         model = model.module
-    return {
+    metadata = {
         "version": getattr(model, "backbone_version", getattr(model, "adapter_version", None)),
-        "blocks": {name: module._mamba_config for name, module in model.named_modules()
-                   if hasattr(module, "_mamba_config")},
+        "blocks": {name: (module._mamba_config if hasattr(module, "_mamba_config") else module._transformer_config)
+                   for name, module in model.named_modules()
+                   if hasattr(module, "_mamba_config") or hasattr(module, "_transformer_config")},
     }
+    if hasattr(model, "_transformer_input_config"):
+        metadata["input_embedding"] = model._transformer_input_config
+    return metadata
 
 
 def validate_checkpoint_architecture(checkpoint, model, kind, *, backbone=None):
@@ -176,6 +225,9 @@ def validate_checkpoint_architecture(checkpoint, model, kind, *, backbone=None):
     """
     expected = architecture_metadata(model)
     saved = checkpoint.get(f"{kind}_architecture")
+    if saved is None and (expected["version"] == "transformer" or
+                          any(c["version"] == "transformer" for c in expected["blocks"].values())):
+        raise ValueError("Transformer checkpoints require architecture metadata to validate NoPE/RoPE and causality")
     if saved is not None and saved != expected:
         raise ValueError(f"Checkpoint {kind} architecture does not match current configuration: "
                          f"checkpoint={saved}, current={expected}")
@@ -189,15 +241,16 @@ def validate_checkpoint_architecture(checkpoint, model, kind, *, backbone=None):
         prefix = name + "."
         keys = [k[len(prefix):] for k in state if k.startswith(prefix)]
         if not keys:
-            raise ValueError(f"Checkpoint is missing {kind} Mamba block {name!r}")
-        inferred = ("mamba3" if "B_bias" in keys else
+            raise ValueError(f"Checkpoint is missing {kind} sequence block {name!r}")
+        inferred = ("transformer" if "sequence_attn.qkv.weight" in keys else
+                    "mamba3" if "B_bias" in keys else
                     "mamba2" if "lin_B.weight" in keys else "mamba1")
         if config["version"] != inferred:
             raise ValueError(f"Checkpoint {kind} block {name!r} is {inferred}, "
                              f"configured as {config['version']}")
     # Catch the reverse case too: a zero-layer/attention head must not silently
     # discard saved Mamba layers under the historical non-strict loader.
-    markers = (".B_bias", ".lin_B.weight", ".A_log")
+    markers = (".B_bias", ".lin_B.weight", ".A_log", ".sequence_attn.qkv.weight")
     actual_blocks = {k[:-len(marker)] for k in state for marker in markers if k.endswith(marker)}
     if any(name not in expected["blocks"] for name in actual_blocks):
-        raise ValueError(f"Checkpoint contains Mamba blocks absent from the configured {kind}")
+        raise ValueError(f"Checkpoint contains Mamba/transformer blocks absent from the configured {kind}")

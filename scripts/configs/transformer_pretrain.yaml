@@ -1,0 +1,69 @@
+# Causal transformer recipes using the existing v6_02 data/target contract.
+# Update data/stat/output paths for your environment. NoPE retains coordinate encoding.
+default: &transformer_default
+  data_root: /workspace/PP_collision/mmap_canonical_loose_truthseg_event_v6_02
+  stat_dir: /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints/Transformer_v6_02
+  data_version: dataset_name
+  n_data_idx: 10000000
+  limit_data: true
+  limit_size: 10000000
+  group_size: 8
+  nleave: 1e10
+  order: EPR
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  return_reg_test: false
+  return_dict: false
+  max_gt_classes: 150
+  voxelize: false
+  space_filling_order: true
+  space_filling_curve: z
+  grad_clip_value: 1.0
+  rep_aaai: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+  batch_size: 128
+  local_batch_size: 64
+  valid_batch_size: 32
+  local_valid_batch_size: 2
+  max_epochs: 10000
+  max_lr: 0.0002
+  min_lr: 0.00002
+  warmup_steps: 10000
+  n_eval_steps: 1000
+  total_steps: 100000
+  base_dim: 256
+  embed_dim: 256
+  klen: 1
+  dropout: 0.1
+  init_std: 0.025
+  embed_method: pos_only
+  pe_method: nerf
+  num_data_workers: 8
+  log_to_screen: true
+  save_version: transformer_rope_v602
+  reader_type: ragged_mmap
+  nexttoken: false
+  data_fraction: 1.0
+  num_layers_backbone: 12
+  use_mup: true
+  mup_base_width: 256
+  weight_decay: 0.01
+  max_val_batches: 1000
+  use_wandb: true
+  backbone_version: transformer
+  num_heads_backbone: 4
+  backbone_sequence_encoding: rope
+  backbone_rope_theta: 10000.0
+  backbone_mlp_ratio: 4.0
+
+transformer_rope_v602:
+  <<: *transformer_default
+
+transformer_nope_v602:
+  <<: *transformer_default
+  backbone_sequence_encoding: none
+  save_version: transformer_nope_v602

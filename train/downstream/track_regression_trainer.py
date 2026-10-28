@@ -26,7 +26,7 @@ sys.path.append('../..')
 from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
 from fm4npp.models.mamba_config import (
-    adapter_options, backbone_version, build_backbone, architecture_metadata,
+    adapter_options, adapter_dimensions, backbone_version, build_backbone, architecture_metadata,
     legacy_initialization_parameters, optimizer_parameters,
     uses_mamba3, validate_checkpoint_architecture,
 )
@@ -120,10 +120,10 @@ class DownstreamTrainer():
                     f"aux_extra_feature={aux_extra_feature!r} produces {expected_aux_dim} "
                     f"auxiliary columns, but aux_dim={getattr(params, 'aux_dim', None)!r}"
                 )
-            if backbone_version(params) not in {"mamba1", "mamba2", "mamba3"}:
+            if backbone_version(params) not in {"mamba1", "mamba2", "mamba3", "transformer"}:
                 raise ValueError(
                     "clas12_pos_plus_aux_v1 is currently supported only by "
-                    "Mamba1GPT, MambaGPT, or Mamba3GPT backbones"
+                    "Mamba1GPT, MambaGPT, Mamba3GPT, or TransformerGPT backbones"
                 )
         if getattr(params, "adapter_sample_mode", "event_segment") != "event_segment":
             raise ValueError(
@@ -447,8 +447,8 @@ class DownstreamTrainer():
         
         #else:
         self.down_model = MambaTrackRegressionHead(
-            **adapter_options(self.params),
-            input_dim=self.params.embed_dim, num_layers=1,
+            **adapter_options(self.params), **adapter_dimensions(self.params),
+            input_dim=self.params.embed_dim,
             num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2,
             num_feature_layers=self.params.num_layers_backbone,
             num_embedder_layers=self.params.num_embedder_layers,
@@ -643,9 +643,8 @@ class DownstreamTrainer():
         #                          ).to(self.device)
 
         self.down_model = MambaTrackRegressionHead(
-            **adapter_options(self.params),
+            **adapter_options(self.params), **adapter_dimensions(self.params),
             input_dim=self.params.embed_dim,
-            num_layers=1,
             num_output_dim=self.params.num_output_classes,
             d_state=64,
             d_conv=4,

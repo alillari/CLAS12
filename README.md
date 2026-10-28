@@ -82,6 +82,8 @@ the current working assumptions.
 
 See [Mamba support](train/MAMBA_SUPPORT.md) for independent backbone/adapter
 selection, Mamba2 pretraining, Mamba3 SISO, and checkpoint/runtime requirements.
+See [transformer support](train/TRANSFORMER_SUPPORT.md) for causal pretraining,
+bidirectional adapters, and independent NoPE/RoPE sequence encoding.
 
 ## Research-product storage
 

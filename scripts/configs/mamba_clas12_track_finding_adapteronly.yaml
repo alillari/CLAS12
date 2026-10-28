@@ -140,3 +140,31 @@ default: &default
 
 clas12_track_finding_adapteronly:
   <<: *default
+
+# Causal transformer backbone + independently selectable bidirectional adapter.
+# Use --usepretrain and a matching transformer checkpoint for feature transfer.
+clas12_track_finding_transformer_rope: &transformer_rope
+  <<: *default
+  downstream_dir: "{artifact_root}/downstream_log/clas12_track_finding_transformer_rope"
+  model_version: clas12_track_finding_transformer_rope
+  backbone_version: transformer
+  adapter_version: transformer
+  embed_dim: 256
+  num_layers_backbone: 12
+  klen: 1
+  num_heads_backbone: 4
+  backbone_sequence_encoding: rope
+  backbone_mlp_ratio: 4.0
+  backbone_rope_theta: 10000.0
+  adapter_sequence_encoding: rope
+  adapter_num_heads: 4
+  adapter_mlp_ratio: 4.0
+  adapter_rope_theta: 10000.0
+  num_adapter_layers: 1
+
+clas12_track_finding_transformer_nope:
+  <<: *transformer_rope
+  downstream_dir: "{artifact_root}/downstream_log/clas12_track_finding_transformer_nope"
+  model_version: clas12_track_finding_transformer_nope
+  backbone_sequence_encoding: none
+  adapter_sequence_encoding: none

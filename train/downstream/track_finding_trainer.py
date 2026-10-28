@@ -483,6 +483,7 @@ class DownstreamTrainer():
             do_masked_attn=bool(getattr(self.params, "do_masked_attn", True)),
             embed_method=getattr(self.params, "embed_method", "add"),
             pe_method=getattr(self.params, "pe_method", "nerf"),
+            pos_dim=int(getattr(self.params, "pos_dim", 3)), aux_dim=int(getattr(self.params, "aux_dim", 4)),
             dropout=getattr(self.params, "downstream_dropout", 0.0),
         ).to(self.device)
     
@@ -772,6 +773,7 @@ class DownstreamTrainer():
             do_masked_attn=bool(getattr(self.params, "do_masked_attn", True)),
             embed_method=getattr(self.params, "embed_method", "add"),
             pe_method=getattr(self.params, "pe_method", "nerf"),
+            pos_dim=int(getattr(self.params, "pos_dim", 3)), aux_dim=int(getattr(self.params, "aux_dim", 4)),
             dropout=getattr(self.params, "downstream_dropout", 0.0),
         ).to(self.device)
         

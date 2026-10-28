@@ -215,12 +215,11 @@ def load_analysis_config(args):
 
 def build_head(trainer):
     params = trainer.params
-    from fm4npp.models.mamba_config import adapter_options
+    from fm4npp.models.mamba_config import adapter_options, adapter_dimensions
 
     return MambaTrackRegressionHead(
-        **adapter_options(params),
+        **adapter_options(params), **adapter_dimensions(params),
         input_dim=params.embed_dim,
-        num_layers=1,
         num_output_dim=params.num_output_classes,
         d_state=64,
         d_conv=4,
@@ -1999,13 +1998,17 @@ def main():
     output_dir = config["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not torch.cuda.is_available():
+    params = YParams(str(config["model_yaml"]), config["model_config"])
+    from fm4npp.models.mamba_config import backbone_version
+    transformer_only = (getattr(params, "adapter_version", "mamba2") == "transformer"
+                        and (not config.get("use_pretrained_backbone")
+                             or backbone_version(params) == "transformer"))
+    if not torch.cuda.is_available() and not transformer_only:
         raise RuntimeError(
             "Track-regression evaluation requires CUDA because the installed "
             "Mamba/causal-convolution implementation has no CPU forward kernel"
         )
 
-    params = YParams(str(config["model_yaml"]), config["model_config"])
     params["batch_size"] = int(config["batch_size"])
     params["valid_batch_size"] = int(config["batch_size"])
     params["num_data_workers"] = int(config["num_workers"])
@@ -2015,7 +2018,8 @@ def main():
     params["limit_test_data"] = True
     params["limit_test_size"] = int(config["max_samples"])
     params["drop_last_test"] = False
-    params["num_embedder_layers"] = 0
+    if getattr(params, "adapter_version", "mamba2") != "transformer":
+        params["num_embedder_layers"] = 0
     params["pretrained_ckpt"] = (
         str(resolve_path(config.get("pretrained_checkpoint"), config["analysis_config"].parent))
         if config.get("use_pretrained_backbone") else None

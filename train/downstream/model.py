@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
-from fm4npp.models.mamba_config import build_mamba_block
+from fm4npp.models.mamba_config import build_adapter_layer, apply_adapter_layer
 
 
 class RegressionTargetNormalizer(nn.Module):
@@ -191,6 +191,8 @@ class MambaAttentionHead(nn.Module):
                  num_self_attn_layers=2, softmax_mask=False, do_masked_attn=True, do_holistic=True, return_embedding=False, *, adapter_version="mamba2", adapter_block_kwargs=None):
         super().__init__()
         self.adapter_version = adapter_version
+        if adapter_version == "transformer" and num_layers < 1:
+            raise ValueError("Transformer adapters require at least one refinement layer (num_adapter_layers >= 1)")
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.num_prototypes = num_prototypes
@@ -212,15 +214,12 @@ class MambaAttentionHead(nn.Module):
 
         # Mamba backbone
         self.mamba_layers = nn.ModuleList([
-            nn.Sequential(
-                RMSNorm(embed_dim),
-                build_mamba_block(
-                    adapter_version, block_kwargs=adapter_block_kwargs,
-                    d_model=embed_dim,
-                    d_state=d_state,
-                    d_conv=d_conv,
-                    expand=expand
-                )
+            build_adapter_layer(
+                adapter_version, block_kwargs=adapter_block_kwargs,
+                d_model=embed_dim,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand
             ) for _ in range(num_layers)
         ])
         self.norm = RMSNorm(embed_dim)
@@ -318,6 +317,10 @@ class MambaAttentionHead(nn.Module):
         return attn_mask
 
     def forward(self, x, feature=None, padding_mask=None, pretrain=False):
+        if self.adapter_version == "transformer":
+            if padding_mask is None:
+                padding_mask = x[..., 0] != -100
+            x = x.masked_fill(~padding_mask[..., None], 0.)
         # Input processing
         if pretrain:
             x = feature.permute(1, 2, 0, 3)
@@ -341,7 +344,7 @@ class MambaAttentionHead(nn.Module):
 
         # Process through Mamba layers
         for layer in self.mamba_layers:
-            x = layer(x) + x
+            x = apply_adapter_layer(layer, x, padding_mask)
         x = self.norm(x)
 
         # Generate transformed points using FFN
@@ -410,9 +413,11 @@ class MambaAttentionHead(nn.Module):
 class MambaHead(nn.Module):
     def __init__(self, input_dim, embed_dim=256, num_layers=3, d_state=64, d_conv=4, expand=2, 
                  num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
-                 num_feature_layers=15, num_output_dim=5, return_embedding=False, dropout=0.0, *, embed_method="add", pe_method="nerf", adapter_version="mamba2", adapter_block_kwargs=None):
+                 num_feature_layers=15, num_output_dim=5, return_embedding=False, dropout=0.0, *, embed_method="add", pe_method="nerf", adapter_version="mamba2", adapter_block_kwargs=None, pos_dim=3, aux_dim=4):
         super().__init__()
         self.adapter_version = adapter_version
+        if adapter_version == "transformer" and num_layers < 1:
+            raise ValueError("Transformer adapters require at least one refinement layer (num_adapter_layers >= 1)")
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
@@ -426,28 +431,22 @@ class MambaHead(nn.Module):
 
         # Mamba feature extractor
         self.mamba_layers = nn.ModuleList([
-            nn.Sequential(
-                RMSNorm(embed_dim),
-                build_mamba_block(
-                    adapter_version, block_kwargs=adapter_block_kwargs,
-                    d_model=embed_dim,
-                    d_state=d_state,
-                    d_conv=d_conv,
-                    expand=expand
-                )
+            build_adapter_layer(
+                adapter_version, block_kwargs=adapter_block_kwargs,
+                d_model=embed_dim,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand
             ) for _ in range(num_layers)
         ])
         # if not using the pretrained mamba2, we can use the embedder layers
         self.mamba_embedder_layers = nn.ModuleList([
-            nn.Sequential(
-                RMSNorm(input_dim),
-                build_mamba_block(
-                    adapter_version, block_kwargs=adapter_block_kwargs,
-                    d_model=input_dim,
-                    d_state=d_state_embedder,
-                    d_conv=d_conv_embedder,
-                    expand=expand_embedder
-                )
+            build_adapter_layer(
+                adapter_version, block_kwargs=adapter_block_kwargs,
+                d_model=input_dim,
+                d_state=d_state_embedder,
+                d_conv=d_conv_embedder,
+                expand=expand_embedder
             ) for _ in range(num_embedder_layers)
         ])
         self.embedder_norm = RMSNorm(input_dim)
@@ -456,14 +455,19 @@ class MambaHead(nn.Module):
         # Noise prediction head go from point embedding
         self.out_mlp = MLPHead(embed_dim, num_output_dim, dropout=dropout)
 
-        embedders = {"add": EmbedderAdd, "concat": EmbedderConcat, "pos_only": EmbedderPosOnly}
+        embedders = {"add": EmbedderAdd, "concat": EmbedderConcat, "pos_only": EmbedderPosOnly, "pos_plus_aux": EmbedderPosPlusAux}
         if embed_method not in embedders:
             raise ValueError(f"Unknown embed_method: {embed_method}")
-        self.embedder = embedders[embed_method](pe_method=pe_method, embed_dim=input_dim)
+        self.embedder = embedders[embed_method](pe_method=pe_method, embed_dim=input_dim,
+                                                  **(dict(pos_dim=pos_dim, aux_dim=aux_dim) if embed_method == "pos_plus_aux" else {}))
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
 
     def forward(self, x, feature=None, padding_mask=None, pretrain=False):
+        if self.adapter_version == "transformer":
+            if padding_mask is None:
+                padding_mask = x[..., 0] != -100
+            x = x.masked_fill(~padding_mask[..., None], 0.)
         # Input processing
         if pretrain:
             x = feature.permute(1, 2, 0, 3)
@@ -476,9 +480,11 @@ class MambaHead(nn.Module):
             if isinstance(x, tuple):
                 x = x[0]
             for layer in self.mamba_embedder_layers:
-                x = layer(x) + x
+                x = apply_adapter_layer(layer, x, padding_mask)
             x = self.embedder_norm(x)
         
+        if self.adapter_version == "transformer":
+            x = x.masked_fill(~padding_mask[..., None], 0.)
         embedding_pre_projection = None
         embedding_post_projection = None
         if self.return_embedding:
@@ -491,7 +497,7 @@ class MambaHead(nn.Module):
         
         # Process through Mamba layers
         for layer in self.mamba_layers:
-            x = layer(x) + x
+            x = apply_adapter_layer(layer, x, padding_mask)
         x = self.norm(x)
 
         #noise prediction
@@ -526,6 +532,8 @@ class MambaTrackRegressionHead(nn.Module):
                  pos_dim=3, aux_dim=4, *, adapter_version="mamba2", adapter_block_kwargs=None):
         super().__init__()
         self.adapter_version = adapter_version
+        if adapter_version == "transformer" and num_layers < 1:
+            raise ValueError("Transformer adapters require at least one refinement layer (num_adapter_layers >= 1)")
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
@@ -569,28 +577,22 @@ class MambaTrackRegressionHead(nn.Module):
 
         # Mamba feature extractor
         self.mamba_layers = nn.ModuleList([
-            nn.Sequential(
-                RMSNorm(embed_dim),
-                build_mamba_block(
-                    adapter_version, block_kwargs=adapter_block_kwargs,
-                    d_model=embed_dim,
-                    d_state=d_state,
-                    d_conv=d_conv,
-                    expand=expand
-                )
+            build_adapter_layer(
+                adapter_version, block_kwargs=adapter_block_kwargs,
+                d_model=embed_dim,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand
             ) for _ in range(num_layers)
         ])
         # if not using the pretrained mamba2, we can use the embedder layers
         self.mamba_embedder_layers = nn.ModuleList([
-            nn.Sequential(
-                RMSNorm(input_dim),
-                build_mamba_block(
-                    adapter_version, block_kwargs=adapter_block_kwargs,
-                    d_model=input_dim,
-                    d_state=d_state_embedder,
-                    d_conv=d_conv_embedder,
-                    expand=expand_embedder
-                )
+            build_adapter_layer(
+                adapter_version, block_kwargs=adapter_block_kwargs,
+                d_model=input_dim,
+                d_state=d_state_embedder,
+                d_conv=d_conv_embedder,
+                expand=expand_embedder
             ) for _ in range(num_embedder_layers)
         ])
         self.embedder_norm = RMSNorm(input_dim)
@@ -639,6 +641,10 @@ class MambaTrackRegressionHead(nn.Module):
         padding_mask=None,
         pretrain=False,
     ):
+        if self.adapter_version == "transformer":
+            if padding_mask is None:
+                padding_mask = x[..., 0] != -100
+            x = x.masked_fill(~padding_mask[..., None], 0.)
         if pretrain:
             x = feature.permute(1, 2, 0, 3)
             weights = torch.softmax(self.weighted_avg_weights, dim=0)
@@ -651,10 +657,12 @@ class MambaTrackRegressionHead(nn.Module):
                 x = x[0]
 
             for layer in self.mamba_embedder_layers:
-                x = layer(x) + x
+                x = apply_adapter_layer(layer, x, padding_mask)
 
             x = self.embedder_norm(x)
 
+        if self.adapter_version == "transformer":
+            x = x.masked_fill(~padding_mask[..., None], 0.)
         embedding_pre_projection = None
         embedding_post_projection = None
 
@@ -667,7 +675,7 @@ class MambaTrackRegressionHead(nn.Module):
             embedding_post_projection = x
 
         for layer in self.mamba_layers:
-            x = layer(x) + x
+            x = apply_adapter_layer(layer, x, padding_mask)
 
         x = self.norm(x)
 
@@ -693,6 +701,8 @@ class AttentionHead(nn.Module):
                  num_feature_layers=15, num_output_dim=5, return_embedding=False, embed_method='add', pe_method = 'nerf', dropout=0.0, ffn_dim=512, adapter_FFN = True, *, adapter_version="mamba2", adapter_block_kwargs=None):
         super().__init__()
         self.adapter_version = adapter_version
+        if adapter_version == "transformer" and num_layers < 1:
+            raise ValueError("Transformer adapters require at least one refinement layer (num_adapter_layers >= 1)")
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
@@ -715,14 +725,13 @@ class AttentionHead(nn.Module):
 
         # SA feature extractor
         self.SA_layers = nn.ModuleList([
-            SelfAttentionBlock(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-            )
+            build_adapter_layer("transformer", d_model=embed_dim, block_kwargs=adapter_block_kwargs)
+            if adapter_version == "transformer" else
+            SelfAttentionBlock(embed_dim=embed_dim, num_heads=num_heads)
             for _ in range(num_layers)
         ])
         #ffn layers
-        if self.FFN:
+        if self.FFN and adapter_version != "transformer":
             self.ffn_layers = nn.ModuleList([
                 FFNBlock(
                     embed_dim=embed_dim,
@@ -734,15 +743,12 @@ class AttentionHead(nn.Module):
             self.ffn_layers = []
         # if not using the pretrained mamba2, we can use the embedder layers
         self.mamba_embedder_layers = nn.ModuleList([
-            nn.Sequential(
-                RMSNorm(input_dim),
-                build_mamba_block(
-                    adapter_version, block_kwargs=adapter_block_kwargs,
-                    d_model=input_dim,
-                    d_state=d_state_embedder,
-                    d_conv=d_conv_embedder,
-                    expand=expand_embedder
-                )
+            build_adapter_layer(
+                adapter_version, block_kwargs=adapter_block_kwargs,
+                d_model=input_dim,
+                d_state=d_state_embedder,
+                d_conv=d_conv_embedder,
+                expand=expand_embedder
             ) for _ in range(num_embedder_layers)
         ])
         self.embedder_norm = RMSNorm(input_dim)
@@ -756,6 +762,10 @@ class AttentionHead(nn.Module):
 
 
     def forward(self, x, feature=None, padding_mask=None, pretrain=False):
+        if self.adapter_version == "transformer":
+            if padding_mask is None:
+                padding_mask = x[..., 0] != -100
+            x = x.masked_fill(~padding_mask[..., None], 0.)
         # Input processing
         if pretrain:
             x = feature.permute(1, 2, 0, 3)
@@ -768,9 +778,11 @@ class AttentionHead(nn.Module):
             if isinstance(x, tuple):
                 x = x[0]
             for layer in self.mamba_embedder_layers:
-                x = layer(x) + x
+                x = apply_adapter_layer(layer, x, padding_mask)
             x = self.embedder_norm(x)
         
+        if self.adapter_version == "transformer":
+            x = x.masked_fill(~padding_mask[..., None], 0.)
         embedding_pre_projection = None
         embedding_post_projection = None
         if self.return_embedding:
@@ -783,23 +795,29 @@ class AttentionHead(nn.Module):
         if self.return_embedding:
             embedding_post_projection = x
         
-        x = x.transpose(0, 1) #(N,B,D)
-        # Process through SA + FFN layers
-        if self.FFN:
-            for sa_layer, ffn_layer in zip(self.SA_layers, self.ffn_layers):
-                x = sa_layer(x, key_padding_mask=~padding_mask)
-                x = ffn_layer(x)
+        if self.adapter_version == "transformer":
+            for layer in self.SA_layers:
+                x = apply_adapter_layer(layer, x, padding_mask)
+            x = self.norm(x)
         else:
-            for sa_layer in self.SA_layers:
-                x = sa_layer(x, key_padding_mask=~padding_mask)
-                x = x
-        x = self.norm(x)
-        x = x.transpose(0, 1) #(B,N,D)
+            x = x.transpose(0, 1) #(N,B,D)
+            # Existing bidirectional attention + FFN path.
+            key_padding_mask = None if padding_mask is None else ~padding_mask
+            if self.FFN:
+                for sa_layer, ffn_layer in zip(self.SA_layers, self.ffn_layers):
+                    x = sa_layer(x, key_padding_mask=key_padding_mask)
+                    x = ffn_layer(x)
+            else:
+                for sa_layer in self.SA_layers:
+                    x = sa_layer(x, key_padding_mask=key_padding_mask)
+            x = self.norm(x)
+            x = x.transpose(0, 1) #(B,N,D)
         #noise prediction
         out_logits = self.out_mlp(x) # (B, N, num_output_dim)
 
         return {
             'pred': out_logits,  # (B, N, num_output_dim)
+            'pred_logits': out_logits,  # Classification trainer contract.
             'embedding_pre_projection': embedding_pre_projection,
             'embedding_post_projection': embedding_post_projection
         }

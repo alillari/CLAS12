@@ -24,7 +24,7 @@ sys.path.append('../..')
 from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
 from fm4npp.models.mamba_config import (
-    adapter_options, backbone_version, build_backbone, architecture_metadata,
+    adapter_options, adapter_dimensions, backbone_version, build_backbone, architecture_metadata,
     legacy_initialization_parameters, optimizer_parameters,
     uses_mamba3, validate_checkpoint_architecture,
 )
@@ -392,16 +392,17 @@ class DownstreamTrainer():
         #                          ).to(self.device)
 
 
-        if self.params.use_attention_head:
+        if self.params.use_attention_head and getattr(self.params, "adapter_version", "mamba2") != "transformer":
             self.down_model = AttentionHead(**adapter_options(self.params), input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
                           num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
                           num_embedder_layers= self.params.num_embedder_layers, 
                           ).to(self.device)
         
         else:
-            self.down_model = MambaHead(**adapter_options(self.params),
+            self.down_model = MambaHead(**adapter_options(self.params), **adapter_dimensions(self.params),
                                       embed_method=self.params.embed_method, pe_method=self.params.pe_method,
-                                      input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
+                                      pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4),
+                                      input_dim=self.params.embed_dim, num_output_dim = self.params.num_output_classes,
                                       d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone,
                                       num_embedder_layers= self.params.num_embedder_layers, 
                                       ).to(self.device)
@@ -563,16 +564,17 @@ class DownstreamTrainer():
         #                          num_embedder_layers= self.params.num_embedder_layers, 
         #                          ).to(self.device)
 
-        if self.params.use_attention_head:
+        if self.params.use_attention_head and getattr(self.params, "adapter_version", "mamba2") != "transformer":
             self.down_model = AttentionHead(**adapter_options(self.params), input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
                           num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
                           num_embedder_layers= self.params.num_embedder_layers, 
                           ).to(self.device)
         
         else:
-            self.down_model = MambaHead(**adapter_options(self.params),
+            self.down_model = MambaHead(**adapter_options(self.params), **adapter_dimensions(self.params),
                                       embed_method=self.params.embed_method, pe_method=self.params.pe_method,
-                                      input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
+                                      pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4),
+                                      input_dim=self.params.embed_dim, num_output_dim = self.params.num_output_classes,
                                       d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone,
                                       num_embedder_layers= self.params.num_embedder_layers, 
                                       ).to(self.device)

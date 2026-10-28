@@ -294,7 +294,8 @@ class TransformerTransferTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     trainer = ValidationLossTrainingTest().trainer(directory)
                     trainer.model = build_backbone(config(encoding)).eval()
-                    trainer.down_model = head(encoding=encoding)
+                    trainer.device = next(trainer.model.parameters()).device
+                    trainer.down_model = head(encoding=encoding).to(trainer.device)
                     trainer.down_optimizer = torch.optim.AdamW(trainer.down_model.parameters(), lr=.001)
                     trainer.grad_clip_value = 1.
                     batch = dict(points=torch.rand(2, 6, 3), reg_target=torch.rand(2, 6, 3))
@@ -304,7 +305,8 @@ class TransformerTransferTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     trainer = fixture_trainer(directory)
                     trainer.model = build_backbone(config(encoding)).eval()
-                    trainer.down_model = head(MambaAttentionHead, encoding=encoding)
+                    trainer.device = next(trainer.model.parameters()).device
+                    trainer.down_model = head(MambaAttentionHead, encoding=encoding).to(trainer.device)
                     loss, *_ = trainer._compute_batch_loss(trainer.val_data_loader[0], pretrain=pretrain, train=True)
                     self.assertTrue(torch.isfinite(loss))
                     loss.backward()

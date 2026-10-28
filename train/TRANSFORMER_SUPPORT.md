@@ -119,6 +119,22 @@ construction, semantic checkpoint rejection, and trainer validation/resume.
 The optional CUDA case exercises BF16 autocast and backbone-to-adapter transfer.
 CPU testing is functional validation, not a completed detector-data campaign.
 
+To exercise the entire transformer suite on CUDA, including the semantic and
+trainer tests (rather than only the explicitly CUDA-marked test), run in an
+isolated GPU environment:
+
+```bash
+OMP_NUM_THREADS=2 python - <<'PY'
+import torch
+import unittest
+assert torch.cuda.is_available()
+torch.set_default_device("cuda")
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
+unittest.main(module="train.downstream.tests.test_transformer_support", verbosity=2)
+PY
+```
+
 This is dense attention with quadratic attention memory, using PyTorch SDPA.
 Scope is full-sequence training and feature extraction; cached decoding is not
 implemented. See [PyTorch SDPA](https://docs.pytorch.org/docs/2.8/generated/torch.nn.functional.scaled_dot_product_attention.html)

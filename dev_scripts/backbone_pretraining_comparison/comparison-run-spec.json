@@ -1,0 +1,46 @@
+{
+  "job_id": "backbone-pretraining-full-comparison-20261028",
+  "image": "sha256:bbc43e230b611637aca8f1824804dc26f3ac0d5ab9703dcc11d7fda9085a4a0f",
+  "command": [
+    "python",
+    "dev_scripts/backbone_pretraining_comparison/compare.py",
+    "--wait",
+    "--data-root",
+    "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02"
+  ],
+  "gpu": false,
+  "cpus": 4,
+  "memory_gib": 8,
+  "timeout_seconds": null,
+  "network": "none",
+  "environment": {
+    "MKL_NUM_THREADS": "4",
+    "OMP_NUM_THREADS": "4",
+    "PYTHONHASHSEED": "42",
+    "PYTHONPATH": "/workspace",
+    "TORCHINDUCTOR_CACHE_DIR": "/results/inductor",
+    "TRITON_CACHE_DIR": "/results/triton",
+    "XDG_CACHE_HOME": "/results/cache"
+  },
+  "mounts": [
+    {
+      "source": "/home/alessio/ML-work/result_deep_storage/edge_mcp/jobs/mamba1-chinchilla-w512-d12-k1-20261028/output",
+      "target": "/mamba1",
+      "read_only": true
+    },
+    {
+      "source": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02",
+      "target": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02",
+      "read_only": true
+    }
+  ],
+  "expected_artifacts": [
+    "comparison_complete.json",
+    "comparison/summary.json",
+    "comparison/learning_curves.csv",
+    "comparison/validation_loss_vs_steps.png",
+    "comparison/validation_loss_vs_compute.png",
+    "comparison/validation_loss_vs_dense_compute.png",
+    "comparison/report.md"
+  ]
+}

@@ -1,0 +1,2152 @@
+{
+  "host": "03d9129ca6c9",
+  "gpu": "NVIDIA GB10",
+  "torch": "2.8.0a0+5228986c39.nv25.05",
+  "cuda": "12.9",
+  "models": {
+    "mamba1": {
+      "version": "mamba1",
+      "parameters": 20377091,
+      "trainable_parameters": 20344835,
+      "dense_trainable_forward_flops_per_token": 40111104,
+      "frozen_embedding_forward_flops_per_token": 64512,
+      "conv_forward_flops_per_token": 98304,
+      "canonical_ssm_forward_flops_per_token": 1413120,
+      "dense_training_flops_per_padded_token": 120397824,
+      "estimated_training_flops_per_padded_token": 124932096,
+      "projections": [
+        {
+          "name": "mamba_layers.0.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.0.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.0.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.0.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.1.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.1.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.1.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.1.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.2.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.2.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.2.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.2.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.3.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.3.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.3.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.3.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.4.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.4.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.4.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.4.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.5.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.5.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.5.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.5.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.6.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.6.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.6.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.6.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.7.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.7.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.7.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.7.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.8.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.8.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.8.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.8.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.9.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.9.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.9.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.9.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.10.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.10.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.10.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.10.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.11.1.in_proj",
+          "shape": [
+            2048,
+            512
+          ],
+          "forward_flops_per_token": 2097152
+        },
+        {
+          "name": "mamba_layers.11.1.x_proj",
+          "shape": [
+            64,
+            1024
+          ],
+          "forward_flops_per_token": 131072
+        },
+        {
+          "name": "mamba_layers.11.1.dt_proj",
+          "shape": [
+            1024,
+            32
+          ],
+          "forward_flops_per_token": 65536
+        },
+        {
+          "name": "mamba_layers.11.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "output_layer",
+          "shape": [
+            3,
+            512
+          ],
+          "forward_flops_per_token": 3072
+        }
+      ],
+      "blocks": [
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        },
+        {
+          "config": {
+            "version": "mamba1",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2
+          },
+          "canonical_ssm_forward_flops_per_token": 117760
+        }
+      ],
+      "convention": "MAC=2; trainable forward+backward approx 3x forward; frozen embedding forward only",
+      "excluded": [
+        "nonlinearities and normalization",
+        "optimizer/audit/data/validation work",
+        "parallel-scan overhead",
+        "kernel tile/chunk padding",
+        "backward recomputation"
+      ],
+      "status": "algorithmic estimate, not measured total executed GPU FLOPs",
+      "benchmark": {
+        "batch": 64,
+        "length": 50,
+        "warmup_updates": 10,
+        "measured_updates": 30,
+        "median_gpu_ms": 82.82902526855469,
+        "median_wall_ms": 82.94976150500588,
+        "peak_allocated_bytes": 1236291072,
+        "samples": [
+          {
+            "gpu_ms": 82.70054626464844,
+            "wall_ms": 91.7229590122588
+          },
+          {
+            "gpu_ms": 83.9736328125,
+            "wall_ms": 84.11281599546783
+          },
+          {
+            "gpu_ms": 82.72380828857422,
+            "wall_ms": 82.82715998939238
+          },
+          {
+            "gpu_ms": 83.8358383178711,
+            "wall_ms": 83.9360179961659
+          },
+          {
+            "gpu_ms": 83.36163330078125,
+            "wall_ms": 83.4626609866973
+          },
+          {
+            "gpu_ms": 82.89801788330078,
+            "wall_ms": 82.99687199178152
+          },
+          {
+            "gpu_ms": 82.09513854980469,
+            "wall_ms": 82.19562898739241
+          },
+          {
+            "gpu_ms": 83.14125061035156,
+            "wall_ms": 83.20099898264743
+          },
+          {
+            "gpu_ms": 82.81884765625,
+            "wall_ms": 82.92780100600794
+          },
+          {
+            "gpu_ms": 82.86470031738281,
+            "wall_ms": 82.97231199685484
+          },
+          {
+            "gpu_ms": 82.7867202758789,
+            "wall_ms": 82.89172098739073
+          },
+          {
+            "gpu_ms": 83.45145416259766,
+            "wall_ms": 83.55419599683955
+          },
+          {
+            "gpu_ms": 82.87657928466797,
+            "wall_ms": 82.97719300026074
+          },
+          {
+            "gpu_ms": 83.19641876220703,
+            "wall_ms": 83.29752599820495
+          },
+          {
+            "gpu_ms": 82.71513366699219,
+            "wall_ms": 82.81653700396419
+          },
+          {
+            "gpu_ms": 82.85740661621094,
+            "wall_ms": 82.95978500973433
+          },
+          {
+            "gpu_ms": 86.34358215332031,
+            "wall_ms": 86.4580659836065
+          },
+          {
+            "gpu_ms": 82.8773422241211,
+            "wall_ms": 82.98644100432284
+          },
+          {
+            "gpu_ms": 81.64198303222656,
+            "wall_ms": 81.74564898945391
+          },
+          {
+            "gpu_ms": 82.40377807617188,
+            "wall_ms": 82.5055000022985
+          },
+          {
+            "gpu_ms": 82.82390594482422,
+            "wall_ms": 82.92432900634594
+          },
+          {
+            "gpu_ms": 82.83414459228516,
+            "wall_ms": 82.93973800027743
+          },
+          {
+            "gpu_ms": 82.7147216796875,
+            "wall_ms": 82.81540201278403
+          },
+          {
+            "gpu_ms": 83.37510681152344,
+            "wall_ms": 83.47558899549767
+          },
+          {
+            "gpu_ms": 82.71782684326172,
+            "wall_ms": 82.81697001075372
+          },
+          {
+            "gpu_ms": 82.69647979736328,
+            "wall_ms": 82.79692300129682
+          },
+          {
+            "gpu_ms": 83.49433898925781,
+            "wall_ms": 83.59286899212748
+          },
+          {
+            "gpu_ms": 82.74832153320312,
+            "wall_ms": 82.84943402395584
+          },
+          {
+            "gpu_ms": 82.6770248413086,
+            "wall_ms": 82.77689199894667
+          },
+          {
+            "gpu_ms": 82.78876495361328,
+            "wall_ms": 82.88770698709413
+          }
+        ],
+        "scope": "forward + MSE + backward + value clip + AdamW; lr=0 keeps weights fixed; excludes data/validation/audit",
+        "initialization": "fresh fixed-seed model; performance benchmark, not a loss evaluation"
+      },
+      "profiler": {
+        "reported_flops": 387973665408,
+        "expected_dense_arithmetic_flops": 385273036800,
+        "warning": "Profiler counts only supported operators; fused/custom kernels may be absent. Do not treat this as total model FLOPs.",
+        "counted_ops": [
+          {
+            "name": "aten::mul",
+            "flops": 164343808,
+            "calls": 160
+          },
+          {
+            "name": "aten::mm",
+            "flops": 332414976000,
+            "calls": 99
+          },
+          {
+            "name": "aten::add",
+            "flops": 19702400,
+            "calls": 25
+          },
+          {
+            "name": "aten::addmm",
+            "flops": 5042995200,
+            "calls": 13
+          },
+          {
+            "name": "aten::bmm",
+            "flops": 50331648000,
+            "calls": 48
+          }
+        ],
+        "custom_ops": [
+          {
+            "name": "MambaInnerFn",
+            "calls": 12
+          },
+          {
+            "name": "DaoAILab::_causal_conv1d_fwd_cpp",
+            "calls": 24
+          },
+          {
+            "name": "void causal_conv1d_fwd_kernel<Causal_conv1d_fwd_kernel_traits<128, 4, false, float, float> >(ConvParamsBase)",
+            "calls": 24
+          },
+          {
+            "name": "void selective_scan_fwd_kernel<Selective_Scan_fwd_kernel_traits<32, 4, 1, false, true, true, true, float, float> >(SSMParamsBase)",
+            "calls": 12
+          },
+          {
+            "name": "autograd::engine::evaluate_function: MambaInnerFnBackward",
+            "calls": 12
+          },
+          {
+            "name": "MambaInnerFnBackward",
+            "calls": 12
+          },
+          {
+            "name": "DaoAILab::_causal_conv1d_bwd_cpp",
+            "calls": 12
+          },
+          {
+            "name": "void selective_scan_bwd_kernel<Selective_Scan_bwd_kernel_traits<32, 4, false, true, true, true, true, float, float> >(SSMParamsBwd)",
+            "calls": 12
+          },
+          {
+            "name": "void causal_conv1d_bwd_kernel<Causal_conv1d_bwd_kernel_traits<128, 4, true, false, float, float>, false>(ConvParamsBwd)",
+            "calls": 12
+          }
+        ]
+      }
+    },
+    "mamba2": {
+      "version": "mamba2",
+      "parameters": 19285955,
+      "trainable_parameters": 19253699,
+      "dense_trainable_forward_flops_per_token": 38341632,
+      "frozen_embedding_forward_flops_per_token": 64512,
+      "conv_forward_flops_per_token": 101376,
+      "canonical_ssm_forward_flops_per_token": 1023168,
+      "dense_training_flops_per_padded_token": 115089408,
+      "estimated_training_flops_per_padded_token": 118463040,
+      "projections": [
+        {
+          "name": "mamba_layers.0.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.0.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.0.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.0.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.1.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.1.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.1.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.1.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.2.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.2.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.2.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.2.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.3.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.3.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.3.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.3.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.4.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.4.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.4.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.4.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.5.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.5.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.5.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.5.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.6.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.6.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.6.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.6.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.7.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.7.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.7.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.7.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.8.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.8.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.8.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.8.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.9.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.9.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.9.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.9.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.10.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.10.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.10.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.10.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.11.1.in_proj",
+          "shape": [
+            2064,
+            512
+          ],
+          "forward_flops_per_token": 2113536
+        },
+        {
+          "name": "mamba_layers.11.1.lin_B",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.11.1.lin_C",
+          "shape": [
+            16,
+            512
+          ],
+          "forward_flops_per_token": 16384
+        },
+        {
+          "name": "mamba_layers.11.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "output_layer",
+          "shape": [
+            3,
+            512
+          ],
+          "forward_flops_per_token": 3072
+        }
+      ],
+      "blocks": [
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        },
+        {
+          "config": {
+            "version": "mamba2",
+            "d_model": 512,
+            "d_state": 16,
+            "d_conv": 4,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "use_mem_eff_path": true
+          },
+          "canonical_ssm_forward_flops_per_token": 85264
+        }
+      ],
+      "convention": "MAC=2; trainable forward+backward approx 3x forward; frozen embedding forward only",
+      "excluded": [
+        "nonlinearities and normalization",
+        "optimizer/audit/data/validation work",
+        "parallel-scan overhead",
+        "kernel tile/chunk padding",
+        "backward recomputation"
+      ],
+      "status": "algorithmic estimate, not measured total executed GPU FLOPs",
+      "benchmark": {
+        "batch": 64,
+        "length": 50,
+        "warmup_updates": 10,
+        "measured_updates": 30,
+        "median_gpu_ms": 63.25507164001465,
+        "median_wall_ms": 63.37679049465805,
+        "peak_allocated_bytes": 1111383552,
+        "samples": [
+          {
+            "gpu_ms": 62.99372863769531,
+            "wall_ms": 63.134447002084926
+          },
+          {
+            "gpu_ms": 62.988033294677734,
+            "wall_ms": 63.10553499497473
+          },
+          {
+            "gpu_ms": 62.91263961791992,
+            "wall_ms": 63.02971197874285
+          },
+          {
+            "gpu_ms": 62.83158493041992,
+            "wall_ms": 62.946352001745254
+          },
+          {
+            "gpu_ms": 65.21027374267578,
+            "wall_ms": 65.3266099980101
+          },
+          {
+            "gpu_ms": 64.58758544921875,
+            "wall_ms": 64.70475700916722
+          },
+          {
+            "gpu_ms": 65.27033233642578,
+            "wall_ms": 65.38700900273398
+          },
+          {
+            "gpu_ms": 69.35801696777344,
+            "wall_ms": 69.48826398001984
+          },
+          {
+            "gpu_ms": 64.99852752685547,
+            "wall_ms": 65.09328298852779
+          },
+          {
+            "gpu_ms": 63.58982467651367,
+            "wall_ms": 63.713595998706296
+          },
+          {
+            "gpu_ms": 62.94675064086914,
+            "wall_ms": 63.063903973670676
+          },
+          {
+            "gpu_ms": 62.964927673339844,
+            "wall_ms": 63.081600004807115
+          },
+          {
+            "gpu_ms": 64.43865966796875,
+            "wall_ms": 64.55456599360332
+          },
+          {
+            "gpu_ms": 63.43017578125,
+            "wall_ms": 63.54682898381725
+          },
+          {
+            "gpu_ms": 65.42899322509766,
+            "wall_ms": 65.54420900647528
+          },
+          {
+            "gpu_ms": 65.47398376464844,
+            "wall_ms": 65.592816012213
+          },
+          {
+            "gpu_ms": 65.84652709960938,
+            "wall_ms": 65.98134199157357
+          },
+          {
+            "gpu_ms": 63.03945541381836,
+            "wall_ms": 63.15638299565762
+          },
+          {
+            "gpu_ms": 62.98700714111328,
+            "wall_ms": 63.1042719760444
+          },
+          {
+            "gpu_ms": 62.9279670715332,
+            "wall_ms": 63.04300800547935
+          },
+          {
+            "gpu_ms": 62.91017532348633,
+            "wall_ms": 63.026240008184686
+          },
+          {
+            "gpu_ms": 63.6163215637207,
+            "wall_ms": 63.7329229793977
+          },
+          {
+            "gpu_ms": 62.9898567199707,
+            "wall_ms": 63.10512000345625
+          },
+          {
+            "gpu_ms": 62.87993621826172,
+            "wall_ms": 62.996191991260275
+          },
+          {
+            "gpu_ms": 62.9508171081543,
+            "wall_ms": 63.06937598856166
+          },
+          {
+            "gpu_ms": 62.994590759277344,
+            "wall_ms": 63.11187200481072
+          },
+          {
+            "gpu_ms": 63.0799674987793,
+            "wall_ms": 63.206752005498856
+          },
+          {
+            "gpu_ms": 65.8569564819336,
+            "wall_ms": 65.98991798819043
+          },
+          {
+            "gpu_ms": 65.24896240234375,
+            "wall_ms": 65.38187398109585
+          },
+          {
+            "gpu_ms": 65.65782165527344,
+            "wall_ms": 65.78521599294618
+          }
+        ],
+        "scope": "forward + MSE + backward + value clip + AdamW; lr=0 keeps weights fixed; excludes data/validation/audit",
+        "initialization": "fresh fixed-seed model; performance benchmark, not a loss evaluation"
+      },
+      "profiler": {
+        "reported_flops": 368490402624,
+        "expected_dense_arithmetic_flops": 368286105600,
+        "warning": "Profiler counts only supported operators; fused/custom kernels may be absent. Do not treat this as total model FLOPs.",
+        "counted_ops": [
+          {
+            "name": "aten::mul",
+            "flops": 164147392,
+            "calls": 160
+          },
+          {
+            "name": "aten::mm",
+            "flops": 328010956800,
+            "calls": 135
+          },
+          {
+            "name": "aten::add",
+            "flops": 40149632,
+            "calls": 49
+          },
+          {
+            "name": "aten::addmm",
+            "flops": 9830400,
+            "calls": 1
+          },
+          {
+            "name": "aten::bmm",
+            "flops": 40265318400,
+            "calls": 12
+          }
+        ],
+        "custom_ops": [
+          {
+            "name": "MambaSplitConv1dScanCombinedFn",
+            "calls": 12
+          },
+          {
+            "name": "DaoAILab::_causal_conv1d_fwd_cpp",
+            "calls": 24
+          },
+          {
+            "name": "void causal_conv1d_channellast_fwd_kernel<Causal_conv1d_channellast_fwd_kernel_traits<128, 4, 64, true, float, float>, false>(ConvParamsBase)",
+            "calls": 24
+          },
+          {
+            "name": "_chunk_scan_fwd_kernel",
+            "calls": 12
+          },
+          {
+            "name": "autograd::engine::evaluate_function: MambaSplitConv1dScanCombinedFnBackward",
+            "calls": 12
+          },
+          {
+            "name": "MambaSplitConv1dScanCombinedFnBackward",
+            "calls": 12
+          },
+          {
+            "name": "_chunk_scan_bwd_dstates_kernel",
+            "calls": 12
+          },
+          {
+            "name": "_chunk_scan_chunk_state_bwd_dx_kernel",
+            "calls": 12
+          },
+          {
+            "name": "void at::native::tensor_kernel_scan_innermost_dim<float, std::plus<float> >(float*, float const*, unsigned int, unsigned int, unsigned int, float, std::plus<float>)",
+            "calls": 24
+          },
+          {
+            "name": "_chunk_scan_bwd_dc_kernel",
+            "calls": 12
+          },
+          {
+            "name": "_chunk_scan_bwd_dcb_kernel",
+            "calls": 12
+          },
+          {
+            "name": "_chunk_scan_bwd_ddAcs_stable_kernel",
+            "calls": 12
+          },
+          {
+            "name": "DaoAILab::_causal_conv1d_bwd_cpp",
+            "calls": 12
+          },
+          {
+            "name": "void causal_conv1d_channellast_bwd_kernel<Causal_conv1d_channellast_bwd_kernel_traits<128, 4, 64, true, true, float, float>, false, false, false>(ConvParamsBwd)",
+            "calls": 12
+          }
+        ]
+      }
+    },
+    "mamba3": {
+      "version": "mamba3",
+      "parameters": 19437827,
+      "trainable_parameters": 19405571,
+      "dense_trainable_forward_flops_per_token": 38784000,
+      "frozen_embedding_forward_flops_per_token": 64512,
+      "conv_forward_flops_per_token": 0,
+      "canonical_ssm_forward_flops_per_token": 1618944,
+      "dense_training_flops_per_padded_token": 116416512,
+      "estimated_training_flops_per_padded_token": 121273344,
+      "projections": [
+        {
+          "name": "mamba_layers.0.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.0.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.1.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.1.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.2.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.2.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.3.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.3.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.4.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.4.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.5.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.5.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.6.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.6.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.7.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.7.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.8.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.8.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.9.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.9.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.10.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.10.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "mamba_layers.11.1.in_proj",
+          "shape": [
+            2132,
+            512
+          ],
+          "forward_flops_per_token": 2183168
+        },
+        {
+          "name": "mamba_layers.11.1.out_proj",
+          "shape": [
+            512,
+            1024
+          ],
+          "forward_flops_per_token": 1048576
+        },
+        {
+          "name": "output_layer",
+          "shape": [
+            3,
+            512
+          ],
+          "forward_flops_per_token": 3072
+        }
+      ],
+      "blocks": [
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        },
+        {
+          "config": {
+            "version": "mamba3",
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "chunk_size": 64,
+            "rope_fraction": 0.5,
+            "is_mimo": false,
+            "is_outproj_norm": false
+          },
+          "canonical_ssm_forward_flops_per_token": 134912
+        }
+      ],
+      "convention": "MAC=2; trainable forward+backward approx 3x forward; frozen embedding forward only",
+      "excluded": [
+        "nonlinearities and normalization",
+        "optimizer/audit/data/validation work",
+        "parallel-scan overhead",
+        "kernel tile/chunk padding",
+        "backward recomputation"
+      ],
+      "status": "algorithmic estimate, not measured total executed GPU FLOPs",
+      "benchmark": {
+        "batch": 64,
+        "length": 50,
+        "warmup_updates": 10,
+        "measured_updates": 30,
+        "median_gpu_ms": 42.528032302856445,
+        "median_wall_ms": 42.64531750231981,
+        "peak_allocated_bytes": 971924992,
+        "samples": [
+          {
+            "gpu_ms": 41.83961486816406,
+            "wall_ms": 41.97228100383654
+          },
+          {
+            "gpu_ms": 41.619873046875,
+            "wall_ms": 41.72905001905747
+          },
+          {
+            "gpu_ms": 41.72166442871094,
+            "wall_ms": 41.83092201128602
+          },
+          {
+            "gpu_ms": 41.65465545654297,
+            "wall_ms": 41.76282702246681
+          },
+          {
+            "gpu_ms": 42.593441009521484,
+            "wall_ms": 42.69898100756109
+          },
+          {
+            "gpu_ms": 43.2229118347168,
+            "wall_ms": 43.33022600621916
+          },
+          {
+            "gpu_ms": 41.76582336425781,
+            "wall_ms": 41.87424900010228
+          },
+          {
+            "gpu_ms": 41.705055236816406,
+            "wall_ms": 41.812826006207615
+          },
+          {
+            "gpu_ms": 43.41980743408203,
+            "wall_ms": 43.53083198657259
+          },
+          {
+            "gpu_ms": 42.90671920776367,
+            "wall_ms": 43.021683988627046
+          },
+          {
+            "gpu_ms": 42.1732177734375,
+            "wall_ms": 42.280326975742355
+          },
+          {
+            "gpu_ms": 43.37433624267578,
+            "wall_ms": 43.48084900993854
+          },
+          {
+            "gpu_ms": 41.699073791503906,
+            "wall_ms": 41.80679400451481
+          },
+          {
+            "gpu_ms": 42.65571212768555,
+            "wall_ms": 42.76176501298323
+          },
+          {
+            "gpu_ms": 43.409278869628906,
+            "wall_ms": 43.51438500452787
+          },
+          {
+            "gpu_ms": 43.40486526489258,
+            "wall_ms": 43.526479974389076
+          },
+          {
+            "gpu_ms": 44.02265548706055,
+            "wall_ms": 44.157981988973916
+          },
+          {
+            "gpu_ms": 43.39606475830078,
+            "wall_ms": 43.52729598758742
+          },
+          {
+            "gpu_ms": 42.60291290283203,
+            "wall_ms": 42.7161330007948
+          },
+          {
+            "gpu_ms": 41.83552169799805,
+            "wall_ms": 41.94769001333043
+          },
+          {
+            "gpu_ms": 41.877952575683594,
+            "wall_ms": 41.98924099910073
+          },
+          {
+            "gpu_ms": 43.399742126464844,
+            "wall_ms": 43.50964800687507
+          },
+          {
+            "gpu_ms": 41.897953033447266,
+            "wall_ms": 42.02509700553492
+          },
+          {
+            "gpu_ms": 42.237022399902344,
+            "wall_ms": 42.35103100654669
+          },
+          {
+            "gpu_ms": 43.103424072265625,
+            "wall_ms": 43.215298996074125
+          },
+          {
+            "gpu_ms": 42.43164825439453,
+            "wall_ms": 42.543557996395975
+          },
+          {
+            "gpu_ms": 41.74419021606445,
+            "wall_ms": 41.85247400891967
+          },
+          {
+            "gpu_ms": 43.42214584350586,
+            "wall_ms": 43.53308799909428
+          },
+          {
+            "gpu_ms": 42.462623596191406,
+            "wall_ms": 42.59165399707854
+          },
+          {
+            "gpu_ms": 44.080928802490234,
+            "wall_ms": 44.19343700283207
+          }
+        ],
+        "scope": "forward + MSE + backward + value clip + AdamW; lr=0 keeps weights fixed; excludes data/validation/audit",
+        "initialization": "fresh fixed-seed model; performance benchmark, not a loss evaluation"
+      },
+      "profiler": {
+        "reported_flops": 372720374400,
+        "expected_dense_arithmetic_flops": 372532838400,
+        "warning": "Profiler counts only supported operators; fused/custom kernels may be absent. Do not treat this as total model FLOPs.",
+        "counted_ops": [
+          {
+            "name": "aten::mul",
+            "flops": 165990400,
+            "calls": 184
+          },
+          {
+            "name": "aten::mm",
+            "flops": 372523008000,
+            "calls": 75
+          },
+          {
+            "name": "aten::add",
+            "flops": 21545600,
+            "calls": 61
+          },
+          {
+            "name": "aten::addmm",
+            "flops": 9830400,
+            "calls": 1
+          }
+        ],
+        "custom_ops": [
+          {
+            "name": "_Mamba3Function",
+            "calls": 12
+          },
+          {
+            "name": "mamba3_siso_fwd_kernel",
+            "calls": 12
+          },
+          {
+            "name": "autograd::engine::evaluate_function: _Mamba3FunctionBackward",
+            "calls": 12
+          },
+          {
+            "name": "_Mamba3FunctionBackward",
+            "calls": 12
+          },
+          {
+            "name": "mamba3_siso_bwd_kernel_dzdo",
+            "calls": 12
+          },
+          {
+            "name": "mamba3_siso_bwd_kernel_dqkv",
+            "calls": 12
+          },
+          {
+            "name": "mamba3_siso_bwd_kernel_rotary_bias_angles",
+            "calls": 12
+          },
+          {
+            "name": "mamba3_siso_bwd_kernel_ddt_dtrap_dinput_states",
+            "calls": 12
+          }
+        ]
+      }
+    }
+  }
+}

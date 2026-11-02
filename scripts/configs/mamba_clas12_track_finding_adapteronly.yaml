@@ -1,5 +1,7 @@
 # CLAS12 CVT downstream track-finding / AdapterOnly configuration.
 # Intended for train_track_finding.py.
+# For the explicit 30k-update campaign-style recipe, see
+# clas12_adapter_recipes.yaml and train/TRAINING_RECIPES.md.
 
 default: &default
   data_root: /home/alessio/mnt/edgexpert-a02c/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/
@@ -38,8 +40,8 @@ default: &default
   num_prototypes: 16
   max_tracks: 150
   background_label: -1
-  # Compatibility default. Reproduction campaigns opt into the historical
-  # unified -1 instance explicitly, while existing artifacts remain legible.
+  # Supported policy: background is negative in all signal masks, not a query.
+  # Historical unified-background training is retired and rejected by the CLI.
   track_target_mode: signal_only
   validation_ari_mode: signal
 

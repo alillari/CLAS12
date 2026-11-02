@@ -1,5 +1,87 @@
 # Downstream evaluation
 
+For runnable training/evaluation commands, start with
+[Training workflow](../../TRAINING_RECIPES.md). Evaluation must use the saved
+run's model configuration and matching backbone checkpoint. Reusing the
+checkpoint-selection validation population is not an independent final test.
+
+## Choose the diagnostic
+
+| Question | Tool/output | Interpretation |
+| --- | --- | --- |
+| Is tracking improving through training? | `plot_track_finding_validation.py`: `metrics_vs_step.png/.pdf` | Compare ARI with global purity/efficiency, fake/split/merge rates and background metrics on a fixed validation population. |
+| Does better signal ARI trade away background performance? | Same tool: `background_vs_signal_ari.png/.pdf`, `trend_summary.json` | The report identifies adjacent validations with rising signal ARI and worsening purity/rejection/fakes; use the recorded checkpoint paths to inspect those states. |
+| Which tracks/events fail? | Finding evaluator: `per_event_metrics.csv`, `per_track_matches.csv`, `per_truth_track_metrics.csv`, optional `per_point_predictions.csv` | Localize low efficiency, fake tracks, split/merge cases and cluster assignments. The per-run evaluator writes tables, not automatic event-display PNGs. |
+| Does momentum training generalize across validations? | `plots/ml/training_curves.png`, `training_history.csv` | Inspect validation minima and train/validation separation. The current plot/parser uses epoch coordinates, so multiple step validations can share an x-coordinate; inspect the original `Step` log column for update timing. |
+| Are physical errors acceptable beyond the loss value? | `plots/ml/ml_error_bars_components.png`, `ml_error_bars_kinematics.png`, `ml_metrics.csv` | Compare MAE/RMSE/upper-tail error/bias. These are metric bars, not seed uncertainties or confidence intervals. |
+| Is improvement broad or confined to the core? | `plots/ml/absolute_error_cdf.png` and tail metrics in `summary.json` | Compare error quantiles and tails together. A narrower fitted core can coexist with worse tail behavior. |
+| Is there a kinematic bias or acceptance dependence? | `plots/physics_2d/comparison_residual_*.png`, `binned_metrics.csv` | Residuals versus true kinematics expose offsets, trends and nonuniform spread; color is track count on a log scale. |
+| How do individual track errors compare with CVT? | `plots/physics_2d/direct_error_adapter_vs_cvt_*.png` | Below the equal-error diagonal favors the adapter on that same track; use common valid populations. |
+| Is a fitted resolution summary credible? | `plots/delta_p_over_p_fits/`, `plots/delta_theta_fits/` and matching fit CSVs | Inspect occupancy, trimming, fit status and tails before quoting fitted mean/sigma. |
+
+Momentum evaluation generates its plot suite automatically. The
+`training_curves.png` requires a readable, parseable training log. Finding
+training histories are plotted separately; multi-run finding plots require
+campaign collation:
+
+```bash
+python train/downstream/campaign/plot_track_finding_validation.py \
+  --history /path/to/one/validation_history_dir --output-dir /path/to/plots
+
+python train/downstream/campaign/plot_track_finding_campaign.py \
+  --campaign-dir /path/to/collated/campaign
+
+python train/downstream/campaign/plot_track_regression_campaign.py \
+  --campaign-dir /path/to/collated/campaign --plot-suite all
+```
+
+## Analysis configuration and plot controls
+
+Training YAML controls the model/data contract; analysis YAML controls inference
+population limits, assignment/metric choices, units and plot definitions.
+Use the run's saved model profile and normalizer. Both evaluators accept
+`--analysis-config`, `--checkpoint`, `--output-dir` and `--max-samples`.
+The momentum evaluator additionally accepts model/profile/log/backbone overrides;
+finding takes those fields from the analysis YAML.
+
+| Analysis field / CLI control | Effect and user decision |
+| --- | --- |
+| `model_yaml`, `model_config`, `checkpoint` | Model profile and adapter weights. Architecture and target normalization must match training. |
+| `use_pretrained_backbone`, `pretrained_checkpoint` | Enable and locate the matching frozen backbone; false for AdapterOnly. |
+| `training_log`, `run_name`, `analysis_tag` | Training-history source and result labels. Set explicit log paths for loss plots. |
+| `output_dir` | Evaluation destination; separate distinct cohorts/definitions to keep results identifiable. |
+| `batch_size`, `num_workers` | Inference memory/throughput controls, independent of training batch. |
+| `max_samples` | Accepted sample cap: events for finding, tracks for momentum. Finding also accepts `final_evaluation_events`, which takes precedence. Check actual counts in the output. |
+| `evaluate_coatjava` | Finding baseline evaluation; true requires its segmentation sidecar. Set false for adapter-only diagnostics without that sidecar. |
+| `save_per_point_predictions` / `--save-per-point-predictions` | Finding point assignments; off by default because this can produce a large table. |
+| `assignment_option`, `assignment_threshold` | Finding assignment policy and rejection threshold. Use the same operating point across comparisons. |
+| `match_iou_threshold`, `match_min_purity`, `match_min_efficiency` | Finding truth-match metric cuts. Changing them changes the reported task definition. |
+| `momentum_bins_gev`, `pt_bins_gev`, `theta_bins_deg`, `pid_labels` | Differential result bins/labels; fields depend on the task. Check occupancy and compare with common binning. |
+| `target_momentum_scale_to_gev`, `auxiliary_momentum_scale_to_gev` | Momentum unit conversions. Current MC targets use 0.001 and auxiliary momenta use 1.0. Finding uses the target scale for momentum-binned diagnostics. |
+| `physics_histogram_bins`, `physics_plot_quantile` | Momentum 2D histogram granularity and robust display limits, default example 100 / 0.995. Display clipping does not redefine the CSV error metrics. |
+| `delta_p_over_p_bins_gev`, `delta_theta_bins_gev` | True-momentum bins for relative-momentum/angular core fits. |
+| `delta_*_min_bin_entries` | Minimum tracks before fitting a bin; default 200. Sparse bins receive explicit status instead of an accepted Gaussian fit. |
+| `delta_*_histogram_bins`, `delta_*_min_populated_histogram_bins` | Fit histogram granularity and occupied-bin requirement; defaults 40 / 8. |
+| `delta_*_fit_quantile` | Central residual fraction retained for the Gaussian fit; default 0.98. This estimates a trimmed core, not the full residual distribution. |
+| `relative_error_tolerances` | Thresholds for reported fractions within a relative momentum error, e.g. 1%, 5%, 10%. |
+| `include_sample_metadata`, `sample_metadata_jsonl` | Momentum metadata join; null path uses the test root's `samples_test.jsonl`. Inspect identity/join diagnostics. |
+| `charge_source`, `fallback_charge` | Momentum differential labels; charge does not rotate or transport predictions. |
+
+For the `delta_*` rows, the concrete prefixes are `delta_p_over_p` and
+`delta_theta`. The overall width68 statistic is `(q84-q16)/2`; fitted sigma comes
+from a Gaussian fit after quantile trimming. Neither quantity establishes small
+bias or small tails. Fit-covariance errors are uncertainties of that fit, not
+variation over independently trained models. The momentum residual histogram
+shows a fixed -50% to +50% window; consult the full-distribution tables for tails
+outside it. Angular residuals use the evaluator's wrapped azimuth convention.
+
+Finding threshold sweeps use `--assignment-thresholds` (including 0.0), an
+explicit output directory, hash-partition calibration controls and
+`--min-efficiency-retention`. The tool selects on its calibration partition and
+reports the held-out partition separately. Inspect `threshold_metrics.csv`,
+`threshold_sweep.json` and `selected_heldout_summary.json`; selecting an operating
+point from final test performance would reuse the test labels.
+
 ## Track-finding background policy
 
 Track finding supports `track_target_mode: signal_only`. Background clusters
@@ -119,7 +201,8 @@ Momentum-binned and COATJAVA comparisons still come from the final evaluator.
 
 ## Track-regression evaluation
 
-Run the standalone adapter-only campaign example from any working directory:
+From the repository root, run the standalone adapter-only campaign example
+(edit its paths to match an existing run first):
 
 ```bash
 python train/downstream/eval/evaluate_track_regression.py \
@@ -253,36 +336,19 @@ vectors, and the original CVT vector, are exported only under `legacy_*` names.
 `MC::Particle` remains generator-level diagnostic information. Charge is used
 only for differential labels; a fallback charge never changes a prediction.
 
-### Retiring historical DOCA evaluation
+### Evaluation contract
 
-Commit `d5afc99` (2026-07-13) introduced swingback into the evaluator. The old
-defaults used `mctrue_swingback_doca`, 6.5 cm, 5 T, positive polarity, and a
-positive-charge fallback. The evaluator consumed the first 16 auxiliary
-columns and ignored the later entrance-phi benchmark. This affected wrapped
-phi, px/py, opening-angle, vector-error, and related binned/ML metrics. Native
-target metrics remained at the entrance. Swingback nominally preserved p,
-pT, pz, and theta, but invalid transport/charge masks could change the sample
-population. The physical-loss reference statistics script already used the
-entrance tuple and needs no objective change.
+Momentum summaries and fit tables carry
+`evaluation_contract: clas12_momentum_entrance_v1` and
+`comparison_truth: mctrue_inner_hit`. The evaluator uses entrance predictions
+and truth directly. Analysis settings requesting DOCA/swingback are converted
+to this contract with a notice. Collation requires matching contracts.
 
-New summaries, headline rows, and fit tables carry
-`evaluation_contract: clas12_momentum_entrance_v1`. Old rendered analysis YAMLs
-are migrated at load time with a notice: `comparison_truth` becomes
-`mctrue_inner_hit`, `swingback_enabled` becomes false, and transport parameters
-are discarded. The retired transport code has been removed.
-
-Campaign runs automatically reevaluate completed checkpoints whose summaries
-lack the new contract; they do not need retraining. Collation and plotting
-reject legacy/unversioned outputs so DOCA and entrance results cannot be mixed.
-For an explicit evaluation-only refresh:
+To refresh evaluations without retraining, then regenerate campaign plots:
 
 ```bash
-PY=/home/alessio/miniconda3/envs/fm4npp/bin/python
-"$PY" train/downstream/campaign/run_track_regression_campaign.py \
+python train/downstream/campaign/run_track_regression_campaign.py \
   --manifest /path/to/campaign/manifest.yaml --skip-train --force-eval
-MPLCONFIGDIR=/tmp/matplotlib-cache "$PY" \
-  train/downstream/campaign/plot_track_regression_campaign.py \
+python train/downstream/campaign/plot_track_regression_campaign.py \
   --campaign-dir /path/to/campaign --plot-suite all
 ```
-
-These changes do not rewrite historical reports until reevaluation is run.

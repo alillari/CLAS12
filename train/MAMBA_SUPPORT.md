@@ -1,5 +1,9 @@
 # Mamba backbone and adapter selections
 
+For runnable adapter commands, start with [Training workflow](TRAINING_RECIPES.md).
+[Backbone recipes](BACKBONE_RECIPES.md) specifies pretraining hyperparameters;
+this document describes architecture selection and runtime compatibility.
+
 Pretraining and the point-classification, track-finding, and track-regression
 trainers share the same backbone builder. Downstream Mamba blocks have an
 independent selection. Existing launch module names remain valid.
@@ -81,6 +85,8 @@ rule applies to the classification and tracking heads.
 `scripts/configs/mamba_pretrain.yaml` contains `mamba_5m`, `mamba2_5m`, and
 `mamba3_siso`. Dataset, statistics, and output paths must be set for the target
 environment before using these inherited example recipes.
+The six-width Chinchilla sweep and width-512 Mamba1/2/3 settings are specified in
+[Backbone recipes](BACKBONE_RECIPES.md).
 
 ```bash
 python -m train.pretrain.nppmamba.train_multi_gpu_mamba1 \

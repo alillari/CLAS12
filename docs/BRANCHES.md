@@ -46,9 +46,13 @@ A tag may serve several retired names when they pointed to the same commit.
 ## Retired machine-local branches
 
 The following local refs were removed after their exact tips were archived.
-Historical worktree directories remain at their original commits with detached
-HEADs. The existing detached legacy worktrees also remain unchanged. No data,
-checkpoints, campaign outputs, environments or worktree directories were deleted.
+The initial branch cleanup retained historical worktrees at detached HEADs.
+A subsequent authorized directory cleanup removed 11 retired or legacy worktrees:
+five on the laptop, three on a02c and three on a518. See the
+[directory cleanup manifest](worktree-cleanup-20261102.json) for exact paths,
+commits, recovery refs and retained checkouts. No separate datasets, checkpoints,
+campaign outputs or environments were deleted. The historical diagnostic
+checkout's tracked data copy remains recoverable from its Git archive.
 
 | Machine | Retired local branch | Exact tip | Archive tag suffix |
 | --- | --- | --- | --- |
@@ -84,6 +88,36 @@ already in `main`. Its full endpoint remains tagged alongside the remote context
 experiment. The original Mamba implementation is preserved separately from the
 reviewed version integrated by PR #3. The two local preservation snapshots are
 not ancestors of one another; both are retained as tags and in recovery bundles.
+
+## Directory cleanup
+
+Only the main checkout and the three pending-review worktrees remain registered
+on the laptop. Each EdgeExpert retains its main checkout. The standalone
+`/home/alessio/ML-work/CLAS12-momentum-last-two` source snapshot on a02c is retained
+for the pending fine-tuning review, along with all recovery archives.
+
+Before removal, every tracked file was compared directly with its Git blob;
+untracked files, symlinks, embedded repositories and active processes were
+checked. The only extra files were ignored Python bytecode caches. Source
+commits remain reachable through the published archive tags and verified
+recovery bundles. Removal used `git worktree remove` without force and removed
+about 67 MiB of allocated checkout files across the three machines. The two
+empty Codex worktree wrappers and the temporary audit/restore clones were also
+removed. Private audit and completion receipts are under
+`CLAS12-branch-archives/2026-11-02/directory-cleanup/` on each machine.
+
+To recreate an old checkout, fetch the archive tags and use the exact `commit`
+from the directory cleanup manifest:
+
+```bash
+git fetch origin --tags
+git worktree add --detach /new/path/to/historical-checkout <commit>
+```
+
+A `recovery_ref` may contain the requested commit as an ancestor; restore the
+manifest's exact commit rather than assuming that every recovery tag points
+directly at that commit. The per-machine pre-cleanup bundles also retain the
+original branch and worktree records.
 
 ## Experiment provenance and integration boundaries
 

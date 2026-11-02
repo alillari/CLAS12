@@ -1,0 +1,138 @@
+{
+  "date": "2026-11-02",
+  "baseline_main": "bbf8edf77d77695aaa92a681c3841a073f4b41d1",
+  "removed_worktrees": [
+    {
+      "path": "/home/alessio/.codex/worktrees/mamba-current/CLAS12",
+      "commit": "ae09d4898619d9a49bbcc8e00c0ce324c89f75c4",
+      "allocated_bytes_removed": 1929216,
+      "discarded_cache_files": 0,
+      "recovery_ref": "refs/tags/archive/2026-11-02/experiment/causal-transformer-adapters",
+      "codex_wrapper_name": "",
+      "empty_wrapper_removed": "/home/alessio/.codex/worktrees/mamba-current",
+      "scope": "laptop",
+      "recovery_ref_points_at_commit": true
+    },
+    {
+      "path": "/home/alessio/.codex/worktrees/transformer-pretraining-comparison/CLAS12",
+      "commit": "d84731c391e0eb52516401a8b73b2451096dd219",
+      "allocated_bytes_removed": 2740224,
+      "discarded_cache_files": 11,
+      "recovery_ref": "refs/tags/archive/2026-11-02/experiment/transformer-pretraining-comparison",
+      "codex_wrapper_name": "",
+      "empty_wrapper_removed": "/home/alessio/.codex/worktrees/transformer-pretraining-comparison",
+      "scope": "laptop",
+      "recovery_ref_points_at_commit": true
+    },
+    {
+      "path": "/home/alessio/Documents/Codex/2026-09-29/th/work/integration-adapter-pretrain",
+      "commit": "756fc500c9497bd321265ca0abcd91bab08f4bf5",
+      "allocated_bytes_removed": 2326528,
+      "discarded_cache_files": 43,
+      "recovery_ref": "refs/tags/archive/2026-11-02/laptop/integration-adapter-pretrain",
+      "scope": "laptop",
+      "recovery_ref_points_at_commit": true
+    },
+    {
+      "path": "/home/alessio/Documents/Codex/2026-10-01/i-w/work/momentum-cleanup",
+      "commit": "dadeb107c76fc7c09bd096c0da6abf57ae9cc4b8",
+      "allocated_bytes_removed": 2670592,
+      "discarded_cache_files": 71,
+      "recovery_ref": "refs/tags/archive/2026-11-02/laptop/momentum-cleanup",
+      "scope": "laptop",
+      "recovery_ref_points_at_commit": true
+    },
+    {
+      "path": "/home/alessio/ML-work/CLAS12-local-worktrees/campaign-runners",
+      "commit": "825d6b4a43a128c2ed103c838bf6113ea443932a",
+      "allocated_bytes_removed": 2600960,
+      "discarded_cache_files": 0,
+      "recovery_ref": "refs/tags/archive/2026-11-02/laptop/archive/campaign-runners-20261029",
+      "scope": "laptop",
+      "recovery_ref_points_at_commit": true
+    },
+    {
+      "path": "/home/alessio/ML-work/CLAS12-momentum-cartesian-factorial",
+      "commit": "30a302de60d542ed698bebbeebfa8cd3b18d8e2a",
+      "allocated_bytes_removed": 2502656,
+      "discarded_cache_files": 28,
+      "recovery_ref": "refs/tags/archive/2026-11-02/experiments/momentum-cartesian-factorial",
+      "scope": "a02c",
+      "recovery_ref_points_at_commit": true
+    },
+    {
+      "path": "/home/alessio/ML-work/CLAS12-momentum-context",
+      "commit": "4537f296531d5f07c032bc5ed3405de51b528b6b",
+      "allocated_bytes_removed": 2445312,
+      "discarded_cache_files": 28,
+      "recovery_ref": "refs/tags/archive/2026-11-02/a02c/momentum-adapter-experiments",
+      "scope": "a02c",
+      "recovery_ref_points_at_commit": true
+    },
+    {
+      "path": "/home/alessio/ML-work/CLAS12-reeval-legacy-4c17551",
+      "commit": "4c175513a8f7c4a2c6e8083072375f5f19f69b6d",
+      "allocated_bytes_removed": 1654784,
+      "discarded_cache_files": 19,
+      "recovery_ref": "refs/tags/archive/2026-11-02/a02c/adapter-dev",
+      "scope": "a02c",
+      "recovery_ref_points_at_commit": false
+    },
+    {
+      "path": "/home/alessio/ML-work/CLAS12-campaign4-loss-diagnostic",
+      "commit": "10b7ddf65e1a5786062d95254fce381136f1a525",
+      "allocated_bytes_removed": 46669824,
+      "discarded_cache_files": 0,
+      "recovery_ref": "refs/tags/archive/2026-11-02/diagnostic/campaign4-track-loss",
+      "scope": "a518",
+      "recovery_ref_points_at_commit": true
+    },
+    {
+      "path": "/home/alessio/ML-work/CLAS12-momentum-cartesian-factorial",
+      "commit": "30a302de60d542ed698bebbeebfa8cd3b18d8e2a",
+      "allocated_bytes_removed": 2502656,
+      "discarded_cache_files": 28,
+      "recovery_ref": "refs/tags/archive/2026-11-02/experiments/momentum-cartesian-factorial",
+      "scope": "a518",
+      "recovery_ref_points_at_commit": true
+    },
+    {
+      "path": "/home/alessio/ML-work/CLAS12-momentum-membership",
+      "commit": "96d926be9b3b9752ba6229ac7e26aa6d01a005a4",
+      "allocated_bytes_removed": 2473984,
+      "discarded_cache_files": 28,
+      "recovery_ref": "refs/tags/archive/2026-11-02/experiments/momentum-membership-mask",
+      "scope": "a518",
+      "recovery_ref_points_at_commit": true
+    }
+  ],
+  "removed_count": 11,
+  "allocated_file_bytes_removed": 70516736,
+  "discarded_files": "Only ignored __pycache__/*.pyc files; all tracked source bytes matched Git before removal.",
+  "remaining_worktrees": {
+    "laptop": [
+      "/home/alessio/ML-work/CLAS12",
+      "/home/alessio/.codex/worktrees/momentum-unfreeze/CLAS12",
+      "/home/alessio/ML-work/CLAS12-local-worktrees/coordinate-bypass",
+      "/home/alessio/ML-work/CLAS12-local-worktrees/edge-mcp"
+    ],
+    "a02c": [
+      "/home/alessio/ML-work/CLAS12"
+    ],
+    "a518": [
+      "/home/alessio/ML-work/CLAS12"
+    ]
+  },
+  "retained_standalone_source": {
+    "a02c": [
+      "/home/alessio/ML-work/CLAS12-momentum-last-two"
+    ]
+  },
+  "recovery_directory": "/home/alessio/ML-work/CLAS12-branch-archives/2026-11-02",
+  "private_audit_directory": "/home/alessio/ML-work/CLAS12-branch-archives/2026-11-02/directory-cleanup",
+  "temporary_audit_directories_removed": [
+    "/tmp/clas12-branch-audit-tree",
+    "/tmp/clas12-branch-audit-20261102.git",
+    "/tmp/clas12-cleanup-restore-20261102.git"
+  ]
+}

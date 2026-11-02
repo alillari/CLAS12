@@ -313,5 +313,6 @@
   "archive_tag_prefix": "archive/2026-11-02/",
   "recovery_directory": "/home/alessio/ML-work/CLAS12-branch-archives/2026-11-02",
   "recovery_bundle": "all-machines-recovery.bundle",
-  "worktree_policy": "Retired-branch worktrees are detached at their original commit and retained; existing detached worktrees and pending-review branches are preserved."
+  "worktree_policy": "Follow-up directory cleanup removed 11 retired or legacy detached worktrees after verifying tracked source bytes and recovery bundles. Main and pending-review worktrees remain. See worktree-cleanup-20261102.json.",
+  "worktree_cleanup_manifest": "worktree-cleanup-20261102.json"
 }

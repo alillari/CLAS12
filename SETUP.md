@@ -9,72 +9,129 @@ For a complete pretraining and two-adapter run, follow
 Run the commands from the repository root. This is research code; the checked-in
 recipes still require access to data and compatible CUDA kernels.
 
-## Environment
+## Install the training environment
 
-Use Linux, Python 3.10 or newer, and a CUDA-capable NVIDIA GPU for training.
-The recent a02c/a518 campaigns used a prepared Docker environment; its recorded
-runtime is in [Mamba support](train/MAMBA_SUPPORT.md). A fresh environment must
-match PyTorch, CUDA, compiler, `mamba-ssm`, `causal-conv1d`, and Triton versions.
-Do not replace a working training environment merely to follow a generic pip
-command. Mamba3 requires an upstream revision containing its SISO implementation;
-Mamba1 also requires the selective-scan CUDA extension.
+The same recipe supports **Linux x86_64** and **Linux aarch64/ARM64**. It installs
+Python 3.12, CUDA toolkit 13.0, PyTorch 2.9.1, the Mamba1 selective-scan extension,
+causal-conv1d, fused Mamba2, Mamba3 SISO dependencies, plotting and tuning tools.
+Choose **one** installation method below. Run from the repository root.
 
-For a new local environment, create it first and install a PyTorch build
-appropriate to the target GPU/CUDA stack:
+| Target | Independently tested route |
+| --- | --- |
+| Linux x86_64 with an NVIDIA GPU | A: native Conda (tested on RTX 3050 Ti) |
+| Linux ARM64 with a GB10 GPU | B: Docker (tested on a02c) |
+
+Both routes share the installer and pinned Python versions. The full
+[validation matrix](environments/README.md#validation-matrix) records the scope.
+
+Requirements: Linux with glibc 2.34+ (for example Ubuntu 22.04/24.04), an NVIDIA
+GPU and a working host driver from the 580 series or newer. The full preflight
+targets Ampere or newer GPUs (compute capability 8.0+).
+The native route needs Conda/Miniforge, Git and a C++ compiler; the container
+route needs Docker and NVIDIA Container Toolkit. Both methods supply their own
+CUDA compiler, so the host's system CUDA installation can stay as it is.
 
 ```bash
-conda create -n clas12-fm python=3.10
+uname -m
+nvidia-smi
+git clone https://github.com/alillari/CLAS12.git
+cd CLAS12
+```
+
+`uname -m` should print `x86_64` or `aarch64`. This is the **CPU** architecture;
+the GPU's compute capability is a separate choice. a02c/a518 use ARM64 CPUs
+and GB10 GPUs (SM 12.1). An x86_64 machine can have a different NVIDIA GPU.
+
+### A. Fresh native Conda environment
+
+If Conda is not installed, use the [copy-paste Miniforge bootstrap](environments/README.md#host-prerequisites)
+for your CPU architecture first. On Ubuntu, `build-essential` supplies the C++
+compiler; Git is needed to fetch the pinned scheduler and kernel sources.
+Create a new environment rather than modifying a working training environment:
+
+```bash
+conda env create -f environments/cuda13.yml
 conda activate clas12-fm
+source environments/runtime.sh
+bash environments/install.sh
+python environments/verify.py --output /tmp/clas12-environment.json
 ```
 
-`requirements.txt` is an inherited, unpinned dependency inventory. It is not a
-complete tested installation recipe: the trainers also import `ruamel.yaml`,
-`scikit-learn`, `einops`, `plotly`, and `cosine_annealing_warmup`, and
-evaluators/plotting need packages such as `matplotlib` and `pandas`. `plotly`
-is imported by the dataset loader even when `voxelize: false`. The
-`torch-distributed` entry is not the source of `torch.distributed`, which is provided by PyTorch itself.
-Use the team's working environment or resolve and record a compatible environment
-before a long run. The scheduler import's upstream installation reference is
-in `train/downstream/track_finding_trainer.py` and
-`train/downstream/track_regression_trainer.py`.
+The environment file installs the CUDA toolkit **inside this Conda environment**.
+`runtime.sh` selects that compiler and assembler. The installer downloads the
+correct CUDA-enabled PyTorch wheels for your CPU architecture and builds pinned
+kernel sources for the detected GPU. `MAX_JOBS=2` bounds compiler parallelism;
+initial installation downloads several GB and compiles CUDA code.
 
-Check the actual imports, not just `import fm4npp`:
+Every subsequent shell/job should activate and configure the same environment:
 
 ```bash
-python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
-python -c "import ruamel.yaml, sklearn, einops, mmap_ninja, plotly, cosine_annealing_warmup"
-python train/downstream/train_track_finding.py --help
-python train/downstream/train_track_regression.py --help
+conda activate clas12-fm
+source environments/runtime.sh
 ```
 
-The help commands exercise trainer imports without loading data or starting
-training. A successful help command does not validate GPU kernels. Use the
-CUDA checks in [Mamba support](train/MAMBA_SUPPORT.md) on the target runtime.
-The repository's local Mamba2 CPU fallback is approximate and cannot validate
-the fused training path.
+If the name `clas12-fm` already exists, choose a new prefix instead of overwriting
+it: `conda env create --prefix /absolute/path/to/new-env -f environments/cuda13.yml`,
+then activate that prefix. Dataset creation from HIPO uses separate tools;
+this environment runs the prepared RaggedMmap training/evaluation workflows.
 
-### GB10 Triton assembler selection
+### B. Build a fresh Docker image
 
-If a fused-kernel probe fails with `ptxas fatal: Value 'sm_121a' is not defined`,
-check which assembler Triton invokes. The clean PyTorch 2.9.1/CUDA 13.0,
-Triton 3.5.1 environment required the CUDA toolkit assembler instead of Triton's
-bundled copy. With a compatible CUDA 13 toolkit installed, set these inside
-the job environment and rerun the actual fused forward/backward check:
+Build on the actual target machine, without CPU emulation. The public CUDA
+**devel** base supplies `nvcc`; no private team image is required. This example
+builds for the first visible GPU, including PTX for compatible later devices:
 
 ```bash
-export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
-export TORCH_CUDA_ARCH_LIST="12.1+PTX"
-unset TRITON_OVERRIDE_ARCH
+export CLAS12_GPU_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n 1)
+docker build -f environments/Dockerfile \
+  --build-arg "TORCH_CUDA_ARCH_LIST=$CLAS12_GPU_ARCH+PTX" \
+  -t clas12:cuda13 .
+
+mkdir -p "$PWD/artifacts"
+docker run --rm -it --gpus all --ipc=host \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD:/workspace:ro" -v "$PWD/artifacts:/results" \
+  -w /workspace -e PYTHONPATH=/workspace \
+  -e MPLCONFIGDIR=/results/cache/matplotlib \
+  -e XDG_CACHE_HOME=/results/cache -e TRITON_CACHE_DIR=/results/cache/triton \
+  clas12:cuda13 bash
 ```
 
-Use a fresh, job-specific `TRITON_CACHE_DIR` when changing the compiler/runtime.
-This addresses assembler selection; it does not install the toolkit or validate
-a different GPU architecture. The same GB10 failure and selection are described
-in [the upstream Triton issue](https://github.com/triton-lang/triton/issues/10331).
+Inside the container:
 
-For remote execution in an existing team runtime, follow
-[Remote edgexpert jobs](train/REMOTE_RUNS.md). It explains SSH versus container
-paths, isolated source snapshots, persistent mounts, monitoring and recovery.
+```bash
+source environments/runtime.sh
+python environments/verify.py --output /results/environment.json
+```
+
+For training, add read-only dataset mounts and use their **container paths** in
+YAMLs, with outputs under `/results`. See [Remote jobs](train/REMOTE_RUNS.md).
+Record the immutable image ID with `docker image inspect clas12:cuda13`; tags
+are local names. For mixed GPU machines, pass an explicit semicolon-separated
+`TORCH_CUDA_ARCH_LIST` containing the capabilities you intend to support.
+
+### What counts as a successful setup?
+
+The verifier imports the actual dependencies and public trainer CLIs, then
+runs Mamba1, fused Mamba2, Mamba3 SISO and Transformer CUDA forward/backward,
+an optimizer update, and strict checkpoint save/reload. It fails if a selected
+backend fails or CUDA is unavailable; it does not silently pass skipped tests.
+The JSON receipt records architecture, GPU, package versions and kernel build
+provenance. Inspect its `status` and `backbones` fields before training.
+The first GPU preflight can take several minutes while Triton compiles and
+autotunes kernels; later runs can reuse the same environment's cache.
+
+For a deliberate import-only check on a machine without a GPU:
+
+```bash
+python environments/verify.py --imports-only --output /tmp/clas12-imports.json
+```
+
+That result is labelled `imports_only` and does not validate training. These
+checks do not validate dataset alignment, convergence, multi-GPU execution or
+every production model width. Continue with the [worked example](train/WORKED_EXAMPLE.md).
+The [environment reference](environments/README.md) explains pins, build options,
+the validation matrix and recovery from compiler/kernel errors.
 
 ## Data contract
 

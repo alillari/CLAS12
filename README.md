@@ -23,7 +23,8 @@ Task entry points: [track finding](train/downstream/TRACK_FINDING.md) and
 [momentum regression](train/downstream/MOMENTUM.md). The
 [downstream README](train/downstream/README.md) maps the shared tools.
 
-1. [Environment and data setup](SETUP.md).
+1. [Environment and data setup](SETUP.md): copy-paste native Conda and Docker
+   installs for Linux x86_64 and ARM64, followed by a real GPU preflight.
 2. [Complete worked example](train/WORKED_EXAMPLE.md): pretrain one backbone,
    train both frozen-backbone adapters, generate stats, evaluate and plot.
 3. [Training workflow](train/TRAINING_RECIPES.md): standalone adapter instructions.
@@ -88,7 +89,8 @@ corresponding FM4NPP and TPCpp-10M works as appropriate.
 |-- scripts/            # Configuration and run scripts
 |-- dev_scripts/        # Calibration, recovered recipes and isolated experiment runners
 |-- SETUP.md            # Environment and CLAS12 data setup
-|-- requirements.txt    # Python dependencies
+|-- environments/      # Pinned training installer, Dockerfile and GPU verifier
+|-- requirements.txt    # Shared Python dependency list (see SETUP for GPU install)
 `-- README.md           # Repository and storage conventions
 ```
 

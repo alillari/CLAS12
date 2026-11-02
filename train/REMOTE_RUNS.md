@@ -19,7 +19,9 @@ recover their results. It also applies to the [worked example](WORKED_EXAMPLE.md
 Get an SSH alias/account, Docker access, an approved image and the dataset paths
 from whoever manages the machine. `alessio-edge` (a02c) and `alessio-aux` (a518)
 are existing operator aliases, not accounts automatically available to new users.
-Use your own configured alias. On the **laptop**:
+To build your own image from a public CUDA base, follow the
+[Docker installation recipe](../SETUP.md#b-build-a-fresh-docker-image) and run its
+GPU preflight on the target host. Use your own configured alias. On the **laptop**:
 
 ```bash
 export EDGE_HOST=your-edgexpert-ssh-alias

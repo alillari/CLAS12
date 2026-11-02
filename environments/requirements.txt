@@ -1,0 +1,29 @@
+# Shared Python dependencies for the CUDA 13 / PyTorch 2.9.1 recipe.
+# Compiled extensions are installed separately by install.sh.
+setuptools==80.9.0
+wheel==0.45.1
+packaging==25.0
+ninja==1.13.0
+numpy==2.2.6
+scipy==1.15.3
+PyYAML==6.0.2
+ruamel.yaml==0.18.10
+scikit-learn==1.6.1
+einops==0.8.1
+tqdm==4.67.1
+mmap-ninja==0.8.2
+matplotlib==3.10.3
+pandas==2.2.3
+plotly==6.1.2
+optuna==4.3.0
+wandb==0.19.11
+transformers==4.51.3
+triton==3.5.1
+# The pinned upstream Mamba package declares these dependencies even though
+# CLAS12 currently executes its SISO kernels only.
+tilelang==0.1.8
+# Newer allowed-by-metadata versions break TileLang 0.1.8 during import.
+apache-tvm-ffi==0.1.6
+quack-kernels==0.3.4
+nvidia-cutlass-dsl[cu13]==4.4.2
+cosine-annealing-warmup @ git+https://github.com/katsura-jp/pytorch-cosine-annealing-with-warmup.git@12d03c07553aedd3d9e9155e2b3e31ce8c64081a

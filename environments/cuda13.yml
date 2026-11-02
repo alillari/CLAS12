@@ -1,0 +1,9 @@
+name: clas12-fm
+channels:
+  - nvidia
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - pip=25.2
+  - cuda-toolkit=13.0.3

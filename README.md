@@ -38,7 +38,7 @@ Task entry points: [track finding](train/downstream/TRACK_FINDING.md) and
    and independently configured bidirectional adapters.
 7. [Evaluation and plots](train/downstream/eval/README.md),
    [single runs → campaigns](train/downstream/campaign/GETTING_STARTED.md), and
-   [tuning](train/downstream/tuning/README.md).
+   [tuning](train/downstream/tuning/GETTING_STARTED.md).
 
 The [adapter presets](scripts/configs/clas12_adapter_recipes.yaml) provide explicit
 30k-update profiles. Track finding uses a width-256 attention decoder with

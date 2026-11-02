@@ -1,302 +1,132 @@
-# AdapterOnly Optuna Tuning
+# Momentum hyperparameter tuning reference
 
-For ordinary fitting, stats generation and evaluation, start with the
-[momentum guide](../MOMENTUM.md). Optuna is an optional hyperparameter search;
-its trial settings are not the default momentum recipe.
+**Start with [Tune a working momentum adapter](GETTING_STARTED.md)** for the
+sequence from a successful fit through a smoke study, full search, plots,
+fresh-seed confirmation and campaign handoff. Ordinary fitting and statistics
+are covered in the [momentum guide](../MOMENTUM.md).
 
-This directory contains the Optuna worker used to tune the CLAS12 AdapterOnly
-track-regression baseline. The tuner calls the shared one-configuration training
-entrypoint in `train/downstream/track_regression_experiment.py`; it does not
-replace the trainer or the campaign manifest tools.
+## Tool boundaries
 
-New studies optimize best finite validation loss. Width-based physics selection,
-physical-resolution loss recipes and scalar-head training ablations are retired.
-Existing width-objective studies cannot resume as validation-loss studies; keep
-their results and create a new study. See [the checkpoint policy](../PHYSICS_CHECKPOINTS.md).
+| Tool | Input → result |
+| --- | --- |
+| [run_track_regression_optuna.py](run_track_regression_optuna.py) | Named model YAML + fixed protocol → Optuna trials and fresh AdapterOnly fits. |
+| [track_regression_search_space.py](track_regression_search_space.py) | Defines sampled ranges and derived LR values. Edit this function to change ranges; there is no per-parameter range CLI. |
+| [analyze_track_regression_optuna.py](analyze_track_regression_optuna.py) | Existing database + fit logs → tables and diagnostic plots. |
+| [build_track_regression_seed_ablation.py](build_track_regression_seed_ablation.py) | Completed recipes → candidate-by-seed campaign manifest. |
+| [build_track_regression_manifest.py](../campaign/build_track_regression_manifest.py) | `--optuna-best-trial` imports the best completed recipe into a new ordinary campaign. |
 
-## What Optuna Tunes
+The worker calls the shared `track_regression_experiment.py` training path with
+`usepretrain=False`. Architecture, task, loss, dataset/filter contract and label
+budget come from the selected YAML plus explicit CLI overrides. There is no
+maintained Optuna worker here for finding or backbone pretraining. All current
+studies minimize best finite validation loss; see
+[checkpoint selection](../PHYSICS_CHECKPOINTS.md).
 
-The current search space is defined in `track_regression_search_space.py`.
+## Fixed controls and precedence
 
-Currently sampled:
+Base YAML values resolve environment variables and parameter references through
+`YParams`, as in normal training. Fixed CLI settings override the base recipe;
+sampled settings override corresponding optimizer values. Each seed receives
+its own seed/output paths and a saved resolved configuration.
 
-- `max_lr`
-- `min_lr_ratio`, with `min_lr = max_lr * min_lr_ratio`
-- `warmup_fraction`
-- `adapter_weight_decay`
-- `grad_clip_value`
-- `dropout`
+| Control | Meaning |
+| --- | --- |
+| `--yaml-config`, `--config` | Model file and named profile; both should be explicit when using portable onboarding recipes. |
+| `--data-root`, `--data-root-test`, `--stat-dir`, `--regression-target-stats` | Optional overrides of dataset/normalization paths. |
+| `--eventnumber` | Accepted training tracks, default 50k. Generate stats for the same training cohort. |
+| `--train-batch-size` | Training tracks/batch; default 32, so pass 128 for the onboarding recipe. |
+| `--max-optimizer-steps` | Maximum updates per fit, default 3000. |
+| `--val-interval-steps`, `--max-val-batches` | Validation cadence and safety cap. The cap must accommodate the YAML's fixed validation sample. |
+| `--early-stopping-min-steps`, `--early-stopping-patience` | Earliest stopping point and number of non-improving validation checks. Minimum steps must not exceed the budget. |
+| `--max-train-batches` | Optional per-epoch training batch cap; changes data exposure. |
+| `--num-data-workers`, `--cuda-device` | Loader workers and GPU selection. |
+| `--sampler tpe` or `random`, `--seed` | Suggestion algorithm and its RNG seed. |
+| `--trial-seeds` | Comma-separated fresh-fit seeds; default `11,17,23`. |
+| `--seed-objective` | `mean` (default), `median`, or `mean_plus_std` of per-seed best validation losses. The last uses population standard deviation. |
+| `--n-trials` | Additional trials in this invocation, default 3. |
+| `--enable-pruning` | Allows intermediate-loss pruning for a **single** training seed only; incompatible with multi-seed aggregation. |
 
-For `--scheduler-mode cosine_hold`, Optuna also samples
-`scheduler_anneal_steps`: the step where the single cosine decay reaches
-`min_lr`.  The scheduler then holds `min_lr` through the fixed training budget;
-it never restarts.
+The [walkthrough's range table](GETTING_STARTED.md#1-understand-the-experiment)
+lists the exact sampled intervals and explains why these are distinct from the
+standard adapter defaults. Hold fixed the training labels, target stats, batch,
+validation population/cadence, update budget, seeds and objective when comparing
+trials. A different task/normalizer changes the meaning of the objective.
 
-Keep these fixed for a given study:
+## Scheduler choices
 
-- labeled-data amount, via `--eventnumber`
-- batch size, via `--train-batch-size`
-- training budget, via `--max-optimizer-steps`
-- validation cadence and budget
-- dataset paths and split
-- AdapterOnly mode
-- optimizer and scheduler family
-- architecture choices
+`--scheduler-mode cosine_restarts` is the default. Set either `--n-cycles N`
+(equal cycles in the full budget) or `--scheduler-first-cycle-steps S` (explicit
+cycle length); these are mutually exclusive. A 20k budget with cycle length
+7000 has two resets and a final partial cycle. `warmup_steps` is the sampled
+fraction times the cycle length, truncated to an integer and at least 1.
 
-Use a new study name/database when changing the search space or fixed training
-budget.
+`--scheduler-mode cosine_hold` instead warms up and decays once to `min_lr`,
+then holds that floor through the remaining updates. It samples
+`scheduler_anneal_steps` using `--anneal-steps-min`, `--anneal-steps-max` and
+`--anneal-steps-step`. For example, at a 20k budget, min 5000, max 16000 and
+step 1000 explore earlier decay endpoints. Endpoints must fit the budget.
+Here `warmup_fraction` spans 0.10–0.40 and applies to the sampled annealing
+duration. Do not pass either cycle control in hold mode.
 
-## Smoke Test
+Tune LR settings jointly with the schedule. The objective remains the best
+validation observation anywhere in training, even if the last observation is
+worse. Inspect per-seed curves and endpoint behavior before increasing budgets.
 
-Run a short training-budget check before long studies:
-
-```bash
-mkdir -p /home/alessio/ML-work/result_deep_storage/optuna
-
-python train/downstream/tuning/run_track_regression_optuna.py \
-  --storage sqlite:////home/alessio/ML-work/result_deep_storage/optuna/adapteronly_smoke.db \
-  --study-name adapteronly_smoke \
-  --output-root /home/alessio/ML-work/result_deep_storage/optuna \
-  --n-trials 3 \
-  --cuda-device 0 \
-  --eventnumber 1000 \
-  --train-batch-size 16 \
-  --max-optimizer-steps 200 \
-  --val-interval-steps 100 \
-  --early-stopping-min-steps 200 \
-  --max-val-batches 400 \
-  --num-data-workers 4
-```
-
-This bounds training to 200 updates per seed/trial. Validation still uses the
-base model's default 50k accepted tracks with batch 128; the 400-batch cap is
-large enough to retain that sample. To make validation smaller too, copy the
-base model YAML, set its `limit_test_size` explicitly, and pass that file/profile
-with `--yaml-config` / `--config`. A low `--max-val-batches` alone cannot shrink
-the fixed validation sample. See [target statistics](../TARGET_STATISTICS.md)
-before changing the training-label budget or task.
-
-## Range-Finding Run
-
-Example 50k-step range-finding study:
-
-```bash
-python train/downstream/tuning/run_track_regression_optuna.py \
-  --storage sqlite:////home/alessio/ML-work/result_deep_storage/optuna/adapteronly_rangefind_50k.db \
-  --study-name adapteronly_rangefind_50k \
-  --output-root /home/alessio/ML-work/result_deep_storage/optuna \
-  --n-trials 50 \
-  --cuda-device 0 \
-  --eventnumber 50000 \
-  --train-batch-size 128 \
-  --max-optimizer-steps 50000 \
-  --val-interval-steps 5000 \
-  --early-stopping-min-steps 20000 \
-  --early-stopping-patience 4 \
-  --max-val-batches 1000 \
-  --num-data-workers 24
-```
-
-Each trial evaluates the comma-separated `--trial-seeds` set (default
-`11,17,23`) and reports their mean validation loss to Optuna by default. The
-sampler `--seed` does not replace these training seeds. Use
-`--seed-objective median` or `mean_plus_std` when a more robust or
-variance-penalizing objective is desired.
-
-`--n-cycles` controls equal cosine cycles within the full step budget. The
-launcher derives `scheduler_first_cycle_steps = max_optimizer_steps / n_cycles`.
-For schedules such as 7,000 steps in a 20,000-step budget, use
-`--scheduler-first-cycle-steps 7000`; the scheduler then has two resets and a
-final partial cycle. `--n-cycles` and `--scheduler-first-cycle-steps` are
-mutually exclusive. Tune the learning-rate parameters jointly for each fixed
-cycle length rather than transferring a recipe tuned under a different
-schedule.
-
-## Restart-Free Cosine-To-Floor Search
-
-`--scheduler-mode cosine_hold` is the restart-free policy for testing early
-annealing plus low-LR refinement.  It is intentionally different from setting
-`--scheduler-first-cycle-steps` below the training budget, which creates a
-restart with the existing scheduler.
-
-For a 20,000-step budget, the following samples a cosine endpoint from 5,000
-through 16,000 steps in 1,000-step increments.  `warmup_fraction` is always
-applied to that sampled annealing duration, not to all 20,000 steps.
-For this mode its sampled range is 0.10–0.40; the legacy restart studies keep
-their original 0.10–0.35 range.
-
-```bash
-python train/downstream/tuning/run_track_regression_optuna.py \
-  --storage sqlite:////path/to/adapteronly_p_phi_theta_20k_cosine_hold.db \
-  --study-name adapteronly_p_phi_theta_20k_cosine_hold \
-  --output-root /path/to/optuna \
-  --scheduler-mode cosine_hold \
-  --anneal-steps-min 5000 \
-  --anneal-steps-max 16000 \
-  --anneal-steps-step 1000 \
-  --max-optimizer-steps 20000 \
-  --eventnumber 10000 \
-  --train-batch-size 128 \
-  --trial-seeds 11,17,23 \
-  --seed-objective mean \
-  --val-interval-steps 1000 \
-  --early-stopping-min-steps 20000 \
-  --early-stopping-patience 8 \
-  --max-val-batches 500
-```
-
-Do not pass `--n-cycles` or `--scheduler-first-cycle-steps` with this mode.
-The objective is still the best validation loss observed anywhere in training;
-per-seed checkpoint logs retain the final validation observation so endpoint
-behavior can be reviewed separately.
-
-## W&B Logging
-
-W&B is optional and off by default. Online mode creates one W&B run per Optuna
-trial:
-
-```bash
-python train/downstream/tuning/run_track_regression_optuna.py \
-  ... \
-  --wandb-mode online \
-  --wandb-project clas12-adapteronly
-```
-
-Offline mode writes local W&B run files that can be synced later:
-
-```bash
-python train/downstream/tuning/run_track_regression_optuna.py \
-  ... \
-  --wandb-mode offline \
-  --wandb-project clas12-adapteronly
-
-wandb sync /home/alessio/ML-work/result_deep_storage/optuna/<study_name>/trial_*/wandb/offline-run-*
-```
-
-Logged metrics include:
-
-- `train/loss`
-- `val/loss`
-- `lr`
-- `best/val_loss`
-- `best/step`
-- `step`
-- `epoch`
-
-The code logs configs and scalar metrics only. It does not upload raw data or
-checkpoints as W&B artifacts.
-
-## Outputs
-
-For study `<study_name>`, outputs are written under:
+## Study state and artifacts
 
 ```text
-<output_root>/<study_name>/
+<output-root>/<study-name>/
+  trial_000000/
+    seed_11/
+      config/model.yaml
+      config/resolved_config.json
+      checkpoints/trial_000000_seed_11_adapter_checkpoint.pth
+      train/artifacts.json
+      wandb/                         # optional local W&B directory
+    seed_17/ ...
+    seed_23/ ...
+    trial_result.json
+  analysis/optuna_diagnostics/       # produced by the analyzer
 ```
 
-Each trial has its own directory:
+The database is stored at `--storage`, independently of these fit artifacts.
+Preserve both. Resume with the same storage, study name, output root, YAML and
+fixed protocol. The study fingerprints YAML contents, resolved paths, stats,
+label/batch/update/validation settings, schedule and seed protocol. Contract
+changes require a new study. Also use a new study after editing the search
+ranges. A partially finished fit is not optimizer-resumed when adding trials.
 
-```text
-trial_000123/
-  seed_11/
-    config/
-      model.yaml
-      resolved_config.json
-    checkpoints/
-      trial_000123_seed_11_adapter_checkpoint.pth
-    train/
-      artifacts.json
-  seed_17/ ...
-  seed_23/ ...
-  trial_result.json
-  wandb/                  # only when W&B is enabled
-```
+## Analysis controls
 
-The Optuna SQLite database is the path passed through `--storage`.
+Pass `--study-dir` when fit artifacts are not beside the SQLite database and
+`--output-dir` for an explicit diagnostics destination. Missing histories or
+few completed trials can suppress particular plots; inspect
+`generated_outputs.json` and any diagnostic error receipt.
 
-## Resuming A Study
+Parallel-coordinate and interaction plots default to the top 20% of completed
+trials. Choose `--parallel-filter all`, `top-fraction`, `absolute`, or `relative`,
+then set `--top-fraction`, `--absolute-threshold`, or `--relative-pct` respectively.
+`--interaction-params` chooses parameters explicitly; otherwise importance
+ranking determines them. `--checkpoint-fractions` and
+`--checkpoint-tolerance-fraction` control comparisons of early and final ranks.
 
-To continue a stopped study, rerun the same command with the same:
+Use completed trials to choose narrower ranges. Inspect log-scale parameters
+in log space and retain interactions. If good fits still improve near the
+budget limit, test longer training under a new protocol. Confirm candidates on
+fresh seeds and score a separate final cohort after selection; trial importance
+and an Optuna winner alone do not establish generalization.
 
-- `--storage`
-- `--study-name`
-- `--output-root`
+## Optional W&B logging
 
-`--n-trials` means "run this many additional trials in this invocation." It does
-not mean "bring the study up to this total number of trials."
+W&B is disabled by default. Add `--wandb-mode offline` or `online` and optionally
+`--wandb-project`, `--wandb-entity`, `--wandb-dir` to the worker. This requires
+`wandb` installed; online mode also needs the usual account configuration.
+There is **one run per trial/seed**, grouped by study. Without `--wandb-dir`,
+local files go beneath that seed's `wandb/` directory (W&B may add another
+`wandb/` level inside it). Sync the actual `offline-run-*` directory reported
+by W&B with its `wandb sync` CLI.
 
-Interrupted half-finished trials are not resumed from their partial checkpoint.
-The worker continues by adding new trials to the existing study.
-
-## Inspecting Results
-
-Basic Optuna summary:
-
-```bash
-python - <<'PY'
-import optuna
-
-storage = "sqlite:////home/alessio/ML-work/result_deep_storage/optuna/adapteronly_rangefind_50k.db"
-study = optuna.load_study("adapteronly_rangefind_50k", storage=storage)
-
-print("Trials:", len(study.trials))
-print("Best value:", study.best_value)
-print("Best trial:", study.best_trial.number)
-print("Best params:")
-for key, value in study.best_trial.params.items():
-    print(f"  {key}: {value}")
-
-df = study.trials_dataframe()
-cols = [
-    "number",
-    "state",
-    "value",
-    "params_max_lr",
-    "params_min_lr_ratio",
-    "params_warmup_fraction",
-    "params_adapter_weight_decay",
-    "params_grad_clip_value",
-    "params_dropout",
-    "user_attrs_best_step",
-]
-print(df[cols].sort_values("value").head(10).to_string(index=False))
-PY
-```
-
-Completed-study diagnostics:
-
-```bash
-python train/downstream/tuning/analyze_track_regression_optuna.py \
-  --storage sqlite:////home/alessio/ML-work/result_deep_storage/optuna/adapteronly_rangefind_50k.db \
-  --study-name adapteronly_rangefind_50k
-```
-
-By default this writes plots, CSV tables, and `study_summary.json` under:
-
-```text
-<output_root>/<study_name>/analysis/optuna_diagnostics/
-```
-
-The parallel-coordinate and pairwise-interaction plots use the top 20 percent
-of completed trials by default. Use `--parallel-filter all`, `--top-fraction`,
-`--absolute-threshold`, or `--relative-pct` to adjust that selection.
-
-If `params_min_lr_ratio` is missing in an older study, compute it as:
-
-```text
-min_lr_ratio = params_min_lr / params_max_lr
-```
-
-## Choosing The Next Search Space
-
-Use completed trials only. Pick a "good set" from either the top 20-30 percent
-or all trials within a tolerance of the best validation loss.
-
-For log-scale parameters (`max_lr`, `min_lr_ratio`, `adapter_weight_decay`,
-`grad_clip_value`), inspect ranges in log space. If a parameter performs well
-across several orders of magnitude and shows no interaction, fix it to a simple
-value in the next study rather than spending search budget on it.
-
-If many good trials have `best_step == max_optimizer_steps`, the training budget
-is probably truncating learning. Run a longer, narrower study or train the top
-configs directly for a larger final budget.
+Logs include training/validation loss, LR, best loss/step, update and epoch.
+The integration sends configs and scalar metrics; it does not upload raw data
+or checkpoints as W&B artifacts. SQLite and local receipts remain the inputs
+for the analyzer and recipe import.

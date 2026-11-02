@@ -217,6 +217,11 @@ Momentum-binned and COATJAVA comparisons still come from the final evaluator.
 
 ## Track-regression evaluation
 
+This evaluator initializes the shared trainer and opens both the model YAML
+training root (`data_root`) and evaluation test root (`data_root_test`). Keep
+the original training trees accessible, even for checkpoint-only evaluation.
+Use a separate final `data_root_test`; retain the training root and saved stats.
+
 From the repository root, run the standalone adapter-only campaign example
 (edit its paths to match an existing run first):
 

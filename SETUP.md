@@ -105,7 +105,9 @@ machine-specific paths that must be edited. `data_root` is the training root;
 `data_root_train` is compatibility metadata in the normal loader, and
 `data_root_test` selects validation data. The onboarding profiles accept
 `CLAS12_VALIDATION_DATA_ROOT` for validation and provide separate `*_evaluation`
-profiles controlled by `CLAS12_EVAL_DATA_ROOT` for final inference.
+profiles controlled by `CLAS12_EVAL_DATA_ROOT` for final inference. Momentum
+evaluation initializes the trainer and opens the original training trees too;
+keep that training root accessible when evaluating an existing checkpoint.
 
 Use external directories for checkpoints, logs, plots and reports. CLI
 `--checkpoint_dir` overrides the YAML path; `--root_dir` controls the experiment

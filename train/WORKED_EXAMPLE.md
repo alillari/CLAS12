@@ -172,6 +172,9 @@ python train/downstream/eval/evaluate_track_regression.py \
 The analysis files select `*_evaluation` model profiles, which inherit their
 training architecture, filters and momentum stats while reading test data from
 `CLAS12_EVAL_DATA_ROOT`. The finding limit is 10k events; momentum is 50k tracks.
+Momentum evaluation initializes the shared trainer and opens the original
+training trees as well as the evaluation test trees. Keep `CLAS12_DATA_ROOT`
+available; change only the evaluation test root, not the training root.
 Check actual accepted counts, missing baseline populations and fit statuses.
 Finding's template sets `evaluate_coatjava: false`; change it to true when the
 final product has the segmentation sidecar and that comparison is desired.
@@ -214,3 +217,7 @@ It reuses this backbone and the same named adapter profiles for a small
 AdapterOnly/frozen-feature comparison, then explains label/backbone/seed sweeps,
 queue restart, existing-checkpoint reuse and comparison plots. The campaign
 runner does not automatically import the two adapters trained above.
+
+For optimizer search after these runs, follow
+[Tune a working momentum adapter](downstream/tuning/GETTING_STARTED.md). It
+explains trial/seed budgets, diagnostics and selected-recipe campaign handoff.

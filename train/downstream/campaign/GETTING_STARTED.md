@@ -7,7 +7,9 @@ keeps their outputs separate, records progress and builds comparison tables.
 
 The runners execute one training/evaluation subprocess at a time on the chosen
 GPU. They do not pretrain backbones or search hyperparameters automatically.
-Keep the successful single-run recipe as the starting point.
+Keep the successful single-run recipe as the starting point. For optimizer
+search first, follow [the tuning walkthrough](../tuning/GETTING_STARTED.md);
+it shows how to import a selected recipe into these runners.
 
 ## What the files mean
 

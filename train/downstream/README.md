@@ -19,5 +19,5 @@ single run, follow [From single runs to campaigns](campaign/GETTING_STARTED.md).
 
 [Target statistics](TARGET_STATISTICS.md) and
 [checkpoint policy](PHYSICS_CHECKPOINTS.md) describe momentum-specific contracts.
-[Tuning](tuning/README.md) and [probes](probes/README.md) are optional follow-up
+[Tuning](tuning/GETTING_STARTED.md) and [probes](probes/README.md) are optional follow-up
 workflows, not prerequisites for fitting an adapter.

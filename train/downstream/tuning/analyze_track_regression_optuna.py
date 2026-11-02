@@ -186,6 +186,10 @@ def completed_trial_rows(study: Any, trials: list[Any]) -> list[dict[str, Any]]:
             "trial_dir": trial.user_attrs.get("trial_dir"),
             "log_file": trial.user_attrs.get("log_file"),
             "artifact_summary": trial.user_attrs.get("artifact_summary"),
+            "seed_objective": trial.user_attrs.get("seed_objective"),
+            "seed_mean": trial.user_attrs.get("seed_mean"),
+            "seed_std": trial.user_attrs.get("seed_std"),
+            "seed_results": json.dumps(trial.user_attrs.get("seed_results", [])),
         }
         row.update({f"param_{key}": value for key, value in trial.params.items()})
         rows.append(row)
@@ -287,6 +291,30 @@ def validation_history(trial: Any, study_dir: Path | None) -> dict[int, float]:
             for step, value in trial.intermediate_values.items()
             if finite_float(value) is not None
         }
+    seed_results = trial.user_attrs.get("seed_results") or []
+    if seed_results:
+        histories = []
+        for result in seed_results:
+            log_file = result.get("log_file")
+            history = parse_training_log(Path(log_file)) if log_file else {}
+            if not history:
+                LOGGER.warning("Trial %s: missing history for seed %s; skipping seed aggregate",
+                               trial.number, result.get("seed"))
+                return {}
+            histories.append(history)
+        # Keep a fixed seed population: never substitute fewer seeds at a step.
+        common_steps = set(histories[0]).intersection(*(set(h) for h in histories[1:]))
+        mode = trial.user_attrs.get("seed_objective", "mean")
+        if mode not in ("mean", "median", "mean_plus_std"):
+            raise ValueError(f"Unsupported seed objective: {mode!r}")
+        combined = {}
+        for step in sorted(common_steps):
+            values = np.asarray([history[step] for history in histories], dtype=float)
+            value = np.median(values) if mode == "median" else np.mean(values)
+            if mode == "mean_plus_std":
+                value += np.std(values, ddof=0)
+            combined[step] = float(value)
+        return combined
     log_path = source_log_path(trial, study_dir)
     return parse_training_log(log_path) if log_path is not None else {}
 
@@ -295,6 +323,11 @@ def infer_max_step_budget(trials: list[Any], study_dir: Path | None) -> int | No
     values: list[int] = []
     keys = ("max_optimizer_steps", "scheduler_first_cycle_steps", "final_step")
     for trial in trials:
+        contract = trial.user_attrs.get("execution_contract") or {}
+        budget = finite_float(contract.get("max_optimizer_steps"))
+        if budget is not None and budget > 0:
+            values.append(int(budget))
+            continue
         for attr in ("best_step",):
             value = finite_float(trial.user_attrs.get(attr))
             if value is not None:

@@ -208,3 +208,8 @@ to reuse this working recipe across runs, inspect a manifest, launch/restart a
 queue, and collate/plot results. It explains both task runners and which stages
 can reuse an existing checkpoint. The [campaign reference](downstream/campaign/README.md)
 covers additional options.
+
+For an optional optimizer search, continue with
+[Tune a working momentum adapter](downstream/tuning/GETTING_STARTED.md): smoke
+study, trial/seed budgets, diagnostics, fresh-seed confirmation and recipe
+import into a campaign. The current tuner supports momentum AdapterOnly fits.

@@ -4,6 +4,8 @@ from argparse import Namespace
 from pathlib import Path
 import json
 import tempfile
+import os
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -17,6 +19,7 @@ from train.downstream.tuning.run_track_regression_optuna import (
     validate_effective_inputs,
     validate_study_contract,
     study_contract,
+    load_base_params,
 )
 from train.downstream.tuning.track_regression_search_space import (
     suggest_adapteronly_optimizer_params,
@@ -49,6 +52,35 @@ def args_for_schedule(max_steps=30000, n_cycles=1):
 
 
 class TrackRegressionOptunaScheduleTest(unittest.TestCase):
+    def test_portable_recipe_paths_resolve_before_input_preflight(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / "data"
+            validation = root / "validation"
+            data.mkdir()
+            validation.mkdir()
+            stats = root / "stats.json"
+            stats.write_text(json.dumps({
+                "task": "mom", "split": "pretrain", "data_root": str(data),
+                "filters": {"low_thr": 1, "high_thr": 100,
+                            "adapter_sample_mode": "event_segment",
+                            "segment_target_source": "mctrue",
+                            "segment_min_clusters": 12, "segment_exact_clusters": False},
+            }))
+            with patch.dict(os.environ, {
+                "CLAS12_DATA_ROOT": str(data), "CLAS12_VALIDATION_DATA_ROOT": str(validation),
+                "CLAS12_ARTIFACT_ROOT": str(root / "artifacts"),
+                "CLAS12_MOMENTUM_STATS": str(stats),
+            }):
+                params = load_base_params(ROOT / "scripts/configs/clas12_adapter_recipes.yaml",
+                                          "clas12_momentum_50k")
+            self.assertEqual(params["data_root_train"], str(data))
+            self.assertEqual(params["data_root_test"], str(validation))
+            self.assertEqual(params["regression_target_stats"], str(stats))
+            self.assertEqual(params["checkpoint_dir"],
+                             str(root / "artifacts/downstream_log/clas12_momentum_50k/checkpoints"))
+            validate_effective_inputs(params)
+
     def test_cycle_lengths_are_exact_partitions(self):
         self.assertEqual(scheduler_first_cycle_steps(30000, 1), 30000)
         self.assertEqual(scheduler_first_cycle_steps(30000, 2), 15000)

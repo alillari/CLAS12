@@ -79,7 +79,7 @@ and fit controls, and [checkpoint policy](PHYSICS_CHECKPOINTS.md) for selection.
 ## Next steps
 
 Use [From single runs to campaigns](campaign/GETTING_STARTED.md) to repeat a
-working recipe and collate comparisons. [Optuna tuning](tuning/README.md) is a
+working recipe and collate comparisons. [Optuna tuning](tuning/GETTING_STARTED.md) is a
 separate optional search workflow; [probes](probes/README.md) diagnose frozen
 representations and layer mixing. For the complete backbone plus both-adapters
 sequence, use [the worked example](../WORKED_EXAMPLE.md).

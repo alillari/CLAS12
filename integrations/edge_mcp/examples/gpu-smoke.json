@@ -1,0 +1,19 @@
+{
+  "job_id": "gpu-smoke-example",
+  "command": ["python", "smoke_job.py", "--mode", "gpu"],
+  "mounts": [
+    {
+      "source": "/home/alessio/ML-work/pretrained-FMs",
+      "target": "/checkpoints",
+      "read_only": true
+    }
+  ],
+  "expected_artifacts": ["gpu.json"],
+  "gpu": true,
+  "cpus": 1,
+  "memory_gib": 8,
+  "pids_limit": 512,
+  "network": "none",
+  "timeout_seconds": 120,
+  "ipc_mode": "private"
+}

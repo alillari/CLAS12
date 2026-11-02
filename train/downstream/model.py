@@ -515,6 +515,9 @@ class MambaTrackRegressionHead(nn.Module):
 
     Output:
         pred_regression: (B, num_output_dim)
+
+    With coordinate_bypass=True, pretrained features and the AdapterOnly input
+    embedding are projected separately and summed per hit before refinement.
     """
 
     def __init__(self, input_dim, embed_dim=256, num_layers=3, d_state=64, d_conv=4, expand=2, 
@@ -523,12 +526,19 @@ class MambaTrackRegressionHead(nn.Module):
                  pooling="mean", embed_method="add", pe_method="nerf",
                  target_mean=None, target_std=None,
                  input_representation="center_only",
-                 pos_dim=3, aux_dim=4, *, adapter_version="mamba2", adapter_block_kwargs=None):
+                 pos_dim=3, aux_dim=4, coordinate_bypass=False, *, adapter_version="mamba2", adapter_block_kwargs=None):
         super().__init__()
         self.adapter_version = adapter_version
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.return_embedding = return_embedding
+        if not isinstance(coordinate_bypass, bool):
+            raise ValueError("coordinate_bypass must be a boolean")
+        self.coordinate_bypass = coordinate_bypass
+        if coordinate_bypass and embed_method not in {"pos_only", "pos_plus_aux"}:
+            raise ValueError("coordinate_bypass requires pos_only or pos_plus_aux tokens")
+        if coordinate_bypass and pos_dim != 3:
+            raise ValueError("coordinate_bypass requires three center coordinates")
         self.input_representation = str(input_representation)
         if self.input_representation not in {
             "center_only", "clas12_pos_plus_aux_v1"
@@ -609,6 +619,18 @@ class MambaTrackRegressionHead(nn.Module):
         else:
             self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim)
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
+        # Fuse the AdapterOnly input path with projected frozen features before
+        # sequential refinement. Separate projections preserve both inputs and
+        # are equivalent to a joint linear projection of their concatenation.
+        # Preserve the random stream for shared initialization and data sampling
+        # in matched baseline/bypass runs. These modules are constructed on CPU.
+        self.coordinate_proj = None
+        if coordinate_bypass:
+            with torch.random.fork_rng(devices=[]):
+                self.coordinate_proj = nn.Sequential(
+                    nn.LayerNorm(input_dim), nn.Linear(input_dim, embed_dim)
+                )
+        self.coordinate_token_width = 3 + (aux_dim if embed_method == "pos_plus_aux" else 0)
 
     def pool(self, x, padding_mask=None):
         """
@@ -632,6 +654,15 @@ class MambaTrackRegressionHead(nn.Module):
             weights = torch.softmax(scores, dim=1).unsqueeze(-1)  # B x N x 1
             return (x * weights).sum(dim=1)
 
+    def _embed_adapter_input(self, x):
+        """The same input processing used by an AdapterOnly forward pass."""
+        x = self.embedder(x)
+        if isinstance(x, tuple):
+            x = x[0]
+        for layer in self.mamba_embedder_layers:
+            x = layer(x) + x
+        return self.embedder_norm(x)
+
     def forward(
         self,
         x,
@@ -639,21 +670,35 @@ class MambaTrackRegressionHead(nn.Module):
         padding_mask=None,
         pretrain=False,
     ):
+        coordinate_embedding = None
+        if self.coordinate_bypass:
+            if not pretrain:
+                raise ValueError("coordinate_bypass requires pretrain=True and frozen backbone features")
+            if x.ndim != 3 or x.size(-1) != self.coordinate_token_width:
+                raise ValueError(
+                    f"coordinate_bypass expects (B, N, {self.coordinate_token_width}) tokens"
+                )
+            if (feature is None or feature.ndim != 4
+                    or feature.shape[0] != self.weighted_avg_weights.numel()
+                    or feature.shape[1:3] != x.shape[:2]
+                    or feature.size(-1) != self.input_dim):
+                raise ValueError("coordinate_bypass requires row-aligned (L, B, N, D) backbone features")
+            if padding_mask is None:
+                padding_mask = x[..., 0] != -100
+            if padding_mask.shape != x.shape[:2] or padding_mask.dtype != torch.bool:
+                raise ValueError("coordinate_bypass padding_mask must be boolean (B, N)")
+            adapter_input = torch.where(padding_mask.unsqueeze(-1), x, 0.0)
+            coordinate_embedding = self._embed_adapter_input(adapter_input)
+            # Remove padding before mixing: nonfinite padded features must not
+            # affect the layer-mixing gradients or the sequence state.
+            feature = torch.where(padding_mask[None, ..., None], feature, 0.0)
         if pretrain:
             x = feature.permute(1, 2, 0, 3)
             weights = torch.softmax(self.weighted_avg_weights, dim=0)
             weights = weights.to(x.dtype)
             x = torch.einsum("bsnd,n->bsd", x, weights)
         else:
-            x = self.embedder(x)
-
-            if isinstance(x, tuple):
-                x = x[0]
-
-            for layer in self.mamba_embedder_layers:
-                x = layer(x) + x
-
-            x = self.embedder_norm(x)
+            x = self._embed_adapter_input(x)
 
         embedding_pre_projection = None
         embedding_post_projection = None
@@ -662,6 +707,9 @@ class MambaTrackRegressionHead(nn.Module):
             embedding_pre_projection = x
 
         x = self.input_proj(x)
+        if coordinate_embedding is not None:
+            x = x + self.coordinate_proj(coordinate_embedding.to(dtype=x.dtype))
+            x = x.masked_fill(~padding_mask.unsqueeze(-1), 0.0)
 
         if self.return_embedding:
             embedding_post_projection = x

@@ -1,0 +1,197 @@
+{
+  "architecture": {
+    "blocks": {
+      "mamba_layers.0.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.1.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.10.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.11.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.2.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.3.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.4.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.5.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.6.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.7.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.8.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      },
+      "mamba_layers.9.1": {
+        "chunk_size": 64,
+        "d_model": 512,
+        "d_state": 128,
+        "expand": 2,
+        "headdim": 64,
+        "is_mimo": false,
+        "is_outproj_norm": false,
+        "ngroups": 1,
+        "rope_fraction": 0.5,
+        "version": "mamba3"
+      }
+    },
+    "version": "mamba3"
+  },
+  "cuda": "12.9",
+  "gpu": "NVIDIA GB10",
+  "initial_step": 0,
+  "optimizer": {
+    "betas": [
+      0.9,
+      0.95
+    ],
+    "mamba3_no_decay_flags_honored": true,
+    "name": "AdamW",
+    "weight_decay": 0.1
+  },
+  "packages": {
+    "causal-conv1d": "1.6.2.post1",
+    "mamba-ssm": "2.3.2.post1",
+    "triton": "3.7.1"
+  },
+  "parameter_count": 21037967,
+  "phase": "train",
+  "recipe_sha256": "8dbd648b231807e90ff07014c61e68d064038169b1165bc3201298dcc1954dda",
+  "resume_boundary": "Model/optimizer/scheduler/step resume is supported by shared Trainer; data order is not bit-exact across interruption.",
+  "runner_sha256": "546dba448ed526e60b340ee630868e78716ac0ff1ad7cc3bdd2a5ca2abe4dfec",
+  "seed": 42,
+  "stats_note": "Unit-weight compatibility files only; loss_reweight=false and normalization uses existing fixed eta/phi/r bounds.",
+  "target_audit": {
+    "adjacent_valid_slot_pairs": 25896,
+    "cluster_tokens": 9215,
+    "events_checked": 256,
+    "objective": "Historical calibrated12 outward-band criterion: slot m predicts the nearest normalized eta/phi/r point at least m bands outward. Targets are constructed after serialization and must be strictly later in the input sequence.",
+    "repeated_adjacent_slot_targets": 2284,
+    "target_slots_already_in_input_prefix": 0,
+    "valid_targets_per_slot": [
+      8411,
+      7647,
+      6855,
+      6084,
+      5310
+    ]
+  },
+  "targets_sha256": "287b49928d3b9c868728fa371a5ef910e33a90fbaed7591ad498b2ebe1c00379",
+  "torch": "2.8.0a0+5228986c39.nv25.05",
+  "total_steps": 100000,
+  "train_events": 10000000,
+  "trainable_parameter_count": 21005711,
+  "validation_boundary": "Historical test subset selects checkpoints; not an independent final holdout.",
+  "validation_events": 50000
+}

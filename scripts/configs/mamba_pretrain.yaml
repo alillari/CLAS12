@@ -1,5 +1,7 @@
 # Mamba Pretraining Configuration
 # Anonymized for publication
+# Inherited FM4NPP examples, not Mike's Chinchilla sweep.
+# See train/TRAINING_RECIPES.md for the recovered sweep and current-data ports.
 
 # Default configuration (shared across all variants)
 default: &default
@@ -50,7 +52,7 @@ default: &default
   # === Model Configuration ===
   base_dim: 256
   embed_dim: 256
-  klen: 30                               # Sequence context length
+  klen: 30                               # Predicted coordinate triples, not context length
   dropout: 0.1
   init_std: 0.025
 

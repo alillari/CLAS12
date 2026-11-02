@@ -1,0 +1,2416 @@
+[
+  {
+    "version": "mamba3",
+    "host": "a02c",
+    "job_id": "mamba3-chinchilla-w512-d12-k1-20261027",
+    "completed": {
+      "architecture": {
+        "blocks": {
+          "mamba_layers.0.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.1.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.10.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.11.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.2.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.3.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.4.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.5.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.6.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.7.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.8.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          },
+          "mamba_layers.9.1": {
+            "chunk_size": 64,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "is_mimo": false,
+            "is_outproj_norm": false,
+            "ngroups": 1,
+            "rope_fraction": 0.5,
+            "version": "mamba3"
+          }
+        },
+        "version": "mamba3"
+      },
+      "best_validation_mse": 0.00043538844329304993,
+      "checkpoint_reload": "strict model reload, prediction equivalence, optimizer and scheduler restore passed",
+      "cuda": "12.9",
+      "data_boundary": "Original mmap_cluster_full is unavailable by user confirmation; available v6_02 is shared identically across the new runs.",
+      "effective_batch_size": 64,
+      "effective_validation_events": 2000,
+      "elapsed_seconds": 10367.458535992977,
+      "final_step": 200000,
+      "finite_gradient_updates": 200000,
+      "gpu": "NVIDIA GB10",
+      "initial_step": 0,
+      "optimizer": {
+        "betas": [
+          0.9,
+          0.95
+        ],
+        "groups": [
+          {
+            "lr": 0.0009888238512457074,
+            "matrix": false,
+            "parameter_count": 7043,
+            "parameter_names": [
+              "mamba_layers.0.0.weight",
+              "mamba_layers.0.1.B_norm.weight",
+              "mamba_layers.0.1.C_norm.weight",
+              "mamba_layers.1.0.weight",
+              "mamba_layers.1.1.B_norm.weight",
+              "mamba_layers.1.1.C_norm.weight",
+              "mamba_layers.2.0.weight",
+              "mamba_layers.2.1.B_norm.weight",
+              "mamba_layers.2.1.C_norm.weight",
+              "mamba_layers.3.0.weight",
+              "mamba_layers.3.1.B_norm.weight",
+              "mamba_layers.3.1.C_norm.weight",
+              "mamba_layers.4.0.weight",
+              "mamba_layers.4.1.B_norm.weight",
+              "mamba_layers.4.1.C_norm.weight",
+              "mamba_layers.5.0.weight",
+              "mamba_layers.5.1.B_norm.weight",
+              "mamba_layers.5.1.C_norm.weight",
+              "mamba_layers.6.0.weight",
+              "mamba_layers.6.1.B_norm.weight",
+              "mamba_layers.6.1.C_norm.weight",
+              "mamba_layers.7.0.weight",
+              "mamba_layers.7.1.B_norm.weight",
+              "mamba_layers.7.1.C_norm.weight",
+              "mamba_layers.8.0.weight",
+              "mamba_layers.8.1.B_norm.weight",
+              "mamba_layers.8.1.C_norm.weight",
+              "mamba_layers.9.0.weight",
+              "mamba_layers.9.1.B_norm.weight",
+              "mamba_layers.9.1.C_norm.weight",
+              "mamba_layers.10.0.weight",
+              "mamba_layers.10.1.B_norm.weight",
+              "mamba_layers.10.1.C_norm.weight",
+              "mamba_layers.11.0.weight",
+              "mamba_layers.11.1.B_norm.weight",
+              "mamba_layers.11.1.C_norm.weight",
+              "output_layer.bias",
+              "norm.weight"
+            ],
+            "weight_decay": 0.046983716066038746
+          },
+          {
+            "lr": 0.0009888238512457074,
+            "matrix": false,
+            "parameter_count": 384,
+            "parameter_names": [
+              "mamba_layers.0.1.dt_bias",
+              "mamba_layers.0.1.D",
+              "mamba_layers.1.1.dt_bias",
+              "mamba_layers.1.1.D",
+              "mamba_layers.2.1.dt_bias",
+              "mamba_layers.2.1.D",
+              "mamba_layers.3.1.dt_bias",
+              "mamba_layers.3.1.D",
+              "mamba_layers.4.1.dt_bias",
+              "mamba_layers.4.1.D",
+              "mamba_layers.5.1.dt_bias",
+              "mamba_layers.5.1.D",
+              "mamba_layers.6.1.dt_bias",
+              "mamba_layers.6.1.D",
+              "mamba_layers.7.1.dt_bias",
+              "mamba_layers.7.1.D",
+              "mamba_layers.8.1.dt_bias",
+              "mamba_layers.8.1.D",
+              "mamba_layers.9.1.dt_bias",
+              "mamba_layers.9.1.D",
+              "mamba_layers.10.1.dt_bias",
+              "mamba_layers.10.1.D",
+              "mamba_layers.11.1.dt_bias",
+              "mamba_layers.11.1.D"
+            ],
+            "weight_decay": 0
+          },
+          {
+            "lr": 0.0009888238512457074,
+            "matrix": true,
+            "parameter_count": 19398144,
+            "parameter_names": [
+              "mamba_layers.0.1.B_bias",
+              "mamba_layers.0.1.C_bias",
+              "mamba_layers.0.1.in_proj.weight",
+              "mamba_layers.0.1.out_proj.weight",
+              "mamba_layers.1.1.B_bias",
+              "mamba_layers.1.1.C_bias",
+              "mamba_layers.1.1.in_proj.weight",
+              "mamba_layers.1.1.out_proj.weight",
+              "mamba_layers.2.1.B_bias",
+              "mamba_layers.2.1.C_bias",
+              "mamba_layers.2.1.in_proj.weight",
+              "mamba_layers.2.1.out_proj.weight",
+              "mamba_layers.3.1.B_bias",
+              "mamba_layers.3.1.C_bias",
+              "mamba_layers.3.1.in_proj.weight",
+              "mamba_layers.3.1.out_proj.weight",
+              "mamba_layers.4.1.B_bias",
+              "mamba_layers.4.1.C_bias",
+              "mamba_layers.4.1.in_proj.weight",
+              "mamba_layers.4.1.out_proj.weight",
+              "mamba_layers.5.1.B_bias",
+              "mamba_layers.5.1.C_bias",
+              "mamba_layers.5.1.in_proj.weight",
+              "mamba_layers.5.1.out_proj.weight",
+              "mamba_layers.6.1.B_bias",
+              "mamba_layers.6.1.C_bias",
+              "mamba_layers.6.1.in_proj.weight",
+              "mamba_layers.6.1.out_proj.weight",
+              "mamba_layers.7.1.B_bias",
+              "mamba_layers.7.1.C_bias",
+              "mamba_layers.7.1.in_proj.weight",
+              "mamba_layers.7.1.out_proj.weight",
+              "mamba_layers.8.1.B_bias",
+              "mamba_layers.8.1.C_bias",
+              "mamba_layers.8.1.in_proj.weight",
+              "mamba_layers.8.1.out_proj.weight",
+              "mamba_layers.9.1.B_bias",
+              "mamba_layers.9.1.C_bias",
+              "mamba_layers.9.1.in_proj.weight",
+              "mamba_layers.9.1.out_proj.weight",
+              "mamba_layers.10.1.B_bias",
+              "mamba_layers.10.1.C_bias",
+              "mamba_layers.10.1.in_proj.weight",
+              "mamba_layers.10.1.out_proj.weight",
+              "mamba_layers.11.1.B_bias",
+              "mamba_layers.11.1.C_bias",
+              "mamba_layers.11.1.in_proj.weight",
+              "mamba_layers.11.1.out_proj.weight",
+              "output_layer.weight"
+            ],
+            "weight_decay": 0.046983716066038746
+          }
+        ],
+        "name": "AdamW",
+        "native_ssm_no_decay_flags_honored": true,
+        "weight_decay": 0.046983716066038746,
+        "width_ratio": 2
+      },
+      "packages": {
+        "causal-conv1d": "1.6.2.post1",
+        "mamba-ssm": "2.3.2.post1",
+        "triton": "3.7.1"
+      },
+      "parameter_count": 19437827,
+      "peak_cuda_allocated_bytes": 1028622848,
+      "phase": "train",
+      "recipe_origin": "origin/mike 38c82ec06265a530a4efccc853bba085d0742875 scripts/configs/mamba_chinchilla_sweep.yaml scale_w512_d12_chinchilla",
+      "recipe_sha256": "f8b7e4fbc420d5502720e5e7385c64c33cae5df04c7eff551f69957a0eeee1bd",
+      "resume_boundary": "Model/optimizer/scheduler roundtrip is checked; these replacements start fresh. Intentional later resumption would not preserve data order bit-exactly.",
+      "runner_sha256": "733d046974f4048aa4fcad073f2aa5308f398f45f6e5ddfed6be1e91ce70f8d8",
+      "seed": 42,
+      "stats_note": "Unit-weight compatibility files only; loss_reweight=false and normalization uses existing fixed eta/phi/r bounds.",
+      "target_audit": {
+        "adjacent_valid_slot_pairs": 0,
+        "cluster_tokens": 8832,
+        "events_checked": 256,
+        "objective": "Historical calibrated12 nearest next-band coordinate target, k=1. Targets are constructed after serialization and must be strictly later in the input sequence.",
+        "repeated_adjacent_slot_targets": 0,
+        "target_slots_already_in_input_prefix": 0,
+        "valid_targets_per_slot": [
+          8075
+        ]
+      },
+      "targets_sha256": "287b49928d3b9c868728fa371a5ef910e33a90fbaed7591ad498b2ebe1c00379",
+      "torch": "2.8.0a0+5228986c39.nv25.05",
+      "total_steps": 200000,
+      "train_events": 10000000,
+      "trainable_parameter_count": 19405571,
+      "validation_boundary": "Historical test subset selects checkpoints; not an independent final holdout.",
+      "validation_events": 2000
+    },
+    "cohorts": {
+      "training": {
+        "cluster_bounds": [
+          1,
+          50
+        ],
+        "eligible_events": 26381439,
+        "feature_bytes": 11606018508,
+        "feature_file": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/features_pretrain/data.ninja",
+        "feature_mtime_ns": 1788889835199233500,
+        "indices_sha256": "9db3958689650c1d494c4bbe6c68b8d8421d36fbcc40d93f41bb8f59e300398d",
+        "raw_events": 27300853,
+        "removed_above_maximum": 919414,
+        "removed_below_minimum": 0,
+        "seed": 42,
+        "selected_cluster_quantiles": [
+          7,
+          35,
+          41,
+          48,
+          50
+        ],
+        "selected_events": 10000000,
+        "selection": "first_eligible",
+        "split": "pretrain"
+      },
+      "validation": {
+        "cluster_bounds": [
+          1,
+          50
+        ],
+        "eligible_events": 6595461,
+        "feature_bytes": 2901797040,
+        "feature_file": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/features_test/data.ninja",
+        "feature_mtime_ns": 1788892807971326500,
+        "indices_sha256": "7df6b014376f53af04854f6f2cfee07823992fbe52c57bccb08f13efbd5b6a54",
+        "raw_events": 6825211,
+        "removed_above_maximum": 229750,
+        "removed_below_minimum": 0,
+        "seed": 42,
+        "selected_cluster_quantiles": [
+          14,
+          34,
+          42,
+          48,
+          50
+        ],
+        "selected_events": 2000,
+        "selection": "first_eligible",
+        "split": "test"
+      },
+      "validation_boundary": "Fixed subset of the historical test split, used for checkpoint selection; not an independent final holdout."
+    },
+    "curve": [
+      {
+        "step": 1000,
+        "validation_mse": 0.001350936247035861
+      },
+      {
+        "step": 2000,
+        "validation_mse": 0.0011826751288026571
+      },
+      {
+        "step": 3000,
+        "validation_mse": 0.0011563273146748543
+      },
+      {
+        "step": 4000,
+        "validation_mse": 0.0010441361228004098
+      },
+      {
+        "step": 5000,
+        "validation_mse": 0.0010411307448521256
+      },
+      {
+        "step": 6000,
+        "validation_mse": 0.000990278203971684
+      },
+      {
+        "step": 7000,
+        "validation_mse": 0.0009162660571746528
+      },
+      {
+        "step": 8000,
+        "validation_mse": 0.0009051493834704161
+      },
+      {
+        "step": 9000,
+        "validation_mse": 0.0008502948330715299
+      },
+      {
+        "step": 10000,
+        "validation_mse": 0.0008304661023430526
+      },
+      {
+        "step": 11000,
+        "validation_mse": 0.0008037739899009466
+      },
+      {
+        "step": 12000,
+        "validation_mse": 0.0008128369227051735
+      },
+      {
+        "step": 13000,
+        "validation_mse": 0.0008057653903961182
+      },
+      {
+        "step": 14000,
+        "validation_mse": 0.0007584805134683847
+      },
+      {
+        "step": 15000,
+        "validation_mse": 0.0007754056132398546
+      },
+      {
+        "step": 16000,
+        "validation_mse": 0.0007835175492800772
+      },
+      {
+        "step": 17000,
+        "validation_mse": 0.0007499471539631486
+      },
+      {
+        "step": 18000,
+        "validation_mse": 0.0007462761714123189
+      },
+      {
+        "step": 19000,
+        "validation_mse": 0.000782718590926379
+      },
+      {
+        "step": 20000,
+        "validation_mse": 0.0007615206995978951
+      },
+      {
+        "step": 21000,
+        "validation_mse": 0.0007877661264501512
+      },
+      {
+        "step": 22000,
+        "validation_mse": 0.0007573112961836159
+      },
+      {
+        "step": 23000,
+        "validation_mse": 0.0007368295337073505
+      },
+      {
+        "step": 24000,
+        "validation_mse": 0.0007618498057126999
+      },
+      {
+        "step": 25000,
+        "validation_mse": 0.000742291216738522
+      },
+      {
+        "step": 26000,
+        "validation_mse": 0.0007262031431309879
+      },
+      {
+        "step": 27000,
+        "validation_mse": 0.000728965736925602
+      },
+      {
+        "step": 28000,
+        "validation_mse": 0.0007118589710444212
+      },
+      {
+        "step": 29000,
+        "validation_mse": 0.0007249105838127434
+      },
+      {
+        "step": 30000,
+        "validation_mse": 0.0007418721215799451
+      },
+      {
+        "step": 31000,
+        "validation_mse": 0.0007311152876354754
+      },
+      {
+        "step": 32000,
+        "validation_mse": 0.0007643852732144296
+      },
+      {
+        "step": 33000,
+        "validation_mse": 0.0007330814260058105
+      },
+      {
+        "step": 34000,
+        "validation_mse": 0.0007046133978292346
+      },
+      {
+        "step": 35000,
+        "validation_mse": 0.0007103566895239055
+      },
+      {
+        "step": 36000,
+        "validation_mse": 0.0007163147674873471
+      },
+      {
+        "step": 37000,
+        "validation_mse": 0.0007083276868797839
+      },
+      {
+        "step": 38000,
+        "validation_mse": 0.000690968765411526
+      },
+      {
+        "step": 39000,
+        "validation_mse": 0.0006975959986448288
+      },
+      {
+        "step": 40000,
+        "validation_mse": 0.0007003782666288316
+      },
+      {
+        "step": 41000,
+        "validation_mse": 0.0006983091006986797
+      },
+      {
+        "step": 42000,
+        "validation_mse": 0.0007457419997081161
+      },
+      {
+        "step": 43000,
+        "validation_mse": 0.000717044691555202
+      },
+      {
+        "step": 44000,
+        "validation_mse": 0.00072418776107952
+      },
+      {
+        "step": 45000,
+        "validation_mse": 0.0007114663603715599
+      },
+      {
+        "step": 46000,
+        "validation_mse": 0.000694985210429877
+      },
+      {
+        "step": 47000,
+        "validation_mse": 0.0007133733597584069
+      },
+      {
+        "step": 48000,
+        "validation_mse": 0.0006937614525668323
+      },
+      {
+        "step": 49000,
+        "validation_mse": 0.0006710302550345659
+      },
+      {
+        "step": 50000,
+        "validation_mse": 0.0006707690190523863
+      },
+      {
+        "step": 51000,
+        "validation_mse": 0.0006524415221065283
+      },
+      {
+        "step": 52000,
+        "validation_mse": 0.0006745434366166592
+      },
+      {
+        "step": 53000,
+        "validation_mse": 0.0006616052123717964
+      },
+      {
+        "step": 54000,
+        "validation_mse": 0.0007016482413746417
+      },
+      {
+        "step": 55000,
+        "validation_mse": 0.0006863921880722046
+      },
+      {
+        "step": 56000,
+        "validation_mse": 0.0006823671283200383
+      },
+      {
+        "step": 57000,
+        "validation_mse": 0.0006697524222545326
+      },
+      {
+        "step": 58000,
+        "validation_mse": 0.0006649221759289503
+      },
+      {
+        "step": 59000,
+        "validation_mse": 0.000659275334328413
+      },
+      {
+        "step": 60000,
+        "validation_mse": 0.00069518230156973
+      },
+      {
+        "step": 61000,
+        "validation_mse": 0.000677900156006217
+      },
+      {
+        "step": 62000,
+        "validation_mse": 0.0006750926258973777
+      },
+      {
+        "step": 63000,
+        "validation_mse": 0.0006986854132264853
+      },
+      {
+        "step": 64000,
+        "validation_mse": 0.0006963941850699484
+      },
+      {
+        "step": 65000,
+        "validation_mse": 0.0006584066431969404
+      },
+      {
+        "step": 66000,
+        "validation_mse": 0.0006407450418919325
+      },
+      {
+        "step": 67000,
+        "validation_mse": 0.000666425796225667
+      },
+      {
+        "step": 68000,
+        "validation_mse": 0.0007354146218858659
+      },
+      {
+        "step": 69000,
+        "validation_mse": 0.0006543700583279133
+      },
+      {
+        "step": 70000,
+        "validation_mse": 0.0006498610018752515
+      },
+      {
+        "step": 71000,
+        "validation_mse": 0.0006423383601941168
+      },
+      {
+        "step": 72000,
+        "validation_mse": 0.0006636307807639241
+      },
+      {
+        "step": 73000,
+        "validation_mse": 0.000635712465737015
+      },
+      {
+        "step": 74000,
+        "validation_mse": 0.0006518328445963562
+      },
+      {
+        "step": 75000,
+        "validation_mse": 0.0006987019442021847
+      },
+      {
+        "step": 76000,
+        "validation_mse": 0.0006467073108069599
+      },
+      {
+        "step": 77000,
+        "validation_mse": 0.0006325217545963824
+      },
+      {
+        "step": 78000,
+        "validation_mse": 0.000626578985247761
+      },
+      {
+        "step": 79000,
+        "validation_mse": 0.0006293966434895992
+      },
+      {
+        "step": 80000,
+        "validation_mse": 0.0007038434850983322
+      },
+      {
+        "step": 81000,
+        "validation_mse": 0.0006383131258189678
+      },
+      {
+        "step": 82000,
+        "validation_mse": 0.0006497238646261394
+      },
+      {
+        "step": 83000,
+        "validation_mse": 0.0006525656208395958
+      },
+      {
+        "step": 84000,
+        "validation_mse": 0.0006472737295553088
+      },
+      {
+        "step": 85000,
+        "validation_mse": 0.0006475549307651818
+      },
+      {
+        "step": 86000,
+        "validation_mse": 0.0006862280424684286
+      },
+      {
+        "step": 87000,
+        "validation_mse": 0.000634050345979631
+      },
+      {
+        "step": 88000,
+        "validation_mse": 0.0006573335849680007
+      },
+      {
+        "step": 89000,
+        "validation_mse": 0.0006270717713050544
+      },
+      {
+        "step": 90000,
+        "validation_mse": 0.0006133135175332427
+      },
+      {
+        "step": 91000,
+        "validation_mse": 0.0006256402703002095
+      },
+      {
+        "step": 92000,
+        "validation_mse": 0.0006296299980022013
+      },
+      {
+        "step": 93000,
+        "validation_mse": 0.0005962344002909958
+      },
+      {
+        "step": 94000,
+        "validation_mse": 0.0006195452879182994
+      },
+      {
+        "step": 95000,
+        "validation_mse": 0.0006125377840362489
+      },
+      {
+        "step": 96000,
+        "validation_mse": 0.0006183157674968243
+      },
+      {
+        "step": 97000,
+        "validation_mse": 0.0006334689096547663
+      },
+      {
+        "step": 98000,
+        "validation_mse": 0.0006014330429024994
+      },
+      {
+        "step": 99000,
+        "validation_mse": 0.0006194771849550307
+      },
+      {
+        "step": 100000,
+        "validation_mse": 0.0005891654873266816
+      },
+      {
+        "step": 101000,
+        "validation_mse": 0.0006091964314691722
+      },
+      {
+        "step": 102000,
+        "validation_mse": 0.0005850056186318398
+      },
+      {
+        "step": 103000,
+        "validation_mse": 0.0005953230429440737
+      },
+      {
+        "step": 104000,
+        "validation_mse": 0.0005820972728542984
+      },
+      {
+        "step": 105000,
+        "validation_mse": 0.0006253492319956422
+      },
+      {
+        "step": 106000,
+        "validation_mse": 0.0005858818185515702
+      },
+      {
+        "step": 107000,
+        "validation_mse": 0.0006167390383780003
+      },
+      {
+        "step": 108000,
+        "validation_mse": 0.0005850777379237115
+      },
+      {
+        "step": 109000,
+        "validation_mse": 0.0005984091549180448
+      },
+      {
+        "step": 110000,
+        "validation_mse": 0.0005871257744729519
+      },
+      {
+        "step": 111000,
+        "validation_mse": 0.0005862409598194063
+      },
+      {
+        "step": 112000,
+        "validation_mse": 0.0005724660004489124
+      },
+      {
+        "step": 113000,
+        "validation_mse": 0.0006075708079151809
+      },
+      {
+        "step": 114000,
+        "validation_mse": 0.0005792243173345923
+      },
+      {
+        "step": 115000,
+        "validation_mse": 0.0005891055334359407
+      },
+      {
+        "step": 116000,
+        "validation_mse": 0.0005703279748558998
+      },
+      {
+        "step": 117000,
+        "validation_mse": 0.0005823427927680314
+      },
+      {
+        "step": 118000,
+        "validation_mse": 0.0005622791941277683
+      },
+      {
+        "step": 119000,
+        "validation_mse": 0.0005738464533351362
+      },
+      {
+        "step": 120000,
+        "validation_mse": 0.0005807146662846208
+      },
+      {
+        "step": 121000,
+        "validation_mse": 0.0005615748232230544
+      },
+      {
+        "step": 122000,
+        "validation_mse": 0.0005632360698655248
+      },
+      {
+        "step": 123000,
+        "validation_mse": 0.0005428423173725605
+      },
+      {
+        "step": 124000,
+        "validation_mse": 0.0005690136458724737
+      },
+      {
+        "step": 125000,
+        "validation_mse": 0.0005458808736875653
+      },
+      {
+        "step": 126000,
+        "validation_mse": 0.0005714564467780292
+      },
+      {
+        "step": 127000,
+        "validation_mse": 0.0005502825952135026
+      },
+      {
+        "step": 128000,
+        "validation_mse": 0.0005419125664047897
+      },
+      {
+        "step": 129000,
+        "validation_mse": 0.0005518701509572566
+      },
+      {
+        "step": 130000,
+        "validation_mse": 0.0005834556650370359
+      },
+      {
+        "step": 131000,
+        "validation_mse": 0.000548571115359664
+      },
+      {
+        "step": 132000,
+        "validation_mse": 0.0005653731059283018
+      },
+      {
+        "step": 133000,
+        "validation_mse": 0.000532785605173558
+      },
+      {
+        "step": 134000,
+        "validation_mse": 0.0005358671769499779
+      },
+      {
+        "step": 135000,
+        "validation_mse": 0.0005268913810141385
+      },
+      {
+        "step": 136000,
+        "validation_mse": 0.0005356114124879241
+      },
+      {
+        "step": 137000,
+        "validation_mse": 0.0005352254956960678
+      },
+      {
+        "step": 138000,
+        "validation_mse": 0.0005527784232981503
+      },
+      {
+        "step": 139000,
+        "validation_mse": 0.000541594868991524
+      },
+      {
+        "step": 140000,
+        "validation_mse": 0.0005175749538466334
+      },
+      {
+        "step": 141000,
+        "validation_mse": 0.0005177756538614631
+      },
+      {
+        "step": 142000,
+        "validation_mse": 0.000511098129209131
+      },
+      {
+        "step": 143000,
+        "validation_mse": 0.000520976260304451
+      },
+      {
+        "step": 144000,
+        "validation_mse": 0.0005331086576916277
+      },
+      {
+        "step": 145000,
+        "validation_mse": 0.0005207539652474225
+      },
+      {
+        "step": 146000,
+        "validation_mse": 0.0005119516281411052
+      },
+      {
+        "step": 147000,
+        "validation_mse": 0.0005001411773264408
+      },
+      {
+        "step": 148000,
+        "validation_mse": 0.0005099019035696983
+      },
+      {
+        "step": 149000,
+        "validation_mse": 0.0005117646069265902
+      },
+      {
+        "step": 150000,
+        "validation_mse": 0.0004961136146448553
+      },
+      {
+        "step": 151000,
+        "validation_mse": 0.0005011586472392082
+      },
+      {
+        "step": 152000,
+        "validation_mse": 0.0005213389522396028
+      },
+      {
+        "step": 153000,
+        "validation_mse": 0.0004979621735401452
+      },
+      {
+        "step": 154000,
+        "validation_mse": 0.0004943651147186756
+      },
+      {
+        "step": 155000,
+        "validation_mse": 0.0005031896289438009
+      },
+      {
+        "step": 156000,
+        "validation_mse": 0.000500230526085943
+      },
+      {
+        "step": 157000,
+        "validation_mse": 0.0005039203679189086
+      },
+      {
+        "step": 158000,
+        "validation_mse": 0.0004716784169431776
+      },
+      {
+        "step": 159000,
+        "validation_mse": 0.000491027778480202
+      },
+      {
+        "step": 160000,
+        "validation_mse": 0.00047925327089615166
+      },
+      {
+        "step": 161000,
+        "validation_mse": 0.0004973947652615607
+      },
+      {
+        "step": 162000,
+        "validation_mse": 0.0004914955934509635
+      },
+      {
+        "step": 163000,
+        "validation_mse": 0.000478246045531705
+      },
+      {
+        "step": 164000,
+        "validation_mse": 0.0004910951829515398
+      },
+      {
+        "step": 165000,
+        "validation_mse": 0.0004770156810991466
+      },
+      {
+        "step": 166000,
+        "validation_mse": 0.0004871841229032725
+      },
+      {
+        "step": 167000,
+        "validation_mse": 0.00047483821981586516
+      },
+      {
+        "step": 168000,
+        "validation_mse": 0.0004687603795900941
+      },
+      {
+        "step": 169000,
+        "validation_mse": 0.0004930488648824394
+      },
+      {
+        "step": 170000,
+        "validation_mse": 0.00046950983232818544
+      },
+      {
+        "step": 171000,
+        "validation_mse": 0.00046639973879791796
+      },
+      {
+        "step": 172000,
+        "validation_mse": 0.00047241547144949436
+      },
+      {
+        "step": 173000,
+        "validation_mse": 0.00047084104153327644
+      },
+      {
+        "step": 174000,
+        "validation_mse": 0.00046345993177965283
+      },
+      {
+        "step": 175000,
+        "validation_mse": 0.0004669040790759027
+      },
+      {
+        "step": 176000,
+        "validation_mse": 0.0004662168794311583
+      },
+      {
+        "step": 177000,
+        "validation_mse": 0.0004710811481345445
+      },
+      {
+        "step": 178000,
+        "validation_mse": 0.00046345789451152086
+      },
+      {
+        "step": 179000,
+        "validation_mse": 0.00046475770068354905
+      },
+      {
+        "step": 180000,
+        "validation_mse": 0.00045787537237629294
+      },
+      {
+        "step": 181000,
+        "validation_mse": 0.0004483594966586679
+      },
+      {
+        "step": 182000,
+        "validation_mse": 0.000461370189441368
+      },
+      {
+        "step": 183000,
+        "validation_mse": 0.00044905327376909554
+      },
+      {
+        "step": 184000,
+        "validation_mse": 0.00045196624705567956
+      },
+      {
+        "step": 185000,
+        "validation_mse": 0.00046167231630533934
+      },
+      {
+        "step": 186000,
+        "validation_mse": 0.00045368087012320757
+      },
+      {
+        "step": 187000,
+        "validation_mse": 0.0004520246875472367
+      },
+      {
+        "step": 188000,
+        "validation_mse": 0.00044089191942475736
+      },
+      {
+        "step": 189000,
+        "validation_mse": 0.0004464851808734238
+      },
+      {
+        "step": 190000,
+        "validation_mse": 0.00044433827861212194
+      },
+      {
+        "step": 191000,
+        "validation_mse": 0.00043538844329304993
+      },
+      {
+        "step": 192000,
+        "validation_mse": 0.0004434703732840717
+      },
+      {
+        "step": 193000,
+        "validation_mse": 0.00044310270459391177
+      },
+      {
+        "step": 194000,
+        "validation_mse": 0.0004454344161786139
+      },
+      {
+        "step": 195000,
+        "validation_mse": 0.00045327426050789654
+      },
+      {
+        "step": 196000,
+        "validation_mse": 0.0004399536701384932
+      },
+      {
+        "step": 197000,
+        "validation_mse": 0.00045566074550151825
+      },
+      {
+        "step": 198000,
+        "validation_mse": 0.00044485810212790966
+      },
+      {
+        "step": 199000,
+        "validation_mse": 0.00043598332558758557
+      },
+      {
+        "step": 200000,
+        "validation_mse": 0.0004428936808835715
+      }
+    ]
+  },
+  {
+    "version": "mamba2",
+    "host": "a518",
+    "job_id": "mamba2-chinchilla-w512-d12-k1-20261027",
+    "completed": {
+      "architecture": {
+        "blocks": {
+          "mamba_layers.0.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.1.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.10.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.11.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.2.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.3.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.4.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.5.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.6.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.7.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.8.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          },
+          "mamba_layers.9.1": {
+            "chunk_size": 64,
+            "d_conv": 4,
+            "d_model": 512,
+            "d_state": 16,
+            "expand": 2,
+            "headdim": 64,
+            "ngroups": 1,
+            "use_mem_eff_path": true,
+            "version": "mamba2"
+          }
+        },
+        "version": "mamba2"
+      },
+      "best_validation_mse": 0.0004634911601897329,
+      "checkpoint_reload": "strict model reload, prediction equivalence, optimizer and scheduler restore passed",
+      "cuda": "12.9",
+      "data_boundary": "Original mmap_cluster_full is unavailable by user confirmation; available v6_02 is shared identically across the new runs.",
+      "effective_batch_size": 64,
+      "effective_validation_events": 2000,
+      "elapsed_seconds": 14521.599311336991,
+      "final_step": 200000,
+      "finite_gradient_updates": 200000,
+      "gpu": "NVIDIA GB10",
+      "initial_step": 0,
+      "optimizer": {
+        "betas": [
+          0.9,
+          0.95
+        ],
+        "groups": [
+          {
+            "lr": 0.0009888238512457074,
+            "matrix": false,
+            "parameter_count": 31619,
+            "parameter_names": [
+              "mamba_layers.0.0.weight",
+              "mamba_layers.0.1.conv1d.bias",
+              "mamba_layers.0.1.norm.weight",
+              "mamba_layers.1.0.weight",
+              "mamba_layers.1.1.conv1d.bias",
+              "mamba_layers.1.1.norm.weight",
+              "mamba_layers.2.0.weight",
+              "mamba_layers.2.1.conv1d.bias",
+              "mamba_layers.2.1.norm.weight",
+              "mamba_layers.3.0.weight",
+              "mamba_layers.3.1.conv1d.bias",
+              "mamba_layers.3.1.norm.weight",
+              "mamba_layers.4.0.weight",
+              "mamba_layers.4.1.conv1d.bias",
+              "mamba_layers.4.1.norm.weight",
+              "mamba_layers.5.0.weight",
+              "mamba_layers.5.1.conv1d.bias",
+              "mamba_layers.5.1.norm.weight",
+              "mamba_layers.6.0.weight",
+              "mamba_layers.6.1.conv1d.bias",
+              "mamba_layers.6.1.norm.weight",
+              "mamba_layers.7.0.weight",
+              "mamba_layers.7.1.conv1d.bias",
+              "mamba_layers.7.1.norm.weight",
+              "mamba_layers.8.0.weight",
+              "mamba_layers.8.1.conv1d.bias",
+              "mamba_layers.8.1.norm.weight",
+              "mamba_layers.9.0.weight",
+              "mamba_layers.9.1.conv1d.bias",
+              "mamba_layers.9.1.norm.weight",
+              "mamba_layers.10.0.weight",
+              "mamba_layers.10.1.conv1d.bias",
+              "mamba_layers.10.1.norm.weight",
+              "mamba_layers.11.0.weight",
+              "mamba_layers.11.1.conv1d.bias",
+              "mamba_layers.11.1.norm.weight",
+              "output_layer.bias",
+              "norm.weight"
+            ],
+            "weight_decay": 0.046983716066038746
+          },
+          {
+            "lr": 0.0009888238512457074,
+            "matrix": false,
+            "parameter_count": 576,
+            "parameter_names": [
+              "mamba_layers.0.1.dt_bias",
+              "mamba_layers.0.1.A_log",
+              "mamba_layers.0.1.D",
+              "mamba_layers.1.1.dt_bias",
+              "mamba_layers.1.1.A_log",
+              "mamba_layers.1.1.D",
+              "mamba_layers.2.1.dt_bias",
+              "mamba_layers.2.1.A_log",
+              "mamba_layers.2.1.D",
+              "mamba_layers.3.1.dt_bias",
+              "mamba_layers.3.1.A_log",
+              "mamba_layers.3.1.D",
+              "mamba_layers.4.1.dt_bias",
+              "mamba_layers.4.1.A_log",
+              "mamba_layers.4.1.D",
+              "mamba_layers.5.1.dt_bias",
+              "mamba_layers.5.1.A_log",
+              "mamba_layers.5.1.D",
+              "mamba_layers.6.1.dt_bias",
+              "mamba_layers.6.1.A_log",
+              "mamba_layers.6.1.D",
+              "mamba_layers.7.1.dt_bias",
+              "mamba_layers.7.1.A_log",
+              "mamba_layers.7.1.D",
+              "mamba_layers.8.1.dt_bias",
+              "mamba_layers.8.1.A_log",
+              "mamba_layers.8.1.D",
+              "mamba_layers.9.1.dt_bias",
+              "mamba_layers.9.1.A_log",
+              "mamba_layers.9.1.D",
+              "mamba_layers.10.1.dt_bias",
+              "mamba_layers.10.1.A_log",
+              "mamba_layers.10.1.D",
+              "mamba_layers.11.1.dt_bias",
+              "mamba_layers.11.1.A_log",
+              "mamba_layers.11.1.D"
+            ],
+            "weight_decay": 0
+          },
+          {
+            "lr": 0.0009888238512457074,
+            "matrix": true,
+            "parameter_count": 19221504,
+            "parameter_names": [
+              "mamba_layers.0.1.in_proj.weight",
+              "mamba_layers.0.1.lin_B.weight",
+              "mamba_layers.0.1.lin_C.weight",
+              "mamba_layers.0.1.conv1d.weight",
+              "mamba_layers.0.1.out_proj.weight",
+              "mamba_layers.1.1.in_proj.weight",
+              "mamba_layers.1.1.lin_B.weight",
+              "mamba_layers.1.1.lin_C.weight",
+              "mamba_layers.1.1.conv1d.weight",
+              "mamba_layers.1.1.out_proj.weight",
+              "mamba_layers.2.1.in_proj.weight",
+              "mamba_layers.2.1.lin_B.weight",
+              "mamba_layers.2.1.lin_C.weight",
+              "mamba_layers.2.1.conv1d.weight",
+              "mamba_layers.2.1.out_proj.weight",
+              "mamba_layers.3.1.in_proj.weight",
+              "mamba_layers.3.1.lin_B.weight",
+              "mamba_layers.3.1.lin_C.weight",
+              "mamba_layers.3.1.conv1d.weight",
+              "mamba_layers.3.1.out_proj.weight",
+              "mamba_layers.4.1.in_proj.weight",
+              "mamba_layers.4.1.lin_B.weight",
+              "mamba_layers.4.1.lin_C.weight",
+              "mamba_layers.4.1.conv1d.weight",
+              "mamba_layers.4.1.out_proj.weight",
+              "mamba_layers.5.1.in_proj.weight",
+              "mamba_layers.5.1.lin_B.weight",
+              "mamba_layers.5.1.lin_C.weight",
+              "mamba_layers.5.1.conv1d.weight",
+              "mamba_layers.5.1.out_proj.weight",
+              "mamba_layers.6.1.in_proj.weight",
+              "mamba_layers.6.1.lin_B.weight",
+              "mamba_layers.6.1.lin_C.weight",
+              "mamba_layers.6.1.conv1d.weight",
+              "mamba_layers.6.1.out_proj.weight",
+              "mamba_layers.7.1.in_proj.weight",
+              "mamba_layers.7.1.lin_B.weight",
+              "mamba_layers.7.1.lin_C.weight",
+              "mamba_layers.7.1.conv1d.weight",
+              "mamba_layers.7.1.out_proj.weight",
+              "mamba_layers.8.1.in_proj.weight",
+              "mamba_layers.8.1.lin_B.weight",
+              "mamba_layers.8.1.lin_C.weight",
+              "mamba_layers.8.1.conv1d.weight",
+              "mamba_layers.8.1.out_proj.weight",
+              "mamba_layers.9.1.in_proj.weight",
+              "mamba_layers.9.1.lin_B.weight",
+              "mamba_layers.9.1.lin_C.weight",
+              "mamba_layers.9.1.conv1d.weight",
+              "mamba_layers.9.1.out_proj.weight",
+              "mamba_layers.10.1.in_proj.weight",
+              "mamba_layers.10.1.lin_B.weight",
+              "mamba_layers.10.1.lin_C.weight",
+              "mamba_layers.10.1.conv1d.weight",
+              "mamba_layers.10.1.out_proj.weight",
+              "mamba_layers.11.1.in_proj.weight",
+              "mamba_layers.11.1.lin_B.weight",
+              "mamba_layers.11.1.lin_C.weight",
+              "mamba_layers.11.1.conv1d.weight",
+              "mamba_layers.11.1.out_proj.weight",
+              "output_layer.weight"
+            ],
+            "weight_decay": 0.046983716066038746
+          }
+        ],
+        "name": "AdamW",
+        "native_ssm_no_decay_flags_honored": true,
+        "weight_decay": 0.046983716066038746,
+        "width_ratio": 2
+      },
+      "packages": {
+        "causal-conv1d": "1.6.2.post1",
+        "mamba-ssm": "2.3.2.post1",
+        "triton": "3.7.1"
+      },
+      "parameter_count": 19285955,
+      "peak_cuda_allocated_bytes": 1159664128,
+      "phase": "train",
+      "recipe_origin": "origin/mike 38c82ec06265a530a4efccc853bba085d0742875 scripts/configs/mamba_chinchilla_sweep.yaml scale_w512_d12_chinchilla",
+      "recipe_sha256": "f8b7e4fbc420d5502720e5e7385c64c33cae5df04c7eff551f69957a0eeee1bd",
+      "resume_boundary": "Model/optimizer/scheduler roundtrip is checked; these replacements start fresh. Intentional later resumption would not preserve data order bit-exactly.",
+      "runner_sha256": "733d046974f4048aa4fcad073f2aa5308f398f45f6e5ddfed6be1e91ce70f8d8",
+      "seed": 42,
+      "stats_note": "Unit-weight compatibility files only; loss_reweight=false and normalization uses existing fixed eta/phi/r bounds.",
+      "target_audit": {
+        "adjacent_valid_slot_pairs": 0,
+        "cluster_tokens": 8832,
+        "events_checked": 256,
+        "objective": "Historical calibrated12 nearest next-band coordinate target, k=1. Targets are constructed after serialization and must be strictly later in the input sequence.",
+        "repeated_adjacent_slot_targets": 0,
+        "target_slots_already_in_input_prefix": 0,
+        "valid_targets_per_slot": [
+          8075
+        ]
+      },
+      "targets_sha256": "287b49928d3b9c868728fa371a5ef910e33a90fbaed7591ad498b2ebe1c00379",
+      "torch": "2.8.0a0+5228986c39.nv25.05",
+      "total_steps": 200000,
+      "train_events": 10000000,
+      "trainable_parameter_count": 19253699,
+      "validation_boundary": "Historical test subset selects checkpoints; not an independent final holdout.",
+      "validation_events": 2000
+    },
+    "cohorts": {
+      "training": {
+        "cluster_bounds": [
+          1,
+          50
+        ],
+        "eligible_events": 26381439,
+        "feature_bytes": 11606018508,
+        "feature_file": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/features_pretrain/data.ninja",
+        "feature_mtime_ns": 1788889835000000000,
+        "indices_sha256": "9db3958689650c1d494c4bbe6c68b8d8421d36fbcc40d93f41bb8f59e300398d",
+        "raw_events": 27300853,
+        "removed_above_maximum": 919414,
+        "removed_below_minimum": 0,
+        "seed": 42,
+        "selected_cluster_quantiles": [
+          7,
+          35,
+          41,
+          48,
+          50
+        ],
+        "selected_events": 10000000,
+        "selection": "first_eligible",
+        "split": "pretrain"
+      },
+      "validation": {
+        "cluster_bounds": [
+          1,
+          50
+        ],
+        "eligible_events": 6595461,
+        "feature_bytes": 2901797040,
+        "feature_file": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/features_test/data.ninja",
+        "feature_mtime_ns": 1788892807000000000,
+        "indices_sha256": "7df6b014376f53af04854f6f2cfee07823992fbe52c57bccb08f13efbd5b6a54",
+        "raw_events": 6825211,
+        "removed_above_maximum": 229750,
+        "removed_below_minimum": 0,
+        "seed": 42,
+        "selected_cluster_quantiles": [
+          14,
+          34,
+          42,
+          48,
+          50
+        ],
+        "selected_events": 2000,
+        "selection": "first_eligible",
+        "split": "test"
+      },
+      "validation_boundary": "Fixed subset of the historical test split, used for checkpoint selection; not an independent final holdout."
+    },
+    "curve": [
+      {
+        "step": 1000,
+        "validation_mse": 0.0016411968972533941
+      },
+      {
+        "step": 2000,
+        "validation_mse": 0.0013494329759851098
+      },
+      {
+        "step": 3000,
+        "validation_mse": 0.0010120734805241227
+      },
+      {
+        "step": 4000,
+        "validation_mse": 0.0009761824039742351
+      },
+      {
+        "step": 5000,
+        "validation_mse": 0.000912304560188204
+      },
+      {
+        "step": 6000,
+        "validation_mse": 0.0008708190289326012
+      },
+      {
+        "step": 7000,
+        "validation_mse": 0.0008400434744544327
+      },
+      {
+        "step": 8000,
+        "validation_mse": 0.000844696827698499
+      },
+      {
+        "step": 9000,
+        "validation_mse": 0.0007957462803460658
+      },
+      {
+        "step": 10000,
+        "validation_mse": 0.0007826793589629233
+      },
+      {
+        "step": 11000,
+        "validation_mse": 0.0007925409590825438
+      },
+      {
+        "step": 12000,
+        "validation_mse": 0.0007849408430047333
+      },
+      {
+        "step": 13000,
+        "validation_mse": 0.0007896638126112521
+      },
+      {
+        "step": 14000,
+        "validation_mse": 0.0007700160495005548
+      },
+      {
+        "step": 15000,
+        "validation_mse": 0.0007840048056095839
+      },
+      {
+        "step": 16000,
+        "validation_mse": 0.0007737366249784827
+      },
+      {
+        "step": 17000,
+        "validation_mse": 0.0007644268916919827
+      },
+      {
+        "step": 18000,
+        "validation_mse": 0.0007488455157727003
+      },
+      {
+        "step": 19000,
+        "validation_mse": 0.0007940486539155245
+      },
+      {
+        "step": 20000,
+        "validation_mse": 0.0007669733604416251
+      },
+      {
+        "step": 21000,
+        "validation_mse": 0.0007897657924331725
+      },
+      {
+        "step": 22000,
+        "validation_mse": 0.0007216170779429376
+      },
+      {
+        "step": 23000,
+        "validation_mse": 0.0008065092260949314
+      },
+      {
+        "step": 24000,
+        "validation_mse": 0.0007647880120202899
+      },
+      {
+        "step": 25000,
+        "validation_mse": 0.0007576274801976979
+      },
+      {
+        "step": 26000,
+        "validation_mse": 0.0007740689907222986
+      },
+      {
+        "step": 27000,
+        "validation_mse": 0.0007408435922116041
+      },
+      {
+        "step": 28000,
+        "validation_mse": 0.0007485827663913369
+      },
+      {
+        "step": 29000,
+        "validation_mse": 0.0007724145543761551
+      },
+      {
+        "step": 30000,
+        "validation_mse": 0.0007366303470917046
+      },
+      {
+        "step": 31000,
+        "validation_mse": 0.00074845424387604
+      },
+      {
+        "step": 32000,
+        "validation_mse": 0.0007619615062139928
+      },
+      {
+        "step": 33000,
+        "validation_mse": 0.0007404605275951326
+      },
+      {
+        "step": 34000,
+        "validation_mse": 0.0007179035455919802
+      },
+      {
+        "step": 35000,
+        "validation_mse": 0.0007137704524211586
+      },
+      {
+        "step": 36000,
+        "validation_mse": 0.0007402800256386399
+      },
+      {
+        "step": 37000,
+        "validation_mse": 0.000720459793228656
+      },
+      {
+        "step": 38000,
+        "validation_mse": 0.0007016442832536995
+      },
+      {
+        "step": 39000,
+        "validation_mse": 0.0007142249960452318
+      },
+      {
+        "step": 40000,
+        "validation_mse": 0.0007105806726031005
+      },
+      {
+        "step": 41000,
+        "validation_mse": 0.0007497601909562945
+      },
+      {
+        "step": 42000,
+        "validation_mse": 0.0007412411505356431
+      },
+      {
+        "step": 43000,
+        "validation_mse": 0.0006936665740795434
+      },
+      {
+        "step": 44000,
+        "validation_mse": 0.0007191531476564705
+      },
+      {
+        "step": 45000,
+        "validation_mse": 0.0007030752021819353
+      },
+      {
+        "step": 46000,
+        "validation_mse": 0.0007065078243613243
+      },
+      {
+        "step": 47000,
+        "validation_mse": 0.0007148808217607439
+      },
+      {
+        "step": 48000,
+        "validation_mse": 0.0007036655442789197
+      },
+      {
+        "step": 49000,
+        "validation_mse": 0.0007116941269487143
+      },
+      {
+        "step": 50000,
+        "validation_mse": 0.0006860803114250302
+      },
+      {
+        "step": 51000,
+        "validation_mse": 0.0006793719949200749
+      },
+      {
+        "step": 52000,
+        "validation_mse": 0.0007195333018898964
+      },
+      {
+        "step": 53000,
+        "validation_mse": 0.0006756475777365267
+      },
+      {
+        "step": 54000,
+        "validation_mse": 0.0007146517164073884
+      },
+      {
+        "step": 55000,
+        "validation_mse": 0.0006914467085152864
+      },
+      {
+        "step": 56000,
+        "validation_mse": 0.0006971143302507699
+      },
+      {
+        "step": 57000,
+        "validation_mse": 0.0006823039730079472
+      },
+      {
+        "step": 58000,
+        "validation_mse": 0.000681730336509645
+      },
+      {
+        "step": 59000,
+        "validation_mse": 0.0006721671670675278
+      },
+      {
+        "step": 60000,
+        "validation_mse": 0.0007062898366712034
+      },
+      {
+        "step": 61000,
+        "validation_mse": 0.0007067068945616484
+      },
+      {
+        "step": 62000,
+        "validation_mse": 0.0006914952537044883
+      },
+      {
+        "step": 63000,
+        "validation_mse": 0.0007094789762049913
+      },
+      {
+        "step": 64000,
+        "validation_mse": 0.0006924882181920111
+      },
+      {
+        "step": 65000,
+        "validation_mse": 0.00067564204800874
+      },
+      {
+        "step": 66000,
+        "validation_mse": 0.0006828272598795593
+      },
+      {
+        "step": 67000,
+        "validation_mse": 0.0007031270652078092
+      },
+      {
+        "step": 68000,
+        "validation_mse": 0.0007281299331225455
+      },
+      {
+        "step": 69000,
+        "validation_mse": 0.0006822533323429525
+      },
+      {
+        "step": 70000,
+        "validation_mse": 0.0006749965250492096
+      },
+      {
+        "step": 71000,
+        "validation_mse": 0.0006600073538720608
+      },
+      {
+        "step": 72000,
+        "validation_mse": 0.00067332066828385
+      },
+      {
+        "step": 73000,
+        "validation_mse": 0.0006674192845821381
+      },
+      {
+        "step": 74000,
+        "validation_mse": 0.0006700377562083304
+      },
+      {
+        "step": 75000,
+        "validation_mse": 0.0006754901260137558
+      },
+      {
+        "step": 76000,
+        "validation_mse": 0.000664243008941412
+      },
+      {
+        "step": 77000,
+        "validation_mse": 0.0006704907864332199
+      },
+      {
+        "step": 78000,
+        "validation_mse": 0.0006845520692877471
+      },
+      {
+        "step": 79000,
+        "validation_mse": 0.0006697270437143743
+      },
+      {
+        "step": 80000,
+        "validation_mse": 0.0006912755197845399
+      },
+      {
+        "step": 81000,
+        "validation_mse": 0.0006852696533314884
+      },
+      {
+        "step": 82000,
+        "validation_mse": 0.0006477269344031811
+      },
+      {
+        "step": 83000,
+        "validation_mse": 0.0006665763212367892
+      },
+      {
+        "step": 84000,
+        "validation_mse": 0.0007039649644866586
+      },
+      {
+        "step": 85000,
+        "validation_mse": 0.0006554982392117381
+      },
+      {
+        "step": 86000,
+        "validation_mse": 0.0006491129752248526
+      },
+      {
+        "step": 87000,
+        "validation_mse": 0.0006715391646139324
+      },
+      {
+        "step": 88000,
+        "validation_mse": 0.0006633890443481505
+      },
+      {
+        "step": 89000,
+        "validation_mse": 0.0006557119777426124
+      },
+      {
+        "step": 90000,
+        "validation_mse": 0.0006645804969593883
+      },
+      {
+        "step": 91000,
+        "validation_mse": 0.0006530603859573603
+      },
+      {
+        "step": 92000,
+        "validation_mse": 0.000669962028041482
+      },
+      {
+        "step": 93000,
+        "validation_mse": 0.0006397038814611733
+      },
+      {
+        "step": 94000,
+        "validation_mse": 0.0006666042027063668
+      },
+      {
+        "step": 95000,
+        "validation_mse": 0.0006569406832568347
+      },
+      {
+        "step": 96000,
+        "validation_mse": 0.0006385762244462967
+      },
+      {
+        "step": 97000,
+        "validation_mse": 0.0006419674609787762
+      },
+      {
+        "step": 98000,
+        "validation_mse": 0.0006246077828109264
+      },
+      {
+        "step": 99000,
+        "validation_mse": 0.0006374767399393022
+      },
+      {
+        "step": 100000,
+        "validation_mse": 0.0006170357810333371
+      },
+      {
+        "step": 101000,
+        "validation_mse": 0.0006351149058900774
+      },
+      {
+        "step": 102000,
+        "validation_mse": 0.0006057167774997652
+      },
+      {
+        "step": 103000,
+        "validation_mse": 0.0006250738515518606
+      },
+      {
+        "step": 104000,
+        "validation_mse": 0.0006283477996475995
+      },
+      {
+        "step": 105000,
+        "validation_mse": 0.0006223599193617702
+      },
+      {
+        "step": 106000,
+        "validation_mse": 0.0006269269506447017
+      },
+      {
+        "step": 107000,
+        "validation_mse": 0.0006280505913309753
+      },
+      {
+        "step": 108000,
+        "validation_mse": 0.0006002633017487824
+      },
+      {
+        "step": 109000,
+        "validation_mse": 0.0006003445596434176
+      },
+      {
+        "step": 110000,
+        "validation_mse": 0.0006002379232086241
+      },
+      {
+        "step": 111000,
+        "validation_mse": 0.0006162095232866704
+      },
+      {
+        "step": 112000,
+        "validation_mse": 0.000598534825257957
+      },
+      {
+        "step": 113000,
+        "validation_mse": 0.0006337446975521743
+      },
+      {
+        "step": 114000,
+        "validation_mse": 0.0006175563321448863
+      },
+      {
+        "step": 115000,
+        "validation_mse": 0.0005903193959966302
+      },
+      {
+        "step": 116000,
+        "validation_mse": 0.0006034848629496992
+      },
+      {
+        "step": 117000,
+        "validation_mse": 0.0006085956702008843
+      },
+      {
+        "step": 118000,
+        "validation_mse": 0.0005825000698678195
+      },
+      {
+        "step": 119000,
+        "validation_mse": 0.0005877463263459504
+      },
+      {
+        "step": 120000,
+        "validation_mse": 0.0006112451083026826
+      },
+      {
+        "step": 121000,
+        "validation_mse": 0.0005795096512883902
+      },
+      {
+        "step": 122000,
+        "validation_mse": 0.0005777432234026492
+      },
+      {
+        "step": 123000,
+        "validation_mse": 0.0005629647057503462
+      },
+      {
+        "step": 124000,
+        "validation_mse": 0.0005774168530479074
+      },
+      {
+        "step": 125000,
+        "validation_mse": 0.0005978270783089101
+      },
+      {
+        "step": 126000,
+        "validation_mse": 0.0005863740807399154
+      },
+      {
+        "step": 127000,
+        "validation_mse": 0.0005909016472287476
+      },
+      {
+        "step": 128000,
+        "validation_mse": 0.0005641595344059169
+      },
+      {
+        "step": 129000,
+        "validation_mse": 0.0005783247761428356
+      },
+      {
+        "step": 130000,
+        "validation_mse": 0.0005626017809845507
+      },
+      {
+        "step": 131000,
+        "validation_mse": 0.0005632885731756687
+      },
+      {
+        "step": 132000,
+        "validation_mse": 0.0005828652065247297
+      },
+      {
+        "step": 133000,
+        "validation_mse": 0.000560079759452492
+      },
+      {
+        "step": 134000,
+        "validation_mse": 0.0005716887535527349
+      },
+      {
+        "step": 135000,
+        "validation_mse": 0.0005535027012228966
+      },
+      {
+        "step": 136000,
+        "validation_mse": 0.0005629182560369372
+      },
+      {
+        "step": 137000,
+        "validation_mse": 0.00055536167928949
+      },
+      {
+        "step": 138000,
+        "validation_mse": 0.0005647015059366822
+      },
+      {
+        "step": 139000,
+        "validation_mse": 0.0005535304662771523
+      },
+      {
+        "step": 140000,
+        "validation_mse": 0.000552504207007587
+      },
+      {
+        "step": 141000,
+        "validation_mse": 0.0005381262162700295
+      },
+      {
+        "step": 142000,
+        "validation_mse": 0.0005475979996845126
+      },
+      {
+        "step": 143000,
+        "validation_mse": 0.0005511664203368127
+      },
+      {
+        "step": 144000,
+        "validation_mse": 0.0005409005680121481
+      },
+      {
+        "step": 145000,
+        "validation_mse": 0.0005375854088924825
+      },
+      {
+        "step": 146000,
+        "validation_mse": 0.0005535274394787848
+      },
+      {
+        "step": 147000,
+        "validation_mse": 0.0005333716399036348
+      },
+      {
+        "step": 148000,
+        "validation_mse": 0.0005414765328168869
+      },
+      {
+        "step": 149000,
+        "validation_mse": 0.0005370212020352483
+      },
+      {
+        "step": 150000,
+        "validation_mse": 0.0005212413379922509
+      },
+      {
+        "step": 151000,
+        "validation_mse": 0.0005383387324400246
+      },
+      {
+        "step": 152000,
+        "validation_mse": 0.0005280565237626433
+      },
+      {
+        "step": 153000,
+        "validation_mse": 0.0005206924979574978
+      },
+      {
+        "step": 154000,
+        "validation_mse": 0.0005205766065046191
+      },
+      {
+        "step": 155000,
+        "validation_mse": 0.0005092963692732155
+      },
+      {
+        "step": 156000,
+        "validation_mse": 0.0005222080508247018
+      },
+      {
+        "step": 157000,
+        "validation_mse": 0.0005172808305360377
+      },
+      {
+        "step": 158000,
+        "validation_mse": 0.0005162046290934086
+      },
+      {
+        "step": 159000,
+        "validation_mse": 0.0005153623060323298
+      },
+      {
+        "step": 160000,
+        "validation_mse": 0.0005104992305859923
+      },
+      {
+        "step": 161000,
+        "validation_mse": 0.0005241094622761011
+      },
+      {
+        "step": 162000,
+        "validation_mse": 0.0005071072373539209
+      },
+      {
+        "step": 163000,
+        "validation_mse": 0.0005174215766601264
+      },
+      {
+        "step": 164000,
+        "validation_mse": 0.0005121645517647266
+      },
+      {
+        "step": 165000,
+        "validation_mse": 0.0005103888688609004
+      },
+      {
+        "step": 166000,
+        "validation_mse": 0.0005097398534417152
+      },
+      {
+        "step": 167000,
+        "validation_mse": 0.0004977334174327552
+      },
+      {
+        "step": 168000,
+        "validation_mse": 0.0005104437586851418
+      },
+      {
+        "step": 169000,
+        "validation_mse": 0.0005195703124627471
+      },
+      {
+        "step": 170000,
+        "validation_mse": 0.0005177618586458266
+      },
+      {
+        "step": 171000,
+        "validation_mse": 0.0005050936015322804
+      },
+      {
+        "step": 172000,
+        "validation_mse": 0.0004993297625333071
+      },
+      {
+        "step": 173000,
+        "validation_mse": 0.0005098558031022549
+      },
+      {
+        "step": 174000,
+        "validation_mse": 0.0004974454641342163
+      },
+      {
+        "step": 175000,
+        "validation_mse": 0.000496542314067483
+      },
+      {
+        "step": 176000,
+        "validation_mse": 0.0004979082732461393
+      },
+      {
+        "step": 177000,
+        "validation_mse": 0.0004888350376859307
+      },
+      {
+        "step": 178000,
+        "validation_mse": 0.0004919623606838286
+      },
+      {
+        "step": 179000,
+        "validation_mse": 0.0004920296487398446
+      },
+      {
+        "step": 180000,
+        "validation_mse": 0.0004858217143919319
+      },
+      {
+        "step": 181000,
+        "validation_mse": 0.0004887447576038539
+      },
+      {
+        "step": 182000,
+        "validation_mse": 0.00048667387454770505
+      },
+      {
+        "step": 183000,
+        "validation_mse": 0.0004842661146540195
+      },
+      {
+        "step": 184000,
+        "validation_mse": 0.0004839405301027
+      },
+      {
+        "step": 185000,
+        "validation_mse": 0.0005036415532231331
+      },
+      {
+        "step": 186000,
+        "validation_mse": 0.00048082717694342136
+      },
+      {
+        "step": 187000,
+        "validation_mse": 0.0004820669419132173
+      },
+      {
+        "step": 188000,
+        "validation_mse": 0.00048198443255387247
+      },
+      {
+        "step": 189000,
+        "validation_mse": 0.00048237055307254195
+      },
+      {
+        "step": 190000,
+        "validation_mse": 0.00047424339572899044
+      },
+      {
+        "step": 191000,
+        "validation_mse": 0.0004634911601897329
+      },
+      {
+        "step": 192000,
+        "validation_mse": 0.0004704946477431804
+      },
+      {
+        "step": 193000,
+        "validation_mse": 0.0004769868100993335
+      },
+      {
+        "step": 194000,
+        "validation_mse": 0.00047567588626407087
+      },
+      {
+        "step": 195000,
+        "validation_mse": 0.0004810963582713157
+      },
+      {
+        "step": 196000,
+        "validation_mse": 0.0004690012719947845
+      },
+      {
+        "step": 197000,
+        "validation_mse": 0.00047684847959317267
+      },
+      {
+        "step": 198000,
+        "validation_mse": 0.0004813587001990527
+      },
+      {
+        "step": 199000,
+        "validation_mse": 0.0004735659749712795
+      },
+      {
+        "step": 200000,
+        "validation_mse": 0.0004737032577395439
+      }
+    ]
+  }
+]

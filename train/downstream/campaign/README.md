@@ -1,4 +1,29 @@
-# Track-Regression Campaign Runner
+# Downstream Campaign Runners
+
+For task defaults and single-run commands, start with
+[Training recipes](../../TRAINING_RECIPES.md). The examples below primarily
+cover regression orchestration and historical diagnostics; they do not define
+the recent matched campaign's exact cohorts or recipe.
+
+## Track-finding campaigns
+
+Track finding has its own manifest builder and runner:
+
+```bash
+python train/downstream/campaign/build_track_finding_manifest.py --help
+python train/downstream/campaign/run_track_finding_campaign.py --help
+```
+
+The builder accepts `--max-optimizer-steps`, `--val-interval-steps`,
+`--scheduler-first-cycle-steps`, `--warmup-steps`, `--validation-events`,
+`--final-evaluation-events`, `--assignment-threshold` and explicit training
+overrides. The normal single-run CLI is `train/downstream/train_track_finding.py`.
+Use `track_target_mode: signal_only`; unified background-query training is
+retired. See [evaluation](../eval/README.md) for native assignment metrics and
+validation histories. Check cohort separation explicitly, including any early
+test events previously used to select a backbone checkpoint.
+
+## Track-regression campaigns
 
 This directory contains local campaign tools for training CLAS12 track-regression
 adapters on a folder of pretrained Mamba backbones and then running the physics

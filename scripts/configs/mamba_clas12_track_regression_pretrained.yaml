@@ -1,4 +1,7 @@
 # CLAS12 CVT track regression using a frozen pretrained Mamba backbone.
+# This older config targets its named historical checkpoint and epoch training.
+# See clas12_adapter_recipes.yaml and train/TRAINING_RECIPES.md for the recent
+# width-512 Chinchilla backbone / 30k-update adapter recipe.
 #
 # Run this config with BOTH:
 #   --usepretrain --pretrained_ckpt /absolute/path/to/backbone.ckpt
@@ -114,9 +117,9 @@ default: &default
   regression_loss: mae
 
   # The downstream regression head is not selected by use_attention_head.
-  # The current trainer always builds MambaTrackRegressionHead: hidden width
-  # 256, one Mamba2 layer, d_state=64, d_conv=4, expand=2.  `pooling` below
-  # is honored; the remaining head architecture is implementation-fixed.
+  # The trainer fixes hidden width 256 and one refinement layer. The default
+  # is Mamba2, state 64 / conv 4 / expand 2; adapter_version and adapter_* block
+  # overrides are supported. pooling is honored; num_adapter_layers is not.
   num_heads_backbone: 4
   num_heads_decoder: 2
   num_heads_encoder: 2

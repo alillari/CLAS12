@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clas12-edge-mcp"
+version = "0.2.0"
+description = "Local MCP and CLI access to CLAS12 SSH/Docker jobs on a02c and a518"
+requires-python = ">=3.11"
+dependencies = ["mcp==1.26.0", "pydantic>=2.11,<2.13", "pydantic-settings>=2.5,<2.13"]
+
+[project.scripts]
+edge-mcp = "edge_mcp.server:main"
+edge-runner = "edge_mcp.cli:main"
+
+[tool.setuptools.package-data]
+edge_mcp = ["*.py"]
+
+[tool.setuptools.packages.find]
+include = ["edge_mcp*"]

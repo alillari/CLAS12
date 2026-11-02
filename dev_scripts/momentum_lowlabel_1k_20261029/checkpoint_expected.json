@@ -1,0 +1,7 @@
+{
+  "sha256": "242666b0b62fd59b3fcc8eb7ce38c5c55ee9f74a2fd12b464e9e070d001e3556",
+  "bytes": 231340008,
+  "source_job": "mamba2-chinchilla-w512-d12-k1-20261027",
+  "source_host": "a518",
+  "training_host": "a02c"
+}

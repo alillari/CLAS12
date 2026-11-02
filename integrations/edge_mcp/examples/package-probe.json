@@ -1,0 +1,11 @@
+{
+  "job_id": "package-probe-example",
+  "command": [
+    "python",
+    "-c",
+    "import json, importlib.metadata as m; print(json.dumps({name: m.version(name) for name in ['torch', 'mamba-ssm', 'triton']}))"
+  ],
+  "gpu": false,
+  "timeout_seconds": 60,
+  "network": "none"
+}

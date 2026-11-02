@@ -1,0 +1,159 @@
+# CLAS12 downstream starting recipes.
+# Run instructions: train/TRAINING_RECIPES.md
+# Option semantics: train/downstream/TRAINING_OPTIONS.md
+# Set CLAS12_DATA_ROOT, CLAS12_ARTIFACT_ROOT and (for momentum) CLAS12_MOMENTUM_STATS.
+
+default: &default
+  data_root: ${CLAS12_DATA_ROOT:-/path/to/mmap_canonical_loose_truthseg_event_v6_02}
+  data_root_train: "{data_root}"
+  data_root_test: "{data_root}"
+  stat_dir: "{data_root}/stats"
+  artifact_root: ${CLAS12_ARTIFACT_ROOT:-/path/to/result_deep_storage}
+  downstream_dir: "{artifact_root}/downstream_log/{model_version}"
+  checkpoint_dir: "{downstream_dir}/checkpoints"
+  data_version: clas12_cvt
+  input_layout: xyz
+  input_representation: center_only
+  serialization: clas12_band_hilbert
+  clas12_band_config: calibrated12
+  embed_method: pos_only
+  pe_method: nerf
+  voxelize: false
+  space_filling_order: false
+  space_filling_curve: z
+  return_dict: true
+  return_reg_test: true
+  return_knn_target: false
+  return_coatjava_seg_pred: false
+  require_coatjava_seg_pred: false
+  coordinate_bypass: false
+  limit_data: true
+  limit_size: 50000
+  n_data_idx: 1000000
+  limit_test_data: true
+  drop_last_test: false
+  nleave: 10000000000.0
+  order: REP
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  low_thr: 1
+  background_label: -1
+  group_size: 8
+  rep_aaai: false
+  nexttoken: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+  continue_from_best: true
+  log_to_screen: true
+  num_data_workers: 4
+  seed: 42
+  use_amp: false
+
+  # Explicit update budget; total_steps alone does not enable step training.
+  max_epochs: 10000
+  max_optimizer_steps: 30000
+  total_steps: 30000
+  n_eval_steps: 1000
+  val_interval_steps: 1000
+  max_train_batches: null
+  max_val_batches: null
+  scheduler_mode: cosine_restarts
+  first_cycle_steps: 30000
+  scheduler_first_cycle_steps: 30000
+  warmup_steps: 1000
+  max_lr: 0.0003
+  min_lr: 0.00001
+  adapter_weight_decay: 0.0001
+  grad_clip_value: 0.1
+  early_stopping_min_steps: 30001
+  early_stopping_warmup_steps: 30001
+  early_stopping_patience: 100000
+  early_stopping_min_delta: 0.0
+  dropout: 0.1
+  downstream_dropout: 0.1
+
+  # Matches the width-512 Chinchilla Mamba1 checkpoint. For Mamba2/3,
+  # copy the matching backbone block options from its pretraining recipe.
+  backbone_version: mamba1
+  base_dim: 256
+  embed_dim: 512
+  num_layers_backbone: 12
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  klen: 1
+  init_std: 0.025
+  adapter_version: mamba2
+  num_embedder_layers: 0
+  num_heads_backbone: 4
+  num_heads_decoder: 2
+  num_heads_encoder: 2
+  loss_matched_ce_weight: 0.5
+  loss_unmatched_ce_weight: 0.1
+  loss_dice_weight: 1
+  loss_focal_weight: 30
+
+clas12_track_finding_50k:
+  <<: *default
+  model_version: clas12_track_finding_50k
+  batch_size: 32
+  local_batch_size: 32
+  valid_batch_size: 32
+  local_valid_batch_size: 32
+  limit_test_size: 5000
+  max_validation_events: 5000
+  high_thr: 512
+  max_tracks: 17
+  max_gt_classes: 16
+  num_prototypes: 16
+  adapter_sample_mode: track_legacy   # event-level tracking, not legacy regression
+  return_reg: false
+  track_target_mode: signal_only
+  validation_ari_mode: signal
+  adapter_embed_dim: 256
+  num_adapter_layers: 0
+  adapter_d_state: 16
+  adapter_d_conv: 4
+  adapter_expand: 2
+  num_self_attn_layers: 2
+  do_masked_attn: true
+  softmax_mask: false
+  use_attention_head: true
+  assignment_option: 2
+  assignment_threshold: 0.2
+  match_iou_threshold: 0.5
+  match_min_purity: 0.5
+  match_min_efficiency: 0.5
+  save_validation_checkpoints: true
+  target_momentum_scale_to_gev: 0.001
+
+clas12_momentum_50k:
+  <<: *default
+  model_version: clas12_momentum_50k
+  batch_size: 128
+  local_batch_size: 128
+  valid_batch_size: 128
+  local_valid_batch_size: 128
+  limit_test_size: 10000
+  high_thr: 100
+  max_tracks: 150
+  max_gt_classes: 150
+  adapter_sample_mode: event_segment
+  segment_target_source: mctrue
+  segment_min_clusters: 12
+  segment_exact_clusters: false
+  segment_min_truth_purity: 1.0
+  return_reg: true
+  require_reg_target: true
+  regression_target_stats: ${CLAS12_MOMENTUM_STATS:-/path/to/momentum_stats_train50k.json}
+  task: mom
+  pooling: attention
+  regression_loss: mae
+  checkpoint_selection: validation_loss
+  # The current trainer fixes width=256 and num_layers=1 in code.
+  # num_adapter_layers is deliberately omitted: it does not control that head.
+  adapter_d_state: 64
+  adapter_d_conv: 4
+  adapter_expand: 2

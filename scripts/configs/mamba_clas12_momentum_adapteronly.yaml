@@ -5,6 +5,9 @@
 #
 # AdapterOnly means a raw-coordinate, from-scratch baseline: omit
 # --usepretrain.  It is not a frozen-backbone adapter run.
+# This older recipe uses epoch training and a shorter repeating LR cycle.
+# See clas12_adapter_recipes.yaml and train/TRAINING_RECIPES.md for the explicit
+# 30k-update recipe used in the recent matched/refined comparisons.
 
 # ---------------------------------------------------------------------------
 # Shared defaults
@@ -12,6 +15,7 @@
 default: &default
   checkpoint_selection: validation_loss
   input_representation: center_only
+  coordinate_bypass: false       # opt-in frozen-feature + AdapterOnly input fusion
   # === v6 event-product paths ===
   # For downstream momentum regression, this directory must contain at least:
   #   features_pretrain/, features_test/
@@ -110,19 +114,20 @@ default: &default
   init_std: 0.025
   model_version: clas12_momentum_adapteronly_debug
   num_layers_backbone: 6
-  d_state: 16                 # backbone only; regression head fixes d_state=64
+  d_state: 16                 # backbone only; regression head defaults to state 64
   d_conv: 4
   expand: 2
   klen: 3
   dropout: 0.1
-  mambaversion: mamba1        # backbone only; regression head is always Mamba2
+  mambaversion: mamba1        # backbone only; adapter_version defaults to mamba2
   task: mom
   pooling: attention           # honored by MambaTrackRegressionHead
   regression_loss: mae
 
-  # The current trainer always builds MambaTrackRegressionHead, with hidden
-  # width 256, one Mamba2 layer, d_state=64, d_conv=4, and expand=2.  Those
-  # head values are implementation-fixed rather than YAML-tunable.
+  # The trainer builds MambaTrackRegressionHead with fixed hidden width 256
+  # and one refinement layer. Default family/block settings are Mamba2,
+  # d_state=64, d_conv=4, expand=2; adapter_version and adapter_* block overrides
+  # are supported. num_adapter_layers does not change this trainer's layer count.
 
   # These are backbone/shared-trainer compatibility settings.
   num_heads_backbone: 4
@@ -144,10 +149,22 @@ clas12_momentum_adapteronly_debug:
   <<: *default
 
 # ---------------------------------------------------------------------------
-# Same idea, but with the CLAS12 Hilbert-band ordering enabled.
-# Use only after the radius-ordering run can load and train.
+# Legacy alias. Both profiles already select CLAS12 band-Hilbert serialization;
+# space_filling_order is not the downstream CLAS12 serialization switch.
 # ---------------------------------------------------------------------------
 clas12_momentum_adapteronly_hilbert:
   <<: *default
   serialization: clas12_band_hilbert
   space_filling_order: true
+
+# Matched frozen-backbone control and coordinate-bypass experiment. Both require
+# --usepretrain --pretrained_ckpt /path/to/backbone.ckpt. Backbone dimensions and
+# preprocessing must match that checkpoint; these inherit the defaults above.
+clas12_momentum_pretrained:
+  <<: *default
+  downstream_dir: "{artifact_root}/downstream_log/clas12_momentum_pretrained"
+
+clas12_momentum_pretrained_coordinate_bypass:
+  <<: *default
+  coordinate_bypass: true
+  downstream_dir: "{artifact_root}/downstream_log/clas12_momentum_pretrained_coordinate_bypass"

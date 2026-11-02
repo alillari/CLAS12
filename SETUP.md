@@ -29,9 +29,10 @@ conda activate clas12-fm
 
 `requirements.txt` is an inherited, unpinned dependency inventory. It is not a
 complete tested installation recipe: the trainers also import `ruamel.yaml`,
-`scikit-learn`, `einops`, and `cosine_annealing_warmup`, and evaluators/plotting
-need packages such as `matplotlib` and `pandas`. The `torch-distributed` entry
-is not the source of `torch.distributed`, which is provided by PyTorch itself.
+`scikit-learn`, `einops`, `plotly`, and `cosine_annealing_warmup`, and
+evaluators/plotting need packages such as `matplotlib` and `pandas`. `plotly`
+is imported by the dataset loader even when `voxelize: false`. The
+`torch-distributed` entry is not the source of `torch.distributed`, which is provided by PyTorch itself.
 Use the team's working environment or resolve and record a compatible environment
 before a long run. The scheduler import's upstream installation reference is
 in `train/downstream/track_finding_trainer.py` and
@@ -41,7 +42,7 @@ Check the actual imports, not just `import fm4npp`:
 
 ```bash
 python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
-python -c "import ruamel.yaml, sklearn, einops, mmap_ninja, cosine_annealing_warmup"
+python -c "import ruamel.yaml, sklearn, einops, mmap_ninja, plotly, cosine_annealing_warmup"
 python train/downstream/train_track_finding.py --help
 python train/downstream/train_track_regression.py --help
 ```
@@ -51,6 +52,25 @@ training. A successful help command does not validate GPU kernels. Use the
 CUDA checks in [Mamba support](train/MAMBA_SUPPORT.md) on the target runtime.
 The repository's local Mamba2 CPU fallback is approximate and cannot validate
 the fused training path.
+
+### GB10 Triton assembler selection
+
+If a fused-kernel probe fails with `ptxas fatal: Value 'sm_121a' is not defined`,
+check which assembler Triton invokes. The clean PyTorch 2.9.1/CUDA 13.0,
+Triton 3.5.1 environment required the CUDA toolkit assembler instead of Triton's
+bundled copy. With a compatible CUDA 13 toolkit installed, set these inside
+the job environment and rerun the actual fused forward/backward check:
+
+```bash
+export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+export TORCH_CUDA_ARCH_LIST="12.1+PTX"
+unset TRITON_OVERRIDE_ARCH
+```
+
+Use a fresh, job-specific `TRITON_CACHE_DIR` when changing the compiler/runtime.
+This addresses assembler selection; it does not install the toolkit or validate
+a different GPU architecture. The same GB10 failure and selection are described
+in [the upstream Triton issue](https://github.com/triton-lang/triton/issues/10331).
 
 For remote execution in an existing team runtime, follow
 [Remote edgexpert jobs](train/REMOTE_RUNS.md). It explains SSH versus container

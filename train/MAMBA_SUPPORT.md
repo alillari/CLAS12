@@ -106,6 +106,12 @@ cannot identify the architecture reliably; mismatched checkpoints are rejected.
 
 ## Mamba3 runtime
 
+For a fresh installation, use the copy-paste [setup recipes](../SETUP.md) and
+the [environment reference](../environments/README.md). They pin the PyTorch,
+CUDA, Triton and upstream kernel revisions and include Mamba1's compiled
+selective-scan extension. The existing campaign runtime recorded below remains
+valid provenance for those runs; it is not an installation recipe.
+
 Mamba3 is optional. Existing Mamba1/2 usage does not require installing a new
 package. Use an upstream `mamba-ssm` source revision containing
 `mamba_ssm.modules.mamba3`, with its required dependencies. Upstream currently

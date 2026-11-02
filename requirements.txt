@@ -1,23 +1,5 @@
-# Core dependencies
-torch>=2.4.0
-numpy>=1.24.0
-scipy>=1.10.0
-pyyaml>=6.0
-tqdm>=4.65.0
-optuna>=3.6.0
-wandb>=0.17.0
-
-# Mamba-specific dependencies
-mamba-ssm>=1.0.0
-causal-conv1d>=1.0.0
-triton>=2.2.0
-
-# Data handling
-mmap-ninja>=0.7.0
-
-# Distributed training
-torch-distributed>=2.0.0
-
-# Optional: for better performance
-# einops>=0.6.0
-# packaging>=23.0
+# Shared Python dependencies only. For a complete GPU environment follow
+# SETUP.md and environments/install.sh: CUDA PyTorch must be installed first,
+# and the Mamba/causal-conv1d extensions are built separately against it.
+# torch.distributed is provided by PyTorch; there is no torch-distributed package.
+-r environments/requirements.txt

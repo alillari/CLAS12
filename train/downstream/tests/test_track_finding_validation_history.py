@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -13,6 +14,7 @@ from train.downstream.track_finding_experiment import DownstreamTrainer
 from train.downstream.loss import PointHungarianMatcher
 from train.downstream.track_finding_metrics import EventMetricAccumulator
 from train.downstream.campaign.plot_track_finding_validation import read_history, trend_summary, plot_history
+from train.downstream.campaign.plot_track_finding_validation import main as plot_cli
 
 
 class FixtureHead(torch.nn.Module):
@@ -71,6 +73,22 @@ def fixture_trainer(directory):
 
 
 class ValidationHistoryTest(unittest.TestCase):
+    def test_plot_cli_uses_history_recorded_in_training_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trainer = fixture_trainer(root)
+            loss = trainer.validate_end_to_end_one_epoch()
+            trainer._record_validation_result(loss, .5, "best.pth", epoch=0, step=100)
+            history = Path(trainer.params.validation_history_dir)
+            receipt = root / "artifacts.json"
+            receipt.write_text(json.dumps({"validation_history_dir": str(history.relative_to(root))}))
+            output = root / "receipt_plots"
+            with patch("sys.argv", ["plot", "--artifact-summary", str(receipt),
+                                    "--output-dir", str(output)]):
+                plot_cli()
+            for name in ("metrics_vs_step.png", "background_vs_signal_ari.pdf", "trend_summary.json"):
+                self.assertGreater((output / name).stat().st_size, 0)
+
     def test_validation_aggregates_events_once_and_pools_counts(self):
         with tempfile.TemporaryDirectory() as directory:
             trainer = fixture_trainer(directory)

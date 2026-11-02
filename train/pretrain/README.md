@@ -1,5 +1,8 @@
 # CLAS12 pretraining
 
+For a complete pretraining → track-finding and momentum adapter workflow, see
+[the worked example](../WORKED_EXAMPLE.md).
+
 This pretraining path was first integrated on `integration-adapter-pretrain`
 from Mike's `mike` branch at `38c82ec`, then combined with the current CLAS12
 research baseline on `main`. Adapter-only and pretrained-adapter training retain

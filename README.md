@@ -20,18 +20,19 @@ settings may still need to be updated for CLAS12-specific workflows.
 ## Start here
 
 1. [Environment and data setup](SETUP.md).
-2. [Training workflow](train/TRAINING_RECIPES.md): prepare statistics, train an
-   adapter, evaluate it and inspect its behavior.
-3. [Training options](train/downstream/TRAINING_OPTIONS.md): supported controls,
+2. [Complete worked example](train/WORKED_EXAMPLE.md): pretrain one backbone,
+   train both frozen-backbone adapters, generate stats, evaluate and plot.
+3. [Training workflow](train/TRAINING_RECIPES.md): standalone adapter instructions.
+4. [Training options](train/downstream/TRAINING_OPTIONS.md): supported controls,
    defaults, interactions and implementation-fixed choices.
-4. [Target statistics](train/downstream/TARGET_STATISTICS.md): normalization,
+5. [Target statistics](train/downstream/TARGET_STATISTICS.md): normalization,
    cohort selection, file generation and checkpoint consistency.
-5. [Backbone recipes](train/BACKBONE_RECIPES.md): Mike's Chinchilla sweep and
+6. [Backbone recipes](train/BACKBONE_RECIPES.md): Mike's Chinchilla sweep and
    Mamba1/2/3 pretraining settings. [Mamba support](train/MAMBA_SUPPORT.md) covers
    block options, runtime requirements and checkpoint compatibility.
    [Transformer support](train/TRANSFORMER_SUPPORT.md) covers causal backbones
    and independently configured bidirectional adapters.
-6. [Evaluation and plots](train/downstream/eval/README.md),
+7. [Evaluation and plots](train/downstream/eval/README.md),
    [campaigns](train/downstream/campaign/README.md), and
    [tuning](train/downstream/tuning/README.md).
 

@@ -5,6 +5,14 @@ For runnable training/evaluation commands, start with
 run's model configuration and matching backbone checkpoint. Reusing the
 checkpoint-selection validation population is not an independent final test.
 
+For standalone frozen-feature fits, use the named
+[finding](track_finding_analysis_frozen_example.yaml) and
+[momentum](momentum_analysis_frozen_example.yaml) analysis templates. The
+[worked example](../../WORKED_EXAMPLE.md) supplies all paths and commands.
+Campaign runners already render per-run analysis YAMLs automatically; analysis
+is configured through YAML and run through the evaluator, without an inline
+configuration-generation script.
+
 ## Choose the diagnostic
 
 | Question | Tool/output | Interpretation |
@@ -26,7 +34,7 @@ campaign collation:
 
 ```bash
 python train/downstream/campaign/plot_track_finding_validation.py \
-  --history /path/to/one/validation_history_dir --output-dir /path/to/plots
+  --artifact-summary /path/to/finding/artifacts.json --output-dir /path/to/plots
 
 python train/downstream/campaign/plot_track_finding_campaign.py \
   --campaign-dir /path/to/collated/campaign
@@ -181,6 +189,10 @@ where signal ARI rises while purity/background performance deteriorates.
 `--assignment-option 1` plots the membership-only diagnostic instead.
 The tool rejects mixed histories, sample-count changes, and changes in
 assignment threshold or metric matching cuts.
+`--artifact-summary /path/to/artifacts.json` is an alternative to `--history`;
+it reads `validation_history_dir` from the training receipt. A relative recorded
+path is resolved against the receipt's directory. The options are mutually
+exclusive.
 
 For later evaluation of a snapshot:
 

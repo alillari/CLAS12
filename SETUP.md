@@ -4,6 +4,8 @@ Start here to prepare a training environment, then use
 [Training workflow](train/TRAINING_RECIPES.md) for commands.
 [Training options](train/downstream/TRAINING_OPTIONS.md) explains the controls;
 [Target statistics](train/downstream/TARGET_STATISTICS.md) explains the stats file.
+For a complete pretraining and two-adapter run, follow
+[the worked example](train/WORKED_EXAMPLE.md).
 Run the commands from the repository root. This is research code; the checked-in
 recipes still require access to data and compatible CUDA kernels.
 
@@ -101,7 +103,9 @@ YAML paths accept environment variables and references such as
 profiles** use `CLAS12_DATA_ROOT` and `CLAS12_MOMENTUM_STATS`; older YAMLs retain
 machine-specific paths that must be edited. `data_root` is the training root;
 `data_root_train` is compatibility metadata in the normal loader, and
-`data_root_test` selects validation data.
+`data_root_test` selects validation data. The onboarding profiles accept
+`CLAS12_VALIDATION_DATA_ROOT` for validation and provide separate `*_evaluation`
+profiles controlled by `CLAS12_EVAL_DATA_ROOT` for final inference.
 
 Use external directories for checkpoints, logs, plots and reports. CLI
 `--checkpoint_dir` overrides the YAML path; `--root_dir` controls the experiment

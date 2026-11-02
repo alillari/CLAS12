@@ -6,7 +6,8 @@
 default: &default
   data_root: ${CLAS12_DATA_ROOT:-/path/to/mmap_canonical_loose_truthseg_event_v6_02}
   data_root_train: "{data_root}"
-  data_root_test: "{data_root}"
+  # Unset keeps validation on the training product's test trees.
+  data_root_test: ${CLAS12_VALIDATION_DATA_ROOT:-$CLAS12_DATA_ROOT}
   stat_dir: "{data_root}/stats"
   artifact_root: ${CLAS12_ARTIFACT_ROOT:-/path/to/result_deep_storage}
   downstream_dir: "{artifact_root}/downstream_log/{model_version}"
@@ -94,7 +95,7 @@ default: &default
   loss_dice_weight: 1
   loss_focal_weight: 30
 
-clas12_track_finding_50k:
+clas12_track_finding_50k: &finding
   <<: *default
   model_version: clas12_track_finding_50k
   batch_size: 32
@@ -128,7 +129,7 @@ clas12_track_finding_50k:
   save_validation_checkpoints: true
   target_momentum_scale_to_gev: 0.001
 
-clas12_momentum_50k:
+clas12_momentum_50k: &momentum
   <<: *default
   model_version: clas12_momentum_50k
   batch_size: 128
@@ -156,3 +157,13 @@ clas12_momentum_50k:
   adapter_d_state: 64
   adapter_d_conv: 4
   adapter_expand: 2
+
+# Inference profiles retain training architecture/normalizer settings and change
+# only the test root. Use the matching analysis template for each task.
+clas12_track_finding_50k_evaluation:
+  <<: *finding
+  data_root_test: ${CLAS12_EVAL_DATA_ROOT:-$CLAS12_DATA_ROOT}
+
+clas12_momentum_50k_evaluation:
+  <<: *momentum
+  data_root_test: ${CLAS12_EVAL_DATA_ROOT:-$CLAS12_DATA_ROOT}

@@ -119,6 +119,19 @@ frozen-feature fits require matching family, width, depth, state, `klen`,
 embedding and auxiliary contract. Resume restores model/optimizer/scheduler;
 the epoch-based loader does not restore an exact mid-epoch data cursor.
 
-Plot validation MSE against optimizer updates to inspect learning. Track the
+Plot the saved CSV without inference or retraining:
+
+```bash
+python train/pretrain/plot_pretraining_history.py \
+  --log /path/to/pretrain/run/config_PROFILE_run_RUN.csv \
+  --output-dir /path/to/plots
+```
+
+This writes `pretraining_history.png/.pdf` with raw loss and logged LR versus
+updates and marks the best validation observation. The log's training losses
+are sampled batches, not full-epoch averages; the LR is the logged schedule
+value, not every rank-scaled parameter group's rate. See
+[the complete worked example](WORKED_EXAMPLE.md) for exact run/log paths.
+Track the
 actual effective batch and validation sample count when comparing runs. A
 short pilot checks execution; it does not establish convergence.

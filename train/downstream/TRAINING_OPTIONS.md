@@ -36,7 +36,7 @@ Track finding forces event-level sampling and validates supported target modes.
 | YAML option | Effect / supported choice |
 | --- | --- |
 | `data_root` | Training RaggedMmap root (`*_pretrain` trees). `data_root_train` is compatibility metadata in this loader. |
-| `data_root_test` | Validation/evaluation root (`*_test` trees). Set deliberately; the CLI does not create a held-out final cohort. |
+| `data_root_test` | Validation/evaluation root (`*_test` trees). Onboarding training profiles use `CLAS12_VALIDATION_DATA_ROOT` when set; otherwise the training product's test trees. `*_evaluation` profiles use `CLAS12_EVAL_DATA_ROOT`, defaulting to the training product. Variables select existing populations; they do not split events. |
 | `stat_dir` | Loader/pretraining compatibility-stat directory; distinct from `regression_target_stats`. |
 | `input_layout` | `xyz` for three-column Cartesian centers; `etaphr` for eta/phi/r input; `exyz`/`eetaphr` for energy-plus-coordinate layouts. Select the stored column/coordinate convention, not the desired output layout. |
 | `serialization`, `clas12_band_config` | Use `clas12_band_hilbert` and `calibrated12` for the standard cluster ordering. `radius` selects radial ordering; `none` disables the final serialization permutation. Changes affect the sequence seen by the model and must match the checkpoint contract. |

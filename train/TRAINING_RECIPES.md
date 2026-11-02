@@ -7,6 +7,8 @@ adapter, evaluates the checkpoint and identifies the plots to inspect. Complete
 [Target statistics](downstream/TARGET_STATISTICS.md) and
 [Evaluation and plots](downstream/eval/README.md). For Mike's Chinchilla sweep
 and backbone pretraining, use [Backbone recipes](BACKBONE_RECIPES.md).
+For one complete pretraining → both-adapters run, follow
+[the worked example](WORKED_EXAMPLE.md).
 
 ## 1. Choose a task and prepare the run configuration
 
@@ -118,52 +120,43 @@ matching backbone weights. These commands save `checkpoints/adapter.pth` and
 The model YAML's `data_root_test` chooses the evaluated population. For output
 behavior checks, evaluating the validation population is useful; label it as
 validation. For a final test, use a separately reserved population and keep all
-tracks from one source event together. To change the final population, copy the
-model YAML, change only `data_root_test`, and use that copy for evaluation.
+tracks from one source event together. The `*_evaluation` profiles select a
+separate test root without changing architecture or target normalization.
 
 Momentum evaluation needs `aux_target_test` and `metadata.json` with the declared
 auxiliary layout for its CVT entrance comparison. Track-finding evaluation can
 compare COATJAVA when `coatjava_seg_pred_test` is available. Training alone does
 not require all these evaluation sidecars.
 
-Create analysis files from the supplied templates, replacing their example paths
-with this run's paths. The script reads `CLAS12_PRETRAINED_CKPT` when evaluating
-frozen-feature fits; leave it unset for AdapterOnly.
+Analysis uses a YAML configuration and the corresponding evaluator. Campaign
+runners render this file automatically. For a standalone run, copy the named
+templates and choose the evaluation data root:
 
 ```bash
-python - <<'PYCONFIG'
-import os
-from pathlib import Path
-from ruamel.yaml import YAML
-root = Path(os.environ["TRAIN_ROOT"]).resolve()
-model = Path(os.environ["MODEL_YAML"]).resolve()
-backbone = os.environ.get("CLAS12_PRETRAINED_CKPT") or None
-yaml = YAML()
-for task, template, profile, batch, samples in [
-    ("finding", "track_finding_analysis_adapteronly.yaml", "clas12_track_finding_50k", 32, 10000),
-    ("momentum", "track_regression_analysis_adapteronly.yaml", "clas12_momentum_50k", 128, 50000),
-]:
-    config = yaml.load(Path("train/downstream/eval", template).read_text())
-    analysis = config["analysis"]
-    analysis.update(model_yaml=str(model), model_config=profile,
-        checkpoint=str(root/task/"checkpoints/adapter.pth"),
-        training_log=str(root/task/"checkpoints/training.log"),
-        output_dir=str(root/task/"evaluation"), run_name=task, run_num="seed42",
-        analysis_tag=task+"_seed42", batch_size=batch, num_workers=0,
-        max_samples=samples, use_pretrained_backbone=bool(backbone),
-        pretrained_checkpoint=backbone)
-    if task == "finding":
-        analysis.update(assignment_option=2, assignment_threshold=0.2,
-                        evaluate_coatjava=False)
-    with (root/"config"/(task+"_analysis.yaml")).open("w") as stream:
-        yaml.dump(config, stream)
-PYCONFIG
+export CLAS12_EVAL_DATA_ROOT=/absolute/path/to/evaluation_product
+cp train/downstream/eval/track_finding_analysis_frozen_example.yaml "$TRAIN_ROOT/config/finding_analysis.yaml"
+cp train/downstream/eval/momentum_analysis_frozen_example.yaml "$TRAIN_ROOT/config/momentum_analysis.yaml"
 ```
 
-For finding, keep analysis assignment threshold/matching cuts consistent with
-training; enable `evaluate_coatjava` when the required sidecar is present.
-For a modified recipe, set the generated model/profile and analysis fields to
-match it. Paths in analysis files should be absolute.
+The templates select frozen-backbone mode. For the **AdapterOnly** commands in
+section 3, edit these existing fields in each copied analysis YAML:
+
+```yaml
+use_pretrained_backbone: false
+pretrained_checkpoint: null
+```
+
+For frozen-backbone fits, keep `use_pretrained_backbone: true` and set
+`CLAS12_PRETRAINED_CKPT` to the same checkpoint used in training. All run paths
+come from `TRAIN_ROOT` and `MODEL_YAML`; no Python configuration-generation script
+is needed. The templates use the copied YAML's `*_evaluation` profiles, which
+retain the training model/filter/normalizer settings and set `data_root_test`
+from `CLAS12_EVAL_DATA_ROOT`. If inspecting validation behavior, set that variable
+to the validation product and label the results accordingly.
+
+Keep finding's threshold/matching cuts consistent with training. Its template
+has `evaluate_coatjava: false`; enable it when the sidecar is available. For a
+modified recipe, change the model profile and analysis fields to match it.
 
 ```bash
 python train/downstream/eval/evaluate_track_finding.py \
@@ -179,12 +172,13 @@ finite-prediction/fit statuses in the resulting `summary.json` and CSV files.
 
 ## 5. Inspect output behavior
 
-For track finding, locate `validation_history_dir` in `finding/artifacts.json`
-and plot that exact invocation:
+For track finding, let the plotter read the history path from the training
+receipt so it selects the correct invocation:
 
 ```bash
 python train/downstream/campaign/plot_track_finding_validation.py \
-  --history /absolute/path/from/validation_history_dir
+  --artifact-summary "$TRAIN_ROOT/finding/artifacts.json" \
+  --output-dir "$TRAIN_ROOT/finding/plots/validation"
 ```
 
 This writes `metrics_vs_step.png/.pdf`, `background_vs_signal_ari.png/.pdf` and

@@ -281,9 +281,27 @@ def load_regression_target_stats(path, task):
         "angular_indices": list(regression_angular_indices(task)),
         "phi_pairs": [list(pair) for pair in regression_phi_pairs(task)],
     }
+
+
+def validate_coordinate_bypass(params, pretrain=None):
+    """Validate the opt-in AdapterOnly input branch before opening datasets."""
+    enabled = params.get("coordinate_bypass", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("coordinate_bypass must be a boolean")
+    if enabled:
+        if params.get("embed_method") not in {"pos_only", "pos_plus_aux"}:
+            raise ValueError("coordinate_bypass requires pos_only or pos_plus_aux tokens")
+        if int(params.get("pos_dim", 3)) != 3:
+            raise ValueError("coordinate_bypass requires three center coordinates")
+        if pretrain is False:
+            raise ValueError("coordinate_bypass requires a pretrained backbone (--usepretrain)")
+    return enabled
+
+
 def validate_regression_training(params):
     """Reject retired experimental recipes before opening data or training."""
     task = canonical_regression_task(params.get("task", "mom"))
+    validate_coordinate_bypass(params)
     if task in SINGLE_TARGET_TASKS:
         raise ValueError(
             "Single-target momentum training is retired; use task=mom. "

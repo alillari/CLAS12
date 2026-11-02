@@ -45,6 +45,7 @@ from regression_utils import (
     regression_output_dim,
     resolve_regression_loss,
     validate_regression_training,
+    validate_coordinate_bypass,
     transform_regression_target_torch,
 )
 from physics_checkpoints import (
@@ -101,6 +102,7 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
         
         self.params = params
+        validate_coordinate_bypass(params.params, bool(getattr(params, "pretrained_ckpt", None)))
         input_representation = getattr(params, "input_representation", "center_only")
         if input_representation == "clas12_pos_plus_aux_v1":
             if getattr(params, "embed_method", None) != "pos_plus_aux":
@@ -458,6 +460,7 @@ class DownstreamTrainer():
             target_std=self.regression_target_stats["std"],
             input_representation=getattr(self.params, "input_representation", "center_only"),
             pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4),
+            coordinate_bypass=getattr(self.params, "coordinate_bypass", False),
         ).to(self.device)
 
     
@@ -601,6 +604,7 @@ class DownstreamTrainer():
         ###%%%%%%%
         # Debugging
         validate_regression_training(self.params.params)
+        validate_coordinate_bypass(self.params.params, pretrain)
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
         self.bwd_hooks = register_param_backward_nan_hooks(self.model)
         ###%%%%%%%%
@@ -660,6 +664,7 @@ class DownstreamTrainer():
             input_representation=getattr(self.params, "input_representation", "center_only"),
             pos_dim=getattr(self.params, "pos_dim", 3),
             aux_dim=getattr(self.params, "aux_dim", 4),
+            coordinate_bypass=getattr(self.params, "coordinate_bypass", False),
         ).to(self.device)
 
         #print number of parameters in the model
@@ -1238,6 +1243,7 @@ class DownstreamTrainer():
             'regression_target_columns': self.regression_target_stats["columns"],
             'regression_target_stats': self.regression_target_stats["path"],
             'input_representation': getattr(self.params, 'input_representation', 'center_only'),
+            'coordinate_bypass': getattr(self.params, 'coordinate_bypass', False),
             'params': vars(self.params)  # Save all hyperparameters
         }
 
@@ -1302,12 +1308,27 @@ class DownstreamTrainer():
             print("Trained weighted_avg_weights:", state_dict["weighted_avg_weights"])
         new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
 
+        # Legacy checkpoints have no flag and no bypass weights. Infer their
+        # baseline contract; never silently discard or randomly initialize a
+        # coordinate projection when switching architectures.
+        has_bypass_weights = any(k.startswith("coordinate_proj.") for k in new_state_dict)
+        checkpoint_bypass = checkpoint.get("coordinate_bypass", has_bypass_weights)
+        current_bypass = getattr(self.params, "coordinate_bypass", False)
+        if (not isinstance(checkpoint_bypass, bool)
+                or checkpoint_bypass != current_bypass
+                or checkpoint_bypass != has_bypass_weights):
+            raise ValueError(
+                "Adapter checkpoint coordinate_bypass does not match its weights "
+                f"or current configuration: checkpoint={checkpoint_bypass!r}, "
+                f"weights={has_bypass_weights}, config={current_bypass!r}"
+            )
+
         # 4. Load model weights
         try:
             if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
-                self.down_model.module.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
+                self.down_model.module.load_state_dict(new_state_dict, strict=current_bypass or uses_mamba3(self.down_model))
             else:
-                self.down_model.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
+                self.down_model.load_state_dict(new_state_dict, strict=current_bypass or uses_mamba3(self.down_model))
         except RuntimeError as exc:
             raise RuntimeError(
                 "Failed to load adapter checkpoint with the current regression-head "

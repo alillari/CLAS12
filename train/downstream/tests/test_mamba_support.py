@@ -334,15 +334,15 @@ class MambaCUDATest(unittest.TestCase):
                 self.assertTrue(all(p.grad is None for p in backbone.parameters()))
                 optimizer.step()
 
-    def test_mamba3_adapteronly_and_frozen_features(self):
+    def test_mamba3_adapteronly_frozen_features_and_coordinate_bypass(self):
         backbone = build_backbone(backbone_params("mamba3")).cuda().eval()
         points = torch.rand(2, 65, 3, device="cuda")
         mask = torch.ones(2, 65, dtype=torch.bool, device="cuda")
         mask[1, -7:] = False
         points[~mask] = -100
-        for pretrained in (False, True):
-            with self.subTest(pretrained=pretrained):
-                head = regression_head("mamba3").cuda()
+        for pretrained, bypass in ((False, False), (True, False), (True, True)):
+            with self.subTest(pretrained=pretrained, bypass=bypass):
+                head = regression_head("mamba3", coordinate_bypass=bypass).cuda()
                 optimizer = torch.optim.AdamW(optimizer_parameters(head), lr=1e-3)
                 with torch.no_grad():
                     _, features, _ = backbone(points, return_z=True)

@@ -234,6 +234,7 @@ def build_head(trainer):
         input_representation=getattr(params, "input_representation", "center_only"),
         pos_dim=getattr(params, "pos_dim", 3),
         aux_dim=getattr(params, "aux_dim", 4),
+        coordinate_bypass=getattr(params, "coordinate_bypass", False),
     ).to(trainer.device)
 
 

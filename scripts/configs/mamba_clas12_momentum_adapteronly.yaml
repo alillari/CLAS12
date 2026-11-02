@@ -15,6 +15,7 @@
 default: &default
   checkpoint_selection: validation_loss
   input_representation: center_only
+  coordinate_bypass: false       # opt-in frozen-feature + AdapterOnly input fusion
   # === v6 event-product paths ===
   # For downstream momentum regression, this directory must contain at least:
   #   features_pretrain/, features_test/
@@ -155,3 +156,15 @@ clas12_momentum_adapteronly_hilbert:
   <<: *default
   serialization: clas12_band_hilbert
   space_filling_order: true
+
+# Matched frozen-backbone control and coordinate-bypass experiment. Both require
+# --usepretrain --pretrained_ckpt /path/to/backbone.ckpt. Backbone dimensions and
+# preprocessing must match that checkpoint; these inherit the defaults above.
+clas12_momentum_pretrained:
+  <<: *default
+  downstream_dir: "{artifact_root}/downstream_log/clas12_momentum_pretrained"
+
+clas12_momentum_pretrained_coordinate_bypass:
+  <<: *default
+  coordinate_bypass: true
+  downstream_dir: "{artifact_root}/downstream_log/clas12_momentum_pretrained_coordinate_bypass"

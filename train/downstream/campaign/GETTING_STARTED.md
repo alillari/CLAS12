@@ -178,6 +178,9 @@ python train/downstream/campaign/run_track_regression_campaign.py \
   --manifest "$MOMENTUM_CAMPAIGN/manifest.yaml" --status
 ```
 
+For a detached Docker launch, monitoring and result retrieval, follow
+[Remote edgexpert jobs](../../REMOTE_RUNS.md).
+
 The runners do not detach themselves. Use the terminal/session or job mechanism
 normally used for long training runs. Changing `--cuda-device` selects the GPU
 exposed to the subprocess; it does not make rows run concurrently.

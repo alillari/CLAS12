@@ -15,6 +15,9 @@ The input contracts already match between the supplied recipes. The momentum
 head predicts entrance `(px,py,pz)` with standardized MAE. The backbone is frozen
 in both adapter fits; the momentum refinement block is trainable.
 
+For an edgexpert launch, use [Remote jobs](REMOTE_RUNS.md) to map these paths
+inside the container and preserve source, logs and artifacts across disconnects.
+
 ## 1. Set paths and select data populations
 
 Use the following prepared CLAS12 event products:

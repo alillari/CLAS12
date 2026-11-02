@@ -36,7 +36,9 @@ Task entry points: [track finding](train/downstream/TRACK_FINDING.md) and
    block options, runtime requirements and checkpoint compatibility.
    [Transformer support](train/TRANSFORMER_SUPPORT.md) covers causal backbones
    and independently configured bidirectional adapters.
-7. [Evaluation and plots](train/downstream/eval/README.md),
+7. [Remote edgexpert jobs](train/REMOTE_RUNS.md): source snapshots, container
+   paths, detached launch, monitoring, retries and artifact retrieval.
+8. [Evaluation and plots](train/downstream/eval/README.md),
    [single runs → campaigns](train/downstream/campaign/GETTING_STARTED.md), and
    [tuning](train/downstream/tuning/GETTING_STARTED.md).
 

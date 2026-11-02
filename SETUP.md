@@ -52,6 +52,10 @@ CUDA checks in [Mamba support](train/MAMBA_SUPPORT.md) on the target runtime.
 The repository's local Mamba2 CPU fallback is approximate and cannot validate
 the fused training path.
 
+For remote execution in an existing team runtime, follow
+[Remote edgexpert jobs](train/REMOTE_RUNS.md). It explains SSH versus container
+paths, isolated source snapshots, persistent mounts, monitoring and recovery.
+
 ## Data contract
 
 The normal downstream CLIs read a CLAS12 v6 event-product RaggedMmap root:

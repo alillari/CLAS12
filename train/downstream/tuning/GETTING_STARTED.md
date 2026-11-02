@@ -7,6 +7,9 @@ AdapterOnly architecture. It searches optimizer settings; it does not pretrain
 backbones, tune track finding, or search architecture. A frozen-backbone
 campaign can reuse the selected recipe later, but that transfer needs evaluation.
 
+To run the study on an edgexpert, use [Remote jobs](../../REMOTE_RUNS.md)
+for container paths, persistent SQLite/artifact storage and monitoring.
+
 ## 1. Understand the experiment
 
 A **study** is a collection of trials with a common dataset, architecture,

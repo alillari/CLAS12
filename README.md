@@ -17,6 +17,37 @@ At this stage, users should expect to review paths, configuration files, and
 training scripts before running experiments. Some inherited FM4NPP examples or
 settings may still need to be updated for CLAS12-specific workflows.
 
+## Start here
+
+Task entry points: [track finding](train/downstream/TRACK_FINDING.md) and
+[momentum regression](train/downstream/MOMENTUM.md). The
+[downstream README](train/downstream/README.md) maps the shared tools.
+
+1. [Environment and data setup](SETUP.md).
+2. [Complete worked example](train/WORKED_EXAMPLE.md): pretrain one backbone,
+   train both frozen-backbone adapters, generate stats, evaluate and plot.
+3. [Training workflow](train/TRAINING_RECIPES.md): standalone adapter instructions.
+4. [Training options](train/downstream/TRAINING_OPTIONS.md): supported controls,
+   defaults, interactions and implementation-fixed choices.
+5. [Target statistics](train/downstream/TARGET_STATISTICS.md): normalization,
+   cohort selection, file generation and checkpoint consistency.
+6. [Backbone recipes](train/BACKBONE_RECIPES.md): Mike's Chinchilla sweep and
+   Mamba1/2/3 pretraining settings. [Mamba support](train/MAMBA_SUPPORT.md) covers
+   block options, runtime requirements and checkpoint compatibility.
+   [Transformer support](train/TRANSFORMER_SUPPORT.md) covers causal backbones
+   and independently configured bidirectional adapters.
+7. [Remote edgexpert jobs](train/REMOTE_RUNS.md): source snapshots, container
+   paths, detached launch, monitoring, retries and artifact retrieval.
+8. [Evaluation and plots](train/downstream/eval/README.md),
+   [single runs → campaigns](train/downstream/campaign/GETTING_STARTED.md), and
+   [tuning](train/downstream/tuning/GETTING_STARTED.md).
+
+The [adapter presets](scripts/configs/clas12_adapter_recipes.yaml) provide explicit
+30k-update profiles. Track finding uses a width-256 attention decoder with
+16 queries and zero Mamba layers. Momentum uses a width-256 head with one Mamba2
+refinement layer and attention pooling. AdapterOnly trains from coordinate
+embeddings; `--usepretrain --pretrained_ckpt ...` selects pretrained features.
+
 ## Upstream Work and Attribution
 
 This work builds on FM4NPP: Foundation Models for Nuclear and Particle Physics.
@@ -55,8 +86,8 @@ corresponding FM4NPP and TPCpp-10M works as appropriate.
 |-- fm4npp/             # FM4NPP-derived model, dataset, and utility code
 |-- train/              # Training and downstream task scripts
 |-- scripts/            # Configuration and run scripts
-|-- dev_scripts/        # Versioned calibration required by the model
-|-- SETUP.md            # Setup notes inherited from the upstream structure
+|-- dev_scripts/        # Calibration, recovered recipes and isolated experiment runners
+|-- SETUP.md            # Environment and CLAS12 data setup
 |-- requirements.txt    # Python dependencies
 `-- README.md           # Repository and storage conventions
 ```
@@ -72,13 +103,10 @@ remain documented rather than silently changing the experimental baseline.
 
 ## Setup
 
-The inherited setup notes are in `SETUP.md`, but they may not fully reflect the
-current CLAS12 research workflow. Review configuration paths and scripts before
-launching training jobs.
-
-Typical dependencies include Python, PyTorch, CUDA-capable hardware for training,
-and Mamba-related packages. See `requirements.txt` and the training scripts for
-the current working assumptions.
+Follow [SETUP.md](SETUP.md), then select a task in the
+[training guide](train/TRAINING_RECIPES.md). Training requires a compatible
+PyTorch/CUDA/Mamba environment and access to the RaggedMmap data. The unpinned
+`requirements.txt` is an inherited dependency inventory, not a tested lockfile.
 
 See [Mamba support](train/MAMBA_SUPPORT.md) for independent backbone/adapter
 selection, Mamba2 pretraining, Mamba3 SISO, and checkpoint/runtime requirements.

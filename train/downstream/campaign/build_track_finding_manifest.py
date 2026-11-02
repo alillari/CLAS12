@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--campaign-name", default=DEFAULT_CAMPAIGN_NAME)
     parser.add_argument("--artifact-root", default=str(DEFAULT_ARTIFACT_ROOT))
     parser.add_argument("--base-model-yaml", default=DEFAULT_MODEL_YAML)
+    parser.add_argument("--base-model-config", help="Named profile in the base model YAML; defaults to clas12_track_finding_adapteronly.")
     parser.add_argument("--base-analysis-yaml", default=DEFAULT_ANALYSIS_YAML)
     parser.add_argument("--data-root", help="RaggedMmap event dataset root for both train and test unless overridden.")
     parser.add_argument("--data-root-train", help="RaggedMmap event dataset root for training.")
@@ -236,8 +237,11 @@ def main() -> None:
     manifest_path = Path(args.manifest).resolve() if args.manifest else base_dir / "manifest.yaml"
     eventnumbers = parse_eventnumbers(args.eventnumber)
     training_overrides = parse_training_overrides(args)
+    base_model_config = args.base_model_config or "clas12_track_finding_adapteronly"
+    if args.base_model_config and base_model_config not in read_yaml(Path(args.base_model_yaml)):
+        raise KeyError(f"{args.base_model_yaml} has no profile {base_model_config!r}")
     validate_track_finding_modes(
-        load_base_model_config(Path(args.base_model_yaml), "clas12_track_finding_adapteronly"),
+        load_base_model_config(Path(args.base_model_yaml), base_model_config),
         source=args.base_model_yaml,
     )
     validate_track_finding_modes(
@@ -252,6 +256,7 @@ def main() -> None:
                 args.final_evaluation_events, args.validation_events,
             )
             row["base_model_yaml"] = args.base_model_yaml
+            row["base_model_config"] = base_model_config
             runs.append(row)
 
     if checkpoint_root.is_dir():
@@ -294,6 +299,7 @@ def main() -> None:
                     args.validation_events,
                 )
                 row["base_model_yaml"] = args.base_model_yaml
+                row["base_model_config"] = base_model_config
                 runs.append(row)
     elif not args.allow_empty:
         raise FileNotFoundError(f"Checkpoint root does not exist: {checkpoint_root}")
@@ -307,6 +313,7 @@ def main() -> None:
         "artifact_root": str(artifact_root),
         "checkpoint_root": str(checkpoint_root),
         "base_model_yaml": args.base_model_yaml,
+        "base_model_config": base_model_config,
         "base_analysis_yaml": args.base_analysis_yaml,
         "created_at": utc_now(),
         "defaults": {

@@ -147,7 +147,10 @@ def plot_history(rows, output_dir, option=2):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--history", required=True, type=Path, help="One run's metrics.jsonl/CSV or history directory")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--history", type=Path, help="One run's metrics.jsonl/CSV or history directory")
+    source.add_argument("--artifact-summary", type=Path,
+                        help="Training artifacts JSON containing validation_history_dir")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--assignment-option", type=int, choices=(1, 2), default=2)
     parser.add_argument("--after-step", type=int, default=0, help="Restrict to a later training interval")
@@ -155,11 +158,21 @@ def main():
     args = parser.parse_args()
     if args.min_delta < 0:
         parser.error("--min-delta must be non-negative")
-    rows = read_history(args.history, args.assignment_option)
+    history = args.history
+    if args.artifact_summary is not None:
+        with args.artifact_summary.open() as stream:
+            receipt = json.load(stream)
+        recorded = receipt.get("validation_history_dir")
+        if not isinstance(recorded, str) or not recorded:
+            parser.error("Artifact summary has no validation_history_dir; use --history for an existing history")
+        history = Path(recorded)
+        if not history.is_absolute():
+            history = args.artifact_summary.resolve().parent / history
+    rows = read_history(history, args.assignment_option)
     rows = [row for row in rows if int(row["step"]) >= args.after_step]
     if not rows:
         parser.error("No validation records in the requested step range")
-    out = args.output_dir or ((args.history if args.history.is_dir() else args.history.parent) / "plots")
+    out = args.output_dir or ((history if history.is_dir() else history.parent) / "plots")
     plot_history(rows, out, args.assignment_option)
     summary = trend_summary(rows, args.assignment_option, args.min_delta)
     (out / "trend_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")

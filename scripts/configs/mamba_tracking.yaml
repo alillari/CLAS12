@@ -1,5 +1,7 @@
 # Mamba Track Finding (Downstream) Configuration
 # Anonymized for publication
+# Inherited TPC examples with placeholder checkpoint paths, not CLAS12 defaults.
+# Use clas12_adapter_recipes.yaml and train/TRAINING_RECIPES.md for onboarding.
 
 # Default configuration
 default: &default

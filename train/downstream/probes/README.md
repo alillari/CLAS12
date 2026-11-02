@@ -1,5 +1,8 @@
 # Downstream Probe Diagnostics
 
+Start with the [momentum](../MOMENTUM.md) or [track-finding](../TRACK_FINDING.md)
+guide for normal fitting and evaluation. These probes are optional diagnostics.
+
 This directory contains diagnostic tools for understanding CLAS12 downstream
 track-regression and track-finding behavior, especially the case where a pretrained backbone plus
 adapter underperforms an adapter-only model.
@@ -17,14 +20,17 @@ Fits one affine linear map per frozen backbone layer:
 pooled layer features -> normalized (px, py, pz)
 ```
 
-For each event, the script:
+For each accepted regression sample (a track in event-segment mode), the script:
 
 1. loads the downstream track-regression data through the existing trainer path,
 2. runs the pretrained backbone with `return_z=True`,
 3. masked-mean-pools each layer over valid hits,
-4. builds the same normalized event-level regression target used by the adapter,
+4. builds the same normalized per-sample regression target used by the adapter,
 5. solves closed-form ridge regression independently for every layer,
-6. evaluates each layer against held-out data.
+6. evaluates each layer on the configured test-root population.
+
+The tool does not create a new held-out split. Set the test root deliberately,
+especially if that population already selected a backbone or adapter checkpoint.
 
 The learned weights are determined by least squares with a configurable ridge
 penalty. No nonlinear head is trained.
@@ -40,7 +46,7 @@ Required:
 
 Useful controls:
 
-- `--eventnumber`: train split event cap passed through the existing config path.
+- `--eventnumber`: accepted training-sample cap; tracks in event-segment mode.
 - `--batch_size`: train/eval batch size.
 - `--num_workers`: override data loader workers.
 - `--max_train_batches`: quick smoke-test cap for fitting.

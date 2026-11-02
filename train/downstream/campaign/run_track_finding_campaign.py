@@ -18,6 +18,7 @@ from train.downstream.track_finding_contract import validate_track_finding_modes
 
 import numpy as np
 from mmap_ninja import RaggedMmap
+from fm4npp.utils import expand_config_string, expand_param_references
 
 from campaign_util import (
     command_env,
@@ -657,10 +658,17 @@ def main() -> None:
         print_dry_run(manifest, runs)
         return
 
-    first_params = load_base_model_config(Path(manifest["base_model_yaml"]), "clas12_track_finding_adapteronly")
+    first_params = load_base_model_config(
+        Path(manifest["base_model_yaml"]),
+        manifest.get("base_model_config", "clas12_track_finding_adapteronly"),
+    )
     first_params.update(manifest.get("training_overrides", {}))
     if runs:
         first_params.update(runs[0].get("training_overrides", {}))
+    first_params = expand_param_references({
+        key: expand_config_string(value) if isinstance(value, str) else value
+        for key, value in first_params.items()
+    })
     preflight = preflight_dataset(
         Path(first_params["data_root"]).resolve(),
         max_events=int(first_params.get("preflight_max_events", 10000)),

@@ -284,7 +284,11 @@ def load_base_params(yaml_config: Path, config_name: str) -> dict[str, Any]:
     data = read_yaml(yaml_config)
     if config_name not in data:
         raise KeyError(f"{yaml_config} does not contain config {config_name!r}")
-    return dict(data[config_name])
+    # Match the training CLI before input validation and study fingerprinting.
+    # Reading raw YAML leaves ${ENV} and {parameter} paths unresolved.
+    from fm4npp.utils import YParams
+
+    return dict(YParams(str(yaml_config), config_name).params)
 
 
 def fixed_overrides(args: argparse.Namespace) -> dict[str, Any]:

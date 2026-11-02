@@ -1,295 +1,188 @@
-# Setup Notes
+# CLAS12 environment and data setup
 
-This document describes the current working setup for this early-stage CLAS12
-foundation-model research repository. The code is still changing, so treat these
-notes as a starting point rather than a stable installation manual.
+Start here to prepare a training environment, then use
+[Training workflow](train/TRAINING_RECIPES.md) for commands.
+[Training options](train/downstream/TRAINING_OPTIONS.md) explains the controls;
+[Target statistics](train/downstream/TARGET_STATISTICS.md) explains the stats file.
+For a complete pretraining and two-adapter run, follow
+[the worked example](train/WORKED_EXAMPLE.md).
+Run the commands from the repository root. This is research code; the checked-in
+recipes still require access to data and compatible CUDA kernels.
 
-The repository builds on FM4NPP code and training patterns. Some inherited
-scripts and configuration options are still present for compatibility while the
-CLAS12 workflow is being developed.
+## Environment
 
-## Prerequisites
+Use Linux, Python 3.10 or newer, and a CUDA-capable NVIDIA GPU for training.
+The recent a02c/a518 campaigns used a prepared Docker environment; its recorded
+runtime is in [Mamba support](train/MAMBA_SUPPORT.md). A fresh environment must
+match PyTorch, CUDA, compiler, `mamba-ssm`, `causal-conv1d`, and Triton versions.
+Do not replace a working training environment merely to follow a generic pip
+command. Mamba3 requires an upstream revision containing its SISO implementation;
+Mamba1 also requires the selective-scan CUDA extension.
 
-### Hardware
-
-- NVIDIA GPU with CUDA support for training.
-- Sufficient GPU memory for the selected model and batch size.
-- Local or shared storage for CLAS12 RaggedMmap data, checkpoints, and logs.
-
-For quick debugging, start with smaller event counts and batch sizes before
-scaling to long training runs.
-
-### Software
-
-- Python 3.10 or newer.
-- PyTorch with CUDA support, if training on GPU.
-- Linux or a comparable HPC environment.
-- SLURM, only if using the provided batch scripts.
-
-## Installation
-
-Clone the repository and enter the project root:
-
-```bash
-git clone <repository-url>
-cd CLAS12
-```
-
-Create and activate an environment:
+For a new local environment, create it first and install a PyTorch build
+appropriate to the target GPU/CUDA stack:
 
 ```bash
 conda create -n clas12-fm python=3.10
 conda activate clas12-fm
 ```
 
-Install PyTorch for your CUDA version. For CUDA 12.1, one option is:
+`requirements.txt` is an inherited, unpinned dependency inventory. It is not a
+complete tested installation recipe: the trainers also import `ruamel.yaml`,
+`scikit-learn`, `einops`, `plotly`, and `cosine_annealing_warmup`, and
+evaluators/plotting need packages such as `matplotlib` and `pandas`. `plotly`
+is imported by the dataset loader even when `voxelize: false`. The
+`torch-distributed` entry is not the source of `torch.distributed`, which is provided by PyTorch itself.
+Use the team's working environment or resolve and record a compatible environment
+before a long run. The scheduler import's upstream installation reference is
+in `train/downstream/track_finding_trainer.py` and
+`train/downstream/track_regression_trainer.py`.
+
+Check the actual imports, not just `import fm4npp`:
 
 ```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+python -c "import ruamel.yaml, sklearn, einops, mmap_ninja, plotly, cosine_annealing_warmup"
+python train/downstream/train_track_finding.py --help
+python train/downstream/train_track_regression.py --help
 ```
 
-Install the remaining Python dependencies:
+The help commands exercise trainer imports without loading data or starting
+training. A successful help command does not validate GPU kernels. Use the
+CUDA checks in [Mamba support](train/MAMBA_SUPPORT.md) on the target runtime.
+The repository's local Mamba2 CPU fallback is approximate and cannot validate
+the fused training path.
+
+### GB10 Triton assembler selection
+
+If a fused-kernel probe fails with `ptxas fatal: Value 'sm_121a' is not defined`,
+check which assembler Triton invokes. The clean PyTorch 2.9.1/CUDA 13.0,
+Triton 3.5.1 environment required the CUDA toolkit assembler instead of Triton's
+bundled copy. With a compatible CUDA 13 toolkit installed, set these inside
+the job environment and rerun the actual fused forward/backward check:
 
 ```bash
-pip install -r requirements.txt
+export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+export TORCH_CUDA_ARCH_LIST="12.1+PTX"
+unset TRITON_OVERRIDE_ARCH
 ```
 
-Depending on your platform, `mamba-ssm`, `causal-conv1d`, or `triton` may need
-versions matched to your CUDA, PyTorch, and compiler stack.
+Use a fresh, job-specific `TRITON_CACHE_DIR` when changing the compiler/runtime.
+This addresses assembler selection; it does not install the toolkit or validate
+a different GPU architecture. The same GB10 failure and selection are described
+in [the upstream Triton issue](https://github.com/triton-lang/triton/issues/10331).
 
-## Verify Imports
+For remote execution in an existing team runtime, follow
+[Remote edgexpert jobs](train/REMOTE_RUNS.md). It explains SSH versus container
+paths, isolated source snapshots, persistent mounts, monitoring and recovery.
 
-From the repository root:
+## Data contract
 
-```bash
-python -c "import torch; print(torch.__version__)"
-python -c "import torch; print(torch.cuda.is_available())"
-python -c "import fm4npp; print('fm4npp package import ok')"
-```
-
-If imports fail from a script launched outside the repository root, set
-`PYTHONPATH` explicitly:
-
-```bash
-export PYTHONPATH=/absolute/path/to/CLAS12:$PYTHONPATH
-```
-
-## Data Layout
-
-Current CLAS12 downstream configs expect RaggedMmap-style directories. The exact
-data paths are local to the machine or cluster where experiments are run, so
-review and edit the YAML files before launching a job.
-
-For CLAS12 regression workflows, the data root commonly needs directories like:
+The normal downstream CLIs read a CLAS12 v6 event-product RaggedMmap root:
 
 ```text
 data_root/
-|-- features_pretrain/
+|-- features_pretrain/       # raw Cartesian cluster centers, three columns
 |-- features_test/
-|-- seg_target_pretrain/
+|-- seg_target_pretrain/     # per-cluster truth segment IDs; background -1
 |-- seg_target_test/
-|-- reg_target_pretrain/
+|-- reg_target_pretrain/     # real per-cluster truth targets, aligned with features
 `-- reg_target_test/
 ```
 
-Some code paths may also expect optional PID targets:
+Optional sidecars include `pid_target_pretrain/test`, `noise_target_pretrain/test`
+and `coatjava_seg_pred_pretrain/test`; their need depends on the task and
+comparison being run. Final COATJAVA comparisons need their corresponding
+sidecars. See the rendered model/analysis configuration.
 
-```text
-data_root/
-|-- pid_target_pretrain/
-`-- pid_target_test/
-```
+Track finding consumes complete events. Momentum uses
+`adapter_sample_mode: event_segment`, `segment_target_source: mctrue`, and
+`segment_min_clusters: 12`, accepting 12–100 clusters per truth track in the
+usual recipe. Legacy track-level regression input is disabled. `--eventnumber`
+therefore counts events for track finding and accepted tracks for momentum.
 
-Regression target statistics are configured separately, usually through a file
-such as:
+Use `input_layout: xyz`, `embed_method: pos_only`, `voxelize: false`, and
+`serialization: clas12_band_hilbert`. The loader normalizes/transforms raw xyz;
+do not supply already normalized eta/phi/r files as xyz. Keep the versioned
+`dev_scripts/clas12_band_calibration.json` available.
 
-```text
-stats/regression_target_stats.json
-```
+## Paths and outputs
 
-## Configuration Files
-
-The main CLAS12-oriented configs currently live in `scripts/configs/`:
-
-```text
-scripts/configs/
-|-- mamba_clas12_momentum_adapteronly.yaml
-|-- mamba_clas12_track_regression_adapteronly.yaml
-`-- mamba_clas12_track_regression_pretrained.yaml
-```
-
-Before running, check at least these fields:
-
-```yaml
-data_root: /path/to/clas12/raggedmmap
-data_root_train: /path/to/clas12/raggedmmap
-data_root_test: /path/to/clas12/raggedmmap
-stat_dir: /path/to/stats
-regression_target_stats: /path/to/stats/regression_target_stats.json
-artifact_root: ${CLAS12_ARTIFACT_ROOT:-/home/alessio/ML-work/result_deep_storage}
-downstream_dir: "{artifact_root}/downstream_log/<run-name>"
-checkpoint_dir: "{downstream_dir}/checkpoints"
-```
-
-The inherited FM4NPP configs are still present:
-
-```text
-scripts/configs/
-|-- mamba_pretrain.yaml
-`-- mamba_tracking.yaml
-```
-
-Use those only after checking that their dataset assumptions, model settings,
-and paths match the experiment you intend to run.
-
-## Running CLAS12 Downstream Experiments
-
-Run commands from the repository root unless a script says otherwise.
-
-### Adapter-Only Track Regression
+The new onboarding profiles in
+[scripts/configs/clas12_adapter_recipes.yaml](scripts/configs/clas12_adapter_recipes.yaml)
+use environment variables:
 
 ```bash
-python train/downstream/train_track_regression.py \
-    --yaml_config scripts/configs/mamba_clas12_track_regression_adapteronly.yaml \
-    --config clas12_track_regression_adapteronly_debug \
-    --run_num run0 \
-    --eventnumber 50000 \
-    --train_batch_size 32
+export CLAS12_DATA_ROOT=/absolute/path/to/mmap_canonical_loose_truthseg_event_v6_02
+export CLAS12_ARTIFACT_ROOT=/absolute/path/to/result_deep_storage
+export CLAS12_MOMENTUM_STATS="$CLAS12_ARTIFACT_ROOT/stats/momentum_stats_train50k.json"
 ```
 
-### Adapter-Only Momentum Regression
+The [training guide](train/TRAINING_RECIPES.md) includes the command that creates
+momentum target statistics using only the selected training tracks. Recompute
+those statistics if the cohort/filter/label budget changes.
 
-```bash
-python train/downstream/train_momentum_regression.py \
-    --yaml_config scripts/configs/mamba_clas12_momentum_adapteronly.yaml \
-    --config clas12_momentum_adapteronly_debug \
-    --run_num run0 \
-    --eventnumber 50000 \
-    --train_batch_size 32
-```
+YAML paths accept environment variables and references such as
+`checkpoint_dir: "{downstream_dir}/checkpoints"`. **Only the new onboarding
+profiles** use `CLAS12_DATA_ROOT` and `CLAS12_MOMENTUM_STATS`; older YAMLs retain
+machine-specific paths that must be edited. `data_root` is the training root;
+`data_root_train` is compatibility metadata in the normal loader, and
+`data_root_test` selects validation data. The onboarding profiles accept
+`CLAS12_VALIDATION_DATA_ROOT` for validation and provide separate `*_evaluation`
+profiles controlled by `CLAS12_EVAL_DATA_ROOT` for final inference. Momentum
+evaluation initializes the trainer and opens the original training trees too;
+keep that training root accessible when evaluating an existing checkpoint.
 
-### Track Regression With a Pretrained Backbone
+Use external directories for checkpoints, logs, plots and reports. CLI
+`--checkpoint_dir` overrides the YAML path; `--root_dir` controls the experiment
+root and global logs and does not replace every YAML output path. Give each run
+its own checkpoint directory. Save `--resolved_config_path` and the generated
+artifact summary with the run.
 
-The pretrained CLAS12 config expects the checkpoint path on the command line:
+## Launch and evaluate
 
-```bash
-python train/downstream/train_track_regression.py \
-    --yaml_config scripts/configs/mamba_clas12_track_regression_pretrained.yaml \
-    --config clas12_track_regression_pretrained \
-    --run_num run0 \
-    --eventnumber 50000 \
-    --train_batch_size 32 \
-    --usepretrain \
-    --pretrained_ckpt /absolute/path/to/backbone.ckpt
-```
+Use these public entrypoints with the named profiles in the training guide:
 
-## Inherited FM4NPP Workflows
+| Task | Entrypoint | Onboarding config |
+| --- | --- | --- |
+| Event track finding | `python train/downstream/train_track_finding.py` | `clas12_track_finding_50k` |
+| Momentum | `python train/downstream/train_track_regression.py` | `clas12_momentum_50k` |
 
-The repository still contains inherited FM4NPP pretraining and track-finding
-entry points:
+`train_momentum_regression.py` is a backward-compatible wrapper for the second
+command. `track_finding_trainer.py` is an implementation module, not the public
+training CLI. Omit `--usepretrain` for AdapterOnly. To train on frozen pretrained
+features, provide both `--usepretrain` and `--pretrained_ckpt` and match the
+backbone architecture/embedding/klen to its saved configuration.
 
-```bash
-python -m train.pretrain.nppmamba.train_multi_gpu_mamba1 \
-    --yaml_config scripts/configs/mamba_pretrain.yaml \
-    --config mamba_5m \
-    --run_num run0
-```
+Always pass the batch explicitly: `--train_batch_size 32` for track finding and
+`--train_batch_size 128` for momentum. CLI defaults override YAML batch settings.
+A step-controlled run requires `max_optimizer_steps`; `total_steps` alone does
+not set the downstream update budget.
 
-```bash
-python train/downstream/track_finding_trainer.py \
-    --yaml_config scripts/configs/mamba_tracking.yaml \
-    --config mamba_5m_downstream \
-    --run_num run0
-```
+For multiple fits, see [campaign tools](train/downstream/campaign/README.md).
+For scoring, use [evaluation](train/downstream/eval/README.md) with the run's
+rendered model/analysis YAML. Normal CLI validation uses the configured test
+root; reserve a disjoint final cohort explicitly for scientific comparisons.
 
-These commands may require additional path, dataset, or script updates before
-they are useful for CLAS12-specific experiments.
+## Historical scripts and troubleshooting
 
-## SLURM Scripts
+`scripts/configs/mamba_pretrain.yaml`, `mamba_tracking.yaml` and the
+`scripts/run/` shell/direct launchers are inherited FM4NPP examples, not current
+CLAS12 recipes. The direct downstream launcher points at the trainer module;
+the shell scripts contain site-specific Python paths and SLURM resource requests.
+Their direct-execution branches do not establish multi-GPU correctness. Use the
+public single-run CLIs above or the versioned isolated campaign runners.
 
-Generic inherited SLURM scripts are available in `scripts/run/`:
+- Import errors: activate the training environment, run from the repository root,
+  and check the imports above. If needed, set
+  `PYTHONPATH=/absolute/path/to/CLAS12:$PYTHONPATH`.
+- CUDA errors: check `nvidia-smi` and the recorded package/GPU versions; run the
+  relevant kernel tests before training.
+- Out of memory: reduce the CLI training batch and the YAML validation batch
+  (track-finding CLI overrides both), then check accepted sequence lengths.
+- Checkpoint mismatch: inspect the saved architecture; names such as M4 describe
+  width tiers, not the Mamba implementation family. `klen` is a target horizon,
+  not the number of queries.
 
-```text
-scripts/run/
-|-- submit_mamba_pretrain.sh
-|-- submit_downstream_mamba.sh
-`-- train_mamba_direct.py
-```
-
-Before using them, update:
-
-- cluster account and partition settings,
-- GPU and memory requests,
-- Python or conda environment path,
-- YAML config path,
-- checkpoint and output directories.
-
-## Monitoring Runs
-
-Logs and checkpoints are generally written under the configured
-`downstream_dir`, `checkpoint_dir`, or pretraining checkpoint directory.
-
-Useful checks:
-
-```bash
-tail -f /path/to/log/file.log
-ls /path/to/checkpoints
-nvidia-smi
-```
-
-## Troubleshooting
-
-### Import Errors
-
-Run from the repository root or set:
-
-```bash
-export PYTHONPATH=/absolute/path/to/CLAS12:$PYTHONPATH
-```
-
-### CUDA or Mamba Installation Errors
-
-Check the installed PyTorch and CUDA combination:
-
-```bash
-python -c "import torch; print(torch.__version__); print(torch.version.cuda)"
-nvidia-smi
-```
-
-If `mamba-ssm` or `causal-conv1d` fails to install, use versions compatible with
-your PyTorch and CUDA stack.
-
-### Out-of-Memory Errors
-
-Reduce one or more of:
-
-```yaml
-batch_size: 32
-local_batch_size: 32
-valid_batch_size: 32
-limit_size: 10000
-```
-
-You can also pass smaller values through the training CLI:
-
-```bash
---eventnumber 10000 --train_batch_size 16
-```
-
-### Missing Checkpoints
-
-For pretrained runs, provide an absolute checkpoint path:
-
-```bash
---usepretrain --pretrained_ckpt /absolute/path/to/backbone.ckpt
-```
-
-The current pretrained CLAS12 config intentionally does not hardcode a
-checkpoint path.
-
-## Attribution
-
-This setup inherits structure and terminology from FM4NPP while the CLAS12
-workflow is being developed. Preserve FM4NPP attribution when using inherited
-components, and document CLAS12-specific assumptions in the relevant config or
-script when they become stable.
+This code builds on FM4NPP; preserve the attribution and citations in
+[README.md](README.md).

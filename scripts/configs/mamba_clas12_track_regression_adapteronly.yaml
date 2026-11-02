@@ -1,5 +1,7 @@
 # CLAS12 CVT downstream track-regression / AdapterOnly configuration
 # Intended for train_track_regression.py with --usepretrain omitted.
+# For the explicit 30k-update recipe, see clas12_adapter_recipes.yaml and
+# train/TRAINING_RECIPES.md. This older config defaults to epoch training.
 
 # ---------------------------------------------------------------------------
 # Shared defaults
@@ -104,19 +106,20 @@ default: &default
   init_std: 0.025
   model_version: clas12_track_regression_adapteronly
   num_layers_backbone: 6
-  d_state: 16                 # backbone only; regression head fixes d_state=64
+  d_state: 16                 # backbone only; regression head defaults to state 64
   d_conv: 4
   expand: 2
   klen: 3
   dropout: 0.1
-  mambaversion: mamba1        # backbone only; regression head is always Mamba2
+  mambaversion: mamba1        # backbone only; adapter_version defaults to mamba2
   task: mom
   pooling: attention
   regression_loss: mae
 
-  # The current trainer always builds MambaTrackRegressionHead: hidden width
-  # 256, one Mamba2 layer, d_state=64, d_conv=4, expand=2.  These head values
-  # are implementation-fixed rather than YAML-tunable.
+  # For Mamba-family heads, the trainer fixes hidden width 256
+  # and one refinement layer. Default family/block settings are Mamba2,
+  # state 64 / conv 4 / expand 2; adapter_version and adapter_* block overrides
+  # are supported. Transformer adapters expose width/depth; see train/TRANSFORMER_SUPPORT.md.
 
   # These are backbone/shared-trainer compatibility settings.
   num_heads_backbone: 4

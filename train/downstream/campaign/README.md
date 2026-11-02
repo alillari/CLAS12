@@ -1,4 +1,48 @@
-# Track-Regression Campaign Runner
+# Downstream Campaign Runners
+
+For each task's input and metric contract, see [track finding](../TRACK_FINDING.md)
+or [momentum regression](../MOMENTUM.md).
+
+After a successful single adapter run, start with
+**[From single runs to campaigns](GETTING_STARTED.md)**. It explains manifests,
+reuses the working recipe for both tasks, and walks through dry-run, launch,
+status, restart, evaluation, collation and plots. It also explains reuse of
+existing standalone checkpoints and validation/final-test limitations.
+
+This page is the detailed reference for additional campaign and plotting options.
+For the initial single-run setup, see [Training workflow](../../TRAINING_RECIPES.md).
+
+| Task | Build the run list | Execute it |
+| --- | --- | --- |
+| Track finding | `build_track_finding_manifest.py` | `run_track_finding_campaign.py` |
+| Momentum / track regression | `build_track_regression_manifest.py` | `run_track_regression_campaign.py` |
+
+Builders write manifests; runners render model/analysis configs and invoke the
+normal task CLIs. Run commands from the repository root.
+
+## Track-finding campaigns
+
+Track finding has its own manifest builder and runner:
+
+```bash
+python train/downstream/campaign/build_track_finding_manifest.py --help
+python train/downstream/campaign/run_track_finding_campaign.py --help
+```
+
+Use `--base-model-yaml` and `--base-model-config` to select the named recipe from
+the successful single run. Omitting the profile keeps the existing
+`clas12_track_finding_adapteronly` default.
+
+The builder accepts `--max-optimizer-steps`, `--val-interval-steps`,
+`--scheduler-first-cycle-steps`, `--warmup-steps`, `--validation-events`,
+`--final-evaluation-events`, `--assignment-threshold` and explicit training
+overrides. The normal single-run CLI is `train/downstream/train_track_finding.py`.
+Use `track_target_mode: signal_only`; unified background-query training is
+retired. See [evaluation](../eval/README.md) for native assignment metrics and
+validation histories. Check cohort separation explicitly, including any early
+test events previously used to select a backbone checkpoint.
+
+## Track-regression campaigns
 
 This directory contains local campaign tools for training CLAS12 track-regression
 adapters on a folder of pretrained Mamba backbones and then running the physics

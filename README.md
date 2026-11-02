@@ -33,7 +33,7 @@ settings may still need to be updated for CLAS12-specific workflows.
    [Transformer support](train/TRANSFORMER_SUPPORT.md) covers causal backbones
    and independently configured bidirectional adapters.
 7. [Evaluation and plots](train/downstream/eval/README.md),
-   [campaigns](train/downstream/campaign/README.md), and
+   [single runs → campaigns](train/downstream/campaign/GETTING_STARTED.md), and
    [tuning](train/downstream/tuning/README.md).
 
 The [adapter presets](scripts/configs/clas12_adapter_recipes.yaml) provide explicit

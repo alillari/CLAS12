@@ -1,9 +1,21 @@
 # Downstream Campaign Runners
 
-For task defaults and single-run commands, start with
-[Training recipes](../../TRAINING_RECIPES.md). The examples below primarily
-cover regression orchestration and historical diagnostics; they do not define
-the recent matched campaign's exact cohorts or recipe.
+After a successful single adapter run, start with
+**[From single runs to campaigns](GETTING_STARTED.md)**. It explains manifests,
+reuses the working recipe for both tasks, and walks through dry-run, launch,
+status, restart, evaluation, collation and plots. It also explains reuse of
+existing standalone checkpoints and validation/final-test limitations.
+
+This page is the detailed reference for additional campaign and plotting options.
+For the initial single-run setup, see [Training workflow](../../TRAINING_RECIPES.md).
+
+| Task | Build the run list | Execute it |
+| --- | --- | --- |
+| Track finding | `build_track_finding_manifest.py` | `run_track_finding_campaign.py` |
+| Momentum / track regression | `build_track_regression_manifest.py` | `run_track_regression_campaign.py` |
+
+Builders write manifests; runners render model/analysis configs and invoke the
+normal task CLIs. Run commands from the repository root.
 
 ## Track-finding campaigns
 
@@ -13,6 +25,10 @@ Track finding has its own manifest builder and runner:
 python train/downstream/campaign/build_track_finding_manifest.py --help
 python train/downstream/campaign/run_track_finding_campaign.py --help
 ```
+
+Use `--base-model-yaml` and `--base-model-config` to select the named recipe from
+the successful single run. Omitting the profile keeps the existing
+`clas12_track_finding_adapteronly` default.
 
 The builder accepts `--max-optimizer-steps`, `--val-interval-steps`,
 `--scheduler-first-cycle-steps`, `--warmup-steps`, `--validation-events`,

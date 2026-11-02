@@ -206,3 +206,11 @@ can be resolved again. The [evaluation reference](downstream/eval/README.md)
 explains units, full-distribution metrics, display limits and fitted widths.
 This is an executable recipe; it is not a report of a training run performed
 while writing the example.
+
+## 7. Expand the checked single runs into campaigns
+
+Continue with **[From single runs to campaigns](downstream/campaign/GETTING_STARTED.md)**.
+It reuses this backbone and the same named adapter profiles for a small
+AdapterOnly/frozen-feature comparison, then explains label/backbone/seed sweeps,
+queue restart, existing-checkpoint reuse and comparison plots. The campaign
+runner does not automatically import the two adapters trained above.

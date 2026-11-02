@@ -172,4 +172,4 @@ kept together for segment-level tasks.
 
 See [evaluation and plot interpretation](eval/README.md) for the behavior checks
 to make after training. Optuna and multi-run orchestration have their own
-[tuning](tuning/README.md) and [campaign](campaign/README.md) interfaces.
+[tuning](tuning/README.md) and [campaign](campaign/GETTING_STARTED.md) interfaces.

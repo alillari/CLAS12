@@ -200,5 +200,8 @@ Momentum evaluation generates plots under `momentum/evaluation/plots/`:
 
 [Evaluation and plots](downstream/eval/README.md) explains units, populations,
 plot ranges, fit controls and the difference between core width and full error.
-For multiple fits, use [campaign tools](downstream/campaign/README.md) to collate
-runs and produce label-budget/backbone comparisons.
+Next, follow **[From single runs to campaigns](downstream/campaign/GETTING_STARTED.md)**
+to reuse this working recipe across runs, inspect a manifest, launch/restart a
+queue, and collate/plot results. It explains both task runners and which stages
+can reuse an existing checkpoint. The [campaign reference](downstream/campaign/README.md)
+covers additional options.

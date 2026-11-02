@@ -1,0 +1,43 @@
+{
+  "job_id": "mamba1-chinchilla-w512-d12-k1-20261028",
+  "image": "sha256:bbc43e230b611637aca8f1824804dc26f3ac0d5ab9703dcc11d7fda9085a4a0f",
+  "command": [
+    "python",
+    "dev_scripts/backbone_pretraining_comparison/train.py",
+    "--backbone",
+    "mamba1",
+    "--phase",
+    "train"
+  ],
+  "gpu": true,
+  "timeout_seconds": null,
+  "network": "none",
+  "environment": {
+    "MKL_NUM_THREADS": "4",
+    "OMP_NUM_THREADS": "4",
+    "PYTHONHASHSEED": "42",
+    "PYTHONPATH": "/workspace",
+    "TORCHINDUCTOR_CACHE_DIR": "/results/inductor",
+    "TRITON_CACHE_DIR": "/results/triton",
+    "XDG_CACHE_HOME": "/results/cache"
+  },
+  "mounts": [
+    {
+      "source": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02",
+      "target": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02",
+      "read_only": true
+    },
+    {
+      "source": "/home/alessio/ML-work/result_deep_storage/edge_mcp/jobs/mamba1-chinchilla-k1-preflight-20261028/output",
+      "target": "/pilot",
+      "read_only": true
+    }
+  ],
+  "expected_artifacts": [
+    "completed.json",
+    "cohorts.json",
+    "resolved_recipe.yaml",
+    "training/mamba1_chinchilla_w512_d12_k1/seed42/training_checkpoints/ckpt.tar",
+    "training/mamba1_chinchilla_w512_d12_k1/seed42/training_checkpoints/ckpt_best.tar"
+  ]
+}

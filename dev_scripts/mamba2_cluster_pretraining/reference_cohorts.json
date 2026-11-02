@@ -1,0 +1,51 @@
+{
+  "training": {
+    "cluster_bounds": [
+      2,
+      100
+    ],
+    "eligible_events": 27252022,
+    "feature_bytes": 11606018508,
+    "feature_file": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/features_pretrain/data.ninja",
+    "feature_mtime_ns": 1788889835199233500,
+    "indices_sha256": "0e524dc430706d29c4e371a388b97aa4723001f01972d466f52106e3a176ac49",
+    "raw_events": 27300853,
+    "removed_above_maximum": 48831,
+    "removed_below_minimum": 0,
+    "seed": 42,
+    "selected_cluster_quantiles": [
+      8,
+      35,
+      46,
+      64,
+      100
+    ],
+    "selected_events": 10000000,
+    "split": "pretrain"
+  },
+  "validation": {
+    "cluster_bounds": [
+      2,
+      100
+    ],
+    "eligible_events": 6812824,
+    "feature_bytes": 2901797040,
+    "feature_file": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02/features_test/data.ninja",
+    "feature_mtime_ns": 1788892807971326500,
+    "indices_sha256": "0c2c9371e4724b8a5f4e0cc9425b1f9b5dd383ef3a401b1e5ea757ceafb1552b",
+    "raw_events": 6825211,
+    "removed_above_maximum": 12387,
+    "removed_below_minimum": 0,
+    "seed": 43,
+    "selected_cluster_quantiles": [
+      14,
+      35,
+      46,
+      64,
+      100
+    ],
+    "selected_events": 50000,
+    "split": "test"
+  },
+  "validation_boundary": "Fixed subset of the historical test split, used for checkpoint selection; not an independent final holdout."
+}

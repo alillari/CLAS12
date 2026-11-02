@@ -24,7 +24,7 @@ sys.path.insert(0, str(DOWNSTREAM_DIR))
 from fm4npp.models.mamba_config import backbone_version, adapter_options
 from fm4npp.utils import YParams
 from fm4npp.artifact_paths import artifact_path
-from train.downstream.regression_utils import validate_regression_training
+from train.downstream.regression_utils import validate_regression_training, validate_coordinate_bypass
 from train.downstream.validation_config import configure_validation
 from train.downstream.physics_checkpoints import MOMENTUM_TASKS, resolve_config as resolve_physics_config, selection_mode
 
@@ -144,6 +144,7 @@ def _write_json(path: str, payload: dict[str, Any]) -> None:
 def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
     params = YParams(os.path.abspath(config.yaml_config), config.config)
     validate_regression_training(params.params)
+    params["coordinate_bypass"] = validate_coordinate_bypass(params.params, config.usepretrain)
 
     if not hasattr(params, "task"):
         raise ValueError(
@@ -238,6 +239,7 @@ def train_experiment(
             "run_num": config.run_num,
             "yaml_config": os.path.abspath(config.yaml_config),
             "usepretrain": bool(config.usepretrain),
+            "coordinate_bypass": params.coordinate_bypass,
             "pretrained_ckpt": params.pretrained_ckpt,
             "experiment_dir": getattr(params, "experiment_dir", None),
             "checkpoint_dir": os.path.abspath(params.checkpoint_dir),

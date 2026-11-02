@@ -1,0 +1,44 @@
+{
+  "job_id": "mamba2-clusters-w512-d12-k5-causal-20261027",
+  "image": "sha256:bbc43e230b611637aca8f1824804dc26f3ac0d5ab9703dcc11d7fda9085a4a0f",
+  "command": [
+    "python",
+    "dev_scripts/mamba2_cluster_pretraining/run.py",
+    "--phase",
+    "train"
+  ],
+  "gpu": true,
+  "timeout_seconds": null,
+  "network": "none",
+  "mounts": [
+    {
+      "source": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02",
+      "target": "/home/alessio/ML-work/HIPO_processing/multi_particle_storage/big-data/mmap_canonical_loose_truthseg_event_v6_02",
+      "read_only": true
+    },
+    {
+      "source": "/home/alessio/ML-work/result_deep_storage/edge_mcp/jobs/mamba2-clusters-causal-preflight-20261027/output",
+      "target": "/pilot",
+      "read_only": true
+    }
+  ],
+  "environment": {
+    "MKL_NUM_THREADS": "4",
+    "OMP_NUM_THREADS": "4",
+    "PYTHONHASHSEED": "42",
+    "PYTHONPATH": "/workspace",
+    "TORCHINDUCTOR_CACHE_DIR": "/results/inductor",
+    "TRITON_CACHE_DIR": "/results/triton",
+    "XDG_CACHE_HOME": "/results/cache"
+  },
+  "expected_artifacts": [
+    "completed.json",
+    "cohorts.json",
+    "resolved_recipe.yaml",
+    "training/mamba2_clusters_w512_d12/seed42/training_checkpoints/ckpt.tar",
+    "training/mamba2_clusters_w512_d12/seed42/training_checkpoints/ckpt_best.tar"
+  ],
+  "cpus": null,
+  "memory_gib": null,
+  "pids_limit": null
+}

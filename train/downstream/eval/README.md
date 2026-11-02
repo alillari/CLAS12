@@ -1,5 +1,9 @@
 # Downstream evaluation
 
+Task entry points: [track finding](../TRACK_FINDING.md) and
+[momentum regression](../MOMENTUM.md). This page defines their evaluator outputs
+and diagnostic controls.
+
 For runnable training/evaluation commands, start with
 [Training workflow](../../TRAINING_RECIPES.md). Evaluation must use the saved
 run's model configuration and matching backbone checkpoint. Reusing the

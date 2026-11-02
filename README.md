@@ -19,6 +19,10 @@ settings may still need to be updated for CLAS12-specific workflows.
 
 ## Start here
 
+Task entry points: [track finding](train/downstream/TRACK_FINDING.md) and
+[momentum regression](train/downstream/MOMENTUM.md). The
+[downstream README](train/downstream/README.md) maps the shared tools.
+
 1. [Environment and data setup](SETUP.md).
 2. [Complete worked example](train/WORKED_EXAMPLE.md): pretrain one backbone,
    train both frozen-backbone adapters, generate stats, evaluate and plot.

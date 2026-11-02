@@ -1,5 +1,9 @@
 # AdapterOnly Optuna Tuning
 
+For ordinary fitting, stats generation and evaluation, start with the
+[momentum guide](../MOMENTUM.md). Optuna is an optional hyperparameter search;
+its trial settings are not the default momentum recipe.
+
 This directory contains the Optuna worker used to tune the CLAS12 AdapterOnly
 track-regression baseline. The tuner calls the shared one-configuration training
 entrypoint in `train/downstream/track_regression_experiment.py`; it does not
@@ -44,7 +48,7 @@ budget.
 
 ## Smoke Test
 
-Run a tiny plumbing test before long studies:
+Run a short training-budget check before long studies:
 
 ```bash
 mkdir -p /home/alessio/ML-work/result_deep_storage/optuna
@@ -60,9 +64,17 @@ python train/downstream/tuning/run_track_regression_optuna.py \
   --max-optimizer-steps 200 \
   --val-interval-steps 100 \
   --early-stopping-min-steps 200 \
-  --max-val-batches 50 \
+  --max-val-batches 400 \
   --num-data-workers 4
 ```
+
+This bounds training to 200 updates per seed/trial. Validation still uses the
+base model's default 50k accepted tracks with batch 128; the 400-batch cap is
+large enough to retain that sample. To make validation smaller too, copy the
+base model YAML, set its `limit_test_size` explicitly, and pass that file/profile
+with `--yaml-config` / `--config`. A low `--max-val-batches` alone cannot shrink
+the fixed validation sample. See [target statistics](../TARGET_STATISTICS.md)
+before changing the training-label budget or task.
 
 ## Range-Finding Run
 

@@ -1,5 +1,8 @@
 # Momentum checkpoint policy
 
+For inputs, commands, target statistics and plots, start with
+[the momentum guide](MOMENTUM.md). This page defines checkpoint selection.
+
 New momentum training selects the checkpoint with the lowest finite validation
 loss. The baseline is center-only inputs, Cartesian `mom` targets, standardized
 component MAE, attention pooling and the existing one-layer Mamba2 head.

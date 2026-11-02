@@ -1,5 +1,8 @@
 # Train and inspect a CLAS12 adapter
 
+For a task-specific overview, start with [track finding](downstream/TRACK_FINDING.md)
+or [momentum regression](downstream/MOMENTUM.md).
+
 This workflow prepares target statistics, trains a track-finding or momentum
 adapter, evaluates the checkpoint and identifies the plots to inspect. Complete
 [environment/data setup](../SETUP.md) first. Technical explanations live in
@@ -80,7 +83,7 @@ command options, zero-variance behavior and checkpoint handling.
 
 ## 3. Train the selected task
 
-Track finding:
+### Track finding
 
 ```bash
 python train/downstream/train_track_finding.py \
@@ -92,7 +95,7 @@ python train/downstream/train_track_finding.py \
   --artifact_summary "$TRAIN_ROOT/finding/artifacts.json"
 ```
 
-Momentum:
+### Momentum
 
 ```bash
 python train/downstream/train_track_regression.py \

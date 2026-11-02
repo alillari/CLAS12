@@ -1,5 +1,8 @@
 # Downstream Campaign Runners
 
+For each task's input and metric contract, see [track finding](../TRACK_FINDING.md)
+or [momentum regression](../MOMENTUM.md).
+
 After a successful single adapter run, start with
 **[From single runs to campaigns](GETTING_STARTED.md)**. It explains manifests,
 reuses the working recipe for both tasks, and walks through dry-run, launch,

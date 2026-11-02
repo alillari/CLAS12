@@ -1,0 +1,317 @@
+{
+  "date": "2026-11-02",
+  "baseline_main": "c629855f1d0a66fa66d2586d4321f2e74eae14c1",
+  "retained_remote_branches": {
+    "experiment/momentum-last-two-layers": "5f51ff5cb254cff64d98a9829175ab6d25e4f006",
+    "feature/momentum-coordinate-bypass": "544f21ba91141b1e1973908cadf016e06790f91e",
+    "main": "c629855f1d0a66fa66d2586d4321f2e74eae14c1",
+    "mike": "38c82ec06265a530a4efccc853bba085d0742875",
+    "tooling/edge-mcp": "3f209712c0963f3857691e19640f24eff936756a"
+  },
+  "retired_refs": [
+    {
+      "scope": "origin",
+      "branch": "archive/upstream-fm4npp-2026-02-28",
+      "commit": "ffe8d6a33a364a465c203766c4bae0cc7310f787",
+      "tag": "archive/2026-11-02/archive/upstream-fm4npp-2026-02-28"
+    },
+    {
+      "scope": "origin",
+      "branch": "diagnostic/campaign4-track-loss",
+      "commit": "10b7ddf65e1a5786062d95254fce381136f1a525",
+      "tag": "archive/2026-11-02/diagnostic/campaign4-track-loss"
+    },
+    {
+      "scope": "origin",
+      "branch": "experiment/causal-transformer-adapters",
+      "commit": "ae09d4898619d9a49bbcc8e00c0ce324c89f75c4",
+      "tag": "archive/2026-11-02/experiment/causal-transformer-adapters"
+    },
+    {
+      "scope": "origin",
+      "branch": "experiment/mamba-backbone-adapter-support",
+      "commit": "f16093a8cfc2ada17b158be0ac2f72625c7224c2",
+      "tag": "archive/2026-11-02/experiment/mamba-backbone-adapter-support"
+    },
+    {
+      "scope": "origin",
+      "branch": "experiment/transformer-pretraining-comparison",
+      "commit": "d84731c391e0eb52516401a8b73b2451096dd219",
+      "tag": "archive/2026-11-02/experiment/transformer-pretraining-comparison"
+    },
+    {
+      "scope": "origin",
+      "branch": "experiments/momentum-adapter-experiments",
+      "commit": "1e35394407f636d200ced81d82b79bea496fee73",
+      "tag": "archive/2026-11-02/experiments/momentum-adapter-experiments"
+    },
+    {
+      "scope": "origin",
+      "branch": "experiments/momentum-cartesian-factorial",
+      "commit": "30a302de60d542ed698bebbeebfa8cd3b18d8e2a",
+      "tag": "archive/2026-11-02/experiments/momentum-cartesian-factorial"
+    },
+    {
+      "scope": "origin",
+      "branch": "experiments/momentum-membership-mask",
+      "commit": "96d926be9b3b9752ba6229ac7e26aa6d01a005a4",
+      "tag": "archive/2026-11-02/experiments/momentum-membership-mask"
+    },
+    {
+      "scope": "laptop",
+      "branch": "adapter-dev",
+      "commit": "3b9170780c16f9fbe9e999fd0ea9037d34bc8267",
+      "tag": "archive/2026-11-02/laptop/adapter-dev",
+      "in_main": true
+    },
+    {
+      "scope": "laptop",
+      "branch": "archive/campaign-runners-20261029",
+      "commit": "825d6b4a43a128c2ed103c838bf6113ea443932a",
+      "tag": "archive/2026-11-02/laptop/archive/campaign-runners-20261029",
+      "in_main": false
+    },
+    {
+      "scope": "laptop",
+      "branch": "archive/coordinate-bypass-baseline",
+      "commit": "3b9170780c16f9fbe9e999fd0ea9037d34bc8267",
+      "tag": "archive/2026-11-02/laptop/adapter-dev",
+      "in_main": true
+    },
+    {
+      "scope": "laptop",
+      "branch": "archive/local-preservation-20261102",
+      "commit": "b80d770769cd1b657a3ef56e4eaa75362d406675",
+      "tag": "archive/2026-11-02/laptop/archive/local-preservation-20261102",
+      "in_main": false
+    },
+    {
+      "scope": "laptop",
+      "branch": "archive/mamba-backbone-adapter-support-original",
+      "commit": "ff32c464506e5fcd451ff730134f84dcf684a14e",
+      "tag": "archive/2026-11-02/laptop/archive/mamba-backbone-adapter-support-original",
+      "in_main": false
+    },
+    {
+      "scope": "laptop",
+      "branch": "experiment/causal-transformer-adapters",
+      "commit": "ae09d4898619d9a49bbcc8e00c0ce324c89f75c4",
+      "tag": "archive/2026-11-02/experiment/causal-transformer-adapters",
+      "in_main": true
+    },
+    {
+      "scope": "laptop",
+      "branch": "experiment/mamba-backbone-adapter-support",
+      "commit": "f16093a8cfc2ada17b158be0ac2f72625c7224c2",
+      "tag": "archive/2026-11-02/experiment/mamba-backbone-adapter-support",
+      "in_main": true
+    },
+    {
+      "scope": "laptop",
+      "branch": "experiment/transformer-pretraining-comparison",
+      "commit": "d84731c391e0eb52516401a8b73b2451096dd219",
+      "tag": "archive/2026-11-02/experiment/transformer-pretraining-comparison",
+      "in_main": false
+    },
+    {
+      "scope": "laptop",
+      "branch": "integration-adapter-pretrain",
+      "commit": "756fc500c9497bd321265ca0abcd91bab08f4bf5",
+      "tag": "archive/2026-11-02/laptop/integration-adapter-pretrain",
+      "in_main": false
+    },
+    {
+      "scope": "laptop",
+      "branch": "momentum-adapter-experiments",
+      "commit": "690dc33682fb5520798d8e1b78ae9f9886058423",
+      "tag": "archive/2026-11-02/laptop/momentum-adapter-experiments",
+      "in_main": false
+    },
+    {
+      "scope": "laptop",
+      "branch": "momentum-cleanup",
+      "commit": "dadeb107c76fc7c09bd096c0da6abf57ae9cc4b8",
+      "tag": "archive/2026-11-02/laptop/momentum-cleanup",
+      "in_main": true
+    },
+    {
+      "scope": "a02c",
+      "branch": "adapter-dev",
+      "commit": "ca094b7919c9f1af3f9078eab2bbe6bcf3a3236c",
+      "tag": "archive/2026-11-02/a02c/adapter-dev",
+      "in_main": true
+    },
+    {
+      "scope": "a02c",
+      "branch": "momentum-adapter-experiments",
+      "commit": "4537f296531d5f07c032bc5ed3405de51b528b6b",
+      "tag": "archive/2026-11-02/a02c/momentum-adapter-experiments",
+      "in_main": false
+    },
+    {
+      "scope": "a02c",
+      "branch": "momentum-adapter-primary",
+      "commit": "1e35394407f636d200ced81d82b79bea496fee73",
+      "tag": "archive/2026-11-02/experiments/momentum-adapter-experiments",
+      "in_main": false
+    },
+    {
+      "scope": "a02c",
+      "branch": "momentum-cartesian-factorial",
+      "commit": "30a302de60d542ed698bebbeebfa8cd3b18d8e2a",
+      "tag": "archive/2026-11-02/experiments/momentum-cartesian-factorial",
+      "in_main": false
+    },
+    {
+      "scope": "a518",
+      "branch": "adapter-dev",
+      "commit": "b566b54a7e2e5facfe23b78cb5afe1a967138e40",
+      "tag": "archive/2026-11-02/a518/adapter-dev",
+      "in_main": true
+    },
+    {
+      "scope": "a518",
+      "branch": "diagnostic/campaign4-track-loss",
+      "commit": "10b7ddf65e1a5786062d95254fce381136f1a525",
+      "tag": "archive/2026-11-02/diagnostic/campaign4-track-loss",
+      "in_main": false
+    },
+    {
+      "scope": "a518",
+      "branch": "momentum-adapter-experiments",
+      "commit": "1e35394407f636d200ced81d82b79bea496fee73",
+      "tag": "archive/2026-11-02/experiments/momentum-adapter-experiments",
+      "in_main": false
+    },
+    {
+      "scope": "a518",
+      "branch": "momentum-cartesian-factorial",
+      "commit": "30a302de60d542ed698bebbeebfa8cd3b18d8e2a",
+      "tag": "archive/2026-11-02/experiments/momentum-cartesian-factorial",
+      "in_main": false
+    },
+    {
+      "scope": "a518",
+      "branch": "momentum-membership-mask",
+      "commit": "96d926be9b3b9752ba6229ac7e26aa6d01a005a4",
+      "tag": "archive/2026-11-02/experiments/momentum-membership-mask",
+      "in_main": false
+    }
+  ],
+  "archive_tags": [
+    {
+      "tag": "archive/2026-11-02/archive/upstream-fm4npp-2026-02-28",
+      "commit": "ffe8d6a33a364a465c203766c4bae0cc7310f787",
+      "tag_object": "844f88309ea3e8574a3ed68b569ccf8d45f5e0c5"
+    },
+    {
+      "tag": "archive/2026-11-02/diagnostic/campaign4-track-loss",
+      "commit": "10b7ddf65e1a5786062d95254fce381136f1a525",
+      "tag_object": "4f6609fa469220e0ef9e83a4218d51d8b4ea6e2f"
+    },
+    {
+      "tag": "archive/2026-11-02/experiment/causal-transformer-adapters",
+      "commit": "ae09d4898619d9a49bbcc8e00c0ce324c89f75c4",
+      "tag_object": "edeeee57c8d313eb82540676ed2872fc63258267"
+    },
+    {
+      "tag": "archive/2026-11-02/experiment/mamba-backbone-adapter-support",
+      "commit": "f16093a8cfc2ada17b158be0ac2f72625c7224c2",
+      "tag_object": "3837c094d352d5b85508383ef0a189fb25e190b1"
+    },
+    {
+      "tag": "archive/2026-11-02/experiment/transformer-pretraining-comparison",
+      "commit": "d84731c391e0eb52516401a8b73b2451096dd219",
+      "tag_object": "20ae06ab57e024999dc448e9d4d88a78e4f940f4"
+    },
+    {
+      "tag": "archive/2026-11-02/experiments/momentum-adapter-experiments",
+      "commit": "1e35394407f636d200ced81d82b79bea496fee73",
+      "tag_object": "43469925c2d9fff54460878cfcd3f93442c13a8f"
+    },
+    {
+      "tag": "archive/2026-11-02/experiments/momentum-cartesian-factorial",
+      "commit": "30a302de60d542ed698bebbeebfa8cd3b18d8e2a",
+      "tag_object": "55cbf3d464ad3dffe49c4ac0b193f0a7d2a44e92"
+    },
+    {
+      "tag": "archive/2026-11-02/experiments/momentum-membership-mask",
+      "commit": "96d926be9b3b9752ba6229ac7e26aa6d01a005a4",
+      "tag_object": "e5bc294b8b7f4481b8fc7ab5e083a36cd50ba54f"
+    },
+    {
+      "tag": "archive/2026-11-02/laptop/adapter-dev",
+      "commit": "3b9170780c16f9fbe9e999fd0ea9037d34bc8267",
+      "tag_object": "b895d4c4b428224139cb8c647180abc06c1dc56a"
+    },
+    {
+      "tag": "archive/2026-11-02/laptop/archive/campaign-runners-20261029",
+      "commit": "825d6b4a43a128c2ed103c838bf6113ea443932a",
+      "tag_object": "727b90659bdda93ec75cd6fd4d9c6a5c41a97b75"
+    },
+    {
+      "tag": "archive/2026-11-02/laptop/archive/local-preservation-20261102",
+      "commit": "b80d770769cd1b657a3ef56e4eaa75362d406675",
+      "tag_object": "ddd5ce33dcfcdb56a043f7e6169d886c16201198"
+    },
+    {
+      "tag": "archive/2026-11-02/laptop/archive/mamba-backbone-adapter-support-original",
+      "commit": "ff32c464506e5fcd451ff730134f84dcf684a14e",
+      "tag_object": "711e4b4ea24d8e8ee3817fb9601fe57c19bac330"
+    },
+    {
+      "tag": "archive/2026-11-02/laptop/integration-adapter-pretrain",
+      "commit": "756fc500c9497bd321265ca0abcd91bab08f4bf5",
+      "tag_object": "6c958966749f5c3bb9b9155df359bfb6706595c6"
+    },
+    {
+      "tag": "archive/2026-11-02/laptop/momentum-adapter-experiments",
+      "commit": "690dc33682fb5520798d8e1b78ae9f9886058423",
+      "tag_object": "e857592262cda57b9696ce94f565b491a36d8db6"
+    },
+    {
+      "tag": "archive/2026-11-02/laptop/momentum-cleanup",
+      "commit": "dadeb107c76fc7c09bd096c0da6abf57ae9cc4b8",
+      "tag_object": "14bb0e9db15a0084cb166be5726d8cde1752adae"
+    },
+    {
+      "tag": "archive/2026-11-02/a02c/adapter-dev",
+      "commit": "ca094b7919c9f1af3f9078eab2bbe6bcf3a3236c",
+      "tag_object": "cc48cb8257b2df60e434259389e83964c6976c8d"
+    },
+    {
+      "tag": "archive/2026-11-02/a02c/momentum-adapter-experiments",
+      "commit": "4537f296531d5f07c032bc5ed3405de51b528b6b",
+      "tag_object": "950209733584d3fab0f04d470e5127ac6e9a89b7"
+    },
+    {
+      "tag": "archive/2026-11-02/a518/adapter-dev",
+      "commit": "b566b54a7e2e5facfe23b78cb5afe1a967138e40",
+      "tag_object": "5f1c08f909a826a5c31a5a48d3da3574b329faba"
+    }
+  ],
+  "backups": [
+    {
+      "host": "alessio-Dell-G15-5515",
+      "bundle": "/home/alessio/ML-work/CLAS12-branch-archives/2026-11-02/alessio-Dell-G15-5515-before.bundle",
+      "bundle_sha256": "071ad81b601135db04184a2b17b9ba79c50c0cce3dbab947bdfccf7bc5a0c457",
+      "bundle_verified": true
+    },
+    {
+      "host": "edgexpert-a02c",
+      "bundle": "/home/alessio/ML-work/CLAS12-branch-archives/2026-11-02/edgexpert-a02c-before.bundle",
+      "bundle_sha256": "c2bdd7593874583d14d414052725cc67593491d89639f2464c83c2ccd08fe9ee",
+      "bundle_verified": true
+    },
+    {
+      "host": "edgexpert-a518",
+      "bundle": "/home/alessio/ML-work/CLAS12-branch-archives/2026-11-02/edgexpert-a518-before.bundle",
+      "bundle_sha256": "74e4103199984cac05b3e1044f8560b2cb65d6022b73ae59fc84798705d70cd6",
+      "bundle_verified": true
+    }
+  ],
+  "archive_tag_prefix": "archive/2026-11-02/",
+  "recovery_directory": "/home/alessio/ML-work/CLAS12-branch-archives/2026-11-02",
+  "recovery_bundle": "all-machines-recovery.bundle",
+  "worktree_policy": "Retired-branch worktrees are detached at their original commit and retained; existing detached worktrees and pending-review branches are preserved."
+}

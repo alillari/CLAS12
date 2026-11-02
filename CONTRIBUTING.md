@@ -8,7 +8,7 @@ The aim is to preserve experimental freedom while making shared results understa
 - `main`: the current **shared, reasonably tested research baseline**. It is not a claim of publication-ready scientific validation.
 - `mike`: an independent collaborator branch. Its owner can develop autonomously; changes are brought into shared code by review, not by automatically merging the whole branch.
 - `experiment/<topic>`: changes to model behavior, training algorithms, datasets, or adapters that may not work out. Start these from current `main` where practical.
-- `archive/<topic>`: historical references, including unsuccessful investigations. Do not modify or delete archive references casually.
+- `archive/<date>/<topic>` tags: immutable historical references, including unsuccessful investigations. Record recipes, evidence and retirement in `docs/BRANCHES.md` before removing the development branch. Do not move or delete archive tags casually.
 - `chore/<topic>`: small documentation, test, or maintenance changes.
 
 A configuration sweep **does not** need its own branch unless it also changes implementation behavior.

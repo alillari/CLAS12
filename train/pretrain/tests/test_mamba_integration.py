@@ -46,6 +46,21 @@ def make_trainer(directory, version="mamba2", **overrides):
 
 
 class PretrainingIntegrationTest(unittest.TestCase):
+    def test_checkpoint_rejects_a_different_hilbert_grid(self):
+        with tempfile.TemporaryDirectory() as root:
+            trainer = make_trainer(root, "transformer", hilbert_angular_grid="unit_v2")
+            trainer.save_checkpoint(trainer.checkpoint_path)
+            saved = torch.load(trainer.checkpoint_path, map_location="cpu", weights_only=False)
+            self.assertEqual(saved["hilbert_angular_grid"], "unit_v2")
+            make_trainer(root, "transformer", hilbert_angular_grid="unit_v2")
+            with self.assertRaisesRegex(ValueError, "Checkpoint Hilbert grid"):
+                make_trainer(root, "transformer")
+            del saved["hilbert_angular_grid"]
+            torch.save(saved, trainer.checkpoint_path)
+            make_trainer(root, "transformer")
+            with self.assertRaisesRegex(ValueError, "Checkpoint Hilbert grid"):
+                make_trainer(root, "transformer", hilbert_angular_grid="unit_v2")
+
     def test_current_recipe_defaults_keep_mamba1_weights_and_shapes(self):
         for file, key in (("mamba_v602_sweep.yaml", "scale_w64_d12_v602"),
                           ("mamba_v701_aux_sweep.yaml", "scale_w64_d12_v701aux"),

@@ -12,7 +12,7 @@ import torch
 from fm4npp.utils import *
 # NOTE (CLAS12): Voxelizer/HRS removed entirely — replaced by Hilbert band ordering.
 # from .voxelizer import *   # (no longer used)
-from fm4npp.hilbert import clas12_band_hilbert_order, assign_clas12_layer
+from fm4npp.hilbert import LEGACY_HILBERT_GRID, clas12_band_hilbert_order, assign_clas12_layer
 
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
@@ -129,9 +129,10 @@ class TPCBatchDataset(Dataset):
                  band_classification = False,
                  bin_dir = '',
                  use_aux_features = False,
-                 aux_extra_feature = 'length'):
+                 aux_extra_feature = 'length',
+                 hilbert_angular_grid = LEGACY_HILBERT_GRID):
         
-        split = split
+        self.hilbert_angular_grid = hilbert_angular_grid
         self.band_classification = band_classification
         # [READER TOGGLE] 'ragged_mmap' = real mmap_ninja.RaggedMmap (existing data/mmap).
         # 'ragged_npy' = Alessio's values.npy+offsets.npy format (e.g. data/mmap_v4),
@@ -442,6 +443,7 @@ class TPCBatchDataset(Dataset):
             phi=nf[:, 1],
             eta=nf[:, 0],
             r=nf[:, 2],
+            angular_grid=self.hilbert_angular_grid,
         )
         serialized_points = norm_features[:, zsorter.squeeze()].squeeze(0)
         knearest_points = knearest_points[:, zsorter.squeeze()].squeeze(0)
@@ -539,6 +541,7 @@ def get_data_loader(params, distributed):
                                     space_filling_curve = params.space_filling_curve,
                                     band_classification = getattr(params, 'band_classification', False),
                                     use_aux_features = getattr(params, 'use_aux_features', False),
+                                    hilbert_angular_grid = getattr(params, 'hilbert_angular_grid', LEGACY_HILBERT_GRID),
                                     aux_extra_feature = getattr(params, 'aux_extra_feature', 'length'),
                                     train = True)
     
@@ -557,6 +560,7 @@ def get_data_loader(params, distributed):
                                    space_filling_curve = params.space_filling_curve,
                                    band_classification = getattr(params, 'band_classification', False),
                                    use_aux_features = getattr(params, 'use_aux_features', False),
+                                   hilbert_angular_grid = getattr(params, 'hilbert_angular_grid', LEGACY_HILBERT_GRID),
                                    aux_extra_feature = getattr(params, 'aux_extra_feature', 'length'),
                                    reader_type = getattr(params, 'reader_type', 'ragged_mmap'), 
                                    train = False)
@@ -604,6 +608,7 @@ def get_val_loader(params, distributed):
                                    order = params.order,
                                    band_classification = getattr(params, 'band_classification', False),
                                    use_aux_features = getattr(params, 'use_aux_features', False),
+                                   hilbert_angular_grid = getattr(params, 'hilbert_angular_grid', LEGACY_HILBERT_GRID),
                                    aux_extra_feature = getattr(params, 'aux_extra_feature', 'length'),
                                    reader_type = getattr(params, 'reader_type', 'ragged_mmap'),)
 

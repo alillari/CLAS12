@@ -137,11 +137,17 @@ use pooled matched/predicted/truth counts. Other rates retain the evaluator's
 event-average definitions, omitting undefined values. Counts and event-averaged
 loss components are recorded too. No extra model forward pass is required.
 
-The existing ARI-based selection, loss tie-break, and early stopping rule stay
-unchanged. In particular, legacy selection averages batch-level ARI means;
-the new full-validation ARIs average individual eligible events. These can
-differ for an uneven final batch. History records keep `selection_score` and
-`selection_aggregation` separate from the full-validation metrics.
+Checkpoint selection uses the configured option-2 ARI averaged over eligible
+validation events and an event-weighted validation-loss tie-break. Histories
+record `selection_aggregation: mean_of_eligible_events`. Older histories retain
+their recorded batch-mean scores. If the configured ARI is undefined across
+the full validation cohort, training fails before selecting a checkpoint.
+
+Evaluation summaries use `finding_metrics_version: 2`. Matching maximizes
+the count of eligible one-to-one pairs and uses total IoU to break ties.
+The per-truth-track table contains valid signal labels even when their momentum
+is unavailable. Momentum bins use only finite track kinematics. Reevaluate
+older results from a saved adapter checkpoint before campaign collation.
 
 Each training invocation creates a fresh directory beside its training log:
 

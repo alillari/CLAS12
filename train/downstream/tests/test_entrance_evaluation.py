@@ -148,6 +148,17 @@ class EntranceEvaluationTest(unittest.TestCase):
                 collate_summary(dict(campaign_dir=tmp, runs=[dict(evaluation_dir=str(evaluation))]))
             self.assertEqual(output.read_text(), "keep me\n")
 
+    def test_campaign_rejects_an_old_ratio_but_accepts_zero_matched_tracks(self):
+        payload = dict(configure_entrance_evaluation({}), adapter_to_cvt_resolution_ratio=None)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "summary.json").write_text(json.dumps(payload))
+            self.assertFalse(is_entrance_evaluation(payload))
+            with self.assertRaisesRegex(ValueError, "Reevaluate"):
+                collate_summary(dict(campaign_dir=tmp, runs=[dict(evaluation_dir=tmp)]))
+        payload["adapter_cvt_matched_tracks"] = 0
+        self.assertTrue(is_entrance_evaluation(payload))
+
     def test_plot_readers_reject_legacy_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

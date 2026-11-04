@@ -56,54 +56,36 @@ from physics_checkpoints import (
 VALIDATION_LOSS_REDUCTION = "mean_over_valid_terms"
 
 
+def require_single_process():
+    """The regression head and checkpoint writer are single-process only."""
+    if (int(os.environ.get("WORLD_SIZE", 1)) != 1
+            or (dist.is_initialized() and dist.get_world_size() != 1)):
+        raise RuntimeError(
+            "Momentum regression supports one process. Launch with WORLD_SIZE=1 "
+            "or torchrun --nproc-per-node=1."
+        )
+
+
 class DownstreamTrainer():
-    
-    def _find_available_gpu(self, max_memory_threshold=1000):
-        '''Find the first GPU with memory usage below a threshold (in MB).'''
-        for gpu_id in range(torch.cuda.device_count()):
-            allocated = torch.cuda.memory_allocated(gpu_id) / 1024**2  # Convert to MB
-            if allocated < max_memory_threshold:
-                return gpu_id
-        return None 
 
-
-    """ trainer class """
     def __init__(self, params, args):
-        
-        ''' init vars for distributed training (ddp) and logging'''
+        require_single_process()
         self.root_dir = args.root_dir
         self.global_log_dir = os.path.join(args.root_dir, args.global_log_dir)
-        self.config = args.config 
+        self.config = args.config
         self.run_num = args.run_num
         self.world_size = 1
-        
-        if 'WORLD_SIZE' in os.environ:
-            self.world_size = int(os.environ['WORLD_SIZE'])
-
         self.local_rank = 0
         self.world_rank = 0
-        
-        if self.world_size > 1: # multigpu, use DDP with standard NCCL backend for communication routines
-            dist.init_process_group(backend='nccl',
-                                    init_method='env://')
-            self.world_rank = dist.get_rank()
-            self.local_rank = int(os.environ["LOCAL_RANK"])
+        self.log_to_screen = True
 
         if torch.cuda.is_available():
             torch.cuda.set_device(self.local_rank)
             torch.backends.cudnn.benchmark = True
-
-        self.log_to_screen = (self.world_rank==0)
-        if torch.cuda.is_available():
-            available_gpu = self._find_available_gpu()
-            if available_gpu is not None:
-                available_gpu = 0
-                torch.cuda.set_device(available_gpu)
-                print(f"Using GPU {available_gpu} with memory below threshold.")
             self.device = torch.cuda.current_device()
         else:
             self.device = torch.device('cpu')
-        
+
         self.params = params
         input_representation = getattr(params, "input_representation", "center_only")
         if input_representation == "clas12_pos_plus_aux_v1":

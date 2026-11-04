@@ -131,6 +131,22 @@ class CampaignPhysicsTest(unittest.TestCase):
             (evaluation_dir/'campaign_headline_metrics.jsonl').write_text('')
         return row
 
+    def test_run_table_keeps_matched_count_with_resolution_ratio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            run = self.create_run(directory, 1000, task='mom', passed=False)
+            manifest = self.manifest(directory)
+            manifest['runs'] = [run]
+            summary = dict(evaluation_contract=EVALUATION_CONTRACT, comparison_truth='mctrue_inner_hit',
+                           training_target_task='mom', adapter_cvt_matched_tracks=6,
+                           adapter_to_cvt_resolution_ratio=.5, methods={'adapter': {'n': 7}, 'cvt': {'n': 6}})
+            (Path(run['evaluation_dir']) / 'summary.json').write_text(json.dumps(summary))
+            collate_summary(manifest)
+            with (directory / 'summary/run_table.csv').open() as stream:
+                entry = next(csv.DictReader(stream))
+            self.assertEqual(entry['adapter_cvt_matched_tracks'], '6')
+            self.assertEqual(entry['adapter_to_cvt_resolution_ratio'], '0.5')
+
     def test_collation_preserves_selected_validation_and_evaluation_separately(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory=Path(tmp); manifest=self.manifest(directory)

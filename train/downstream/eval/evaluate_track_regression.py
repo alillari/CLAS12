@@ -477,21 +477,18 @@ def calculate_metrics(truth, prediction, tolerances):
     return result
 
 
-def relative_resolution_68(metrics, method):
-    value = metrics.get(method, {}).get("momentum", {}).get("relative_resolution_68")
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return None
-    return value if np.isfinite(value) else None
-
-
-def adapter_to_cvt_resolution_ratio(metrics):
-    adapter_resolution = relative_resolution_68(metrics, "adapter")
-    cvt_resolution = relative_resolution_68(metrics, "cvt")
-    if adapter_resolution is None or cvt_resolution is None or cvt_resolution == 0.0:
-        return None
-    return adapter_resolution / cvt_resolution
+def matched_resolution_comparison(truth, predictions):
+    """Compare central 68% relative momentum widths over the same tracks."""
+    adapter_residual, _ = delta_p_over_p_residual(truth, predictions["adapter"])
+    cvt_residual, _ = delta_p_over_p_residual(truth, predictions["cvt"])
+    matched = np.isfinite(adapter_residual) & np.isfinite(cvt_residual)
+    adapter_width = central_width(adapter_residual[matched])
+    cvt_width = central_width(cvt_residual[matched])
+    ratio = safe_float(adapter_width / cvt_width) if cvt_width > 0 else None
+    return {
+        "adapter_cvt_matched_tracks": int(matched.sum()),
+        "adapter_to_cvt_resolution_ratio": ratio,
+    }
 
 
 def compact_metrics(truth, prediction):
@@ -1380,18 +1377,18 @@ def build_campaign_headline_rows(config, summary, ml_metric_rows):
             "opening_angle_68": direction.get("opening_angle_68_deg"),
         })
 
-    rows.append({
-        **metadata,
-        "record_type": "comparison_summary",
-        "method": "adapter_over_cvt",
-        "space": "kinematic",
-        "variable": "p_gev",
-        "label": "adapter/cvt relative p resolution",
-        "unit": "",
-        "adapter_to_cvt_resolution_ratio": summary.get(
-            "adapter_to_cvt_resolution_ratio"
-        ),
-    })
+    if "cvt" in summary["methods"]:
+        rows.append({
+            **metadata,
+            "record_type": "comparison_summary",
+            "method": "adapter_over_cvt",
+            "space": "kinematic",
+            "variable": "p_gev",
+            "label": "adapter/cvt relative p resolution",
+            "unit": "",
+            "adapter_cvt_matched_tracks": summary["adapter_cvt_matched_tracks"],
+            "adapter_to_cvt_resolution_ratio": summary["adapter_to_cvt_resolution_ratio"],
+        })
     return rows
 
 
@@ -2039,8 +2036,6 @@ def main():
     params["regression_loss"] = resolve_regression_loss(params.task, configured_loss)
     trainer = DownstreamTrainer(params, trainer_args)
     trainer.launch()
-    if trainer.world_size != 1:
-        raise RuntimeError("This baseline analysis currently supports single-process evaluation only")
     trainer.down_model = build_head(trainer)
     use_pretrained = bool(config["use_pretrained_backbone"])
     trainer.load_checkpoint(str(config["checkpoint"]), inference=True, use_pretrained_backbone=use_pretrained)
@@ -2303,9 +2298,7 @@ def main():
         "ml_metrics": ml_metric_summary,
         "training_history": training_summary,
     }
-    summary["adapter_to_cvt_resolution_ratio"] = adapter_to_cvt_resolution_ratio(
-        summary["methods"]
-    )
+    summary.update(matched_resolution_comparison(truth, predictions))
     with (output_dir / "summary.json").open("w") as stream:
         json.dump(summary, stream, indent=2, allow_nan=False)
     with (output_dir / "ml_metrics_summary.json").open("w") as stream:

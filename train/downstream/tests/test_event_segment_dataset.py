@@ -195,6 +195,39 @@ class EventSegmentDatasetTest(unittest.TestCase):
             )
             np.testing.assert_allclose(stats["mean"], [10.0, 20.0, 30.0])
 
+    def test_partial_and_unlabeled_tracks_stay_within_the_loader_budget(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            # Four tracks, out of label order on disk. The first three accepted
+            # labels are 0, 1, 2. Track 3 would distort statistics if backfilled.
+            labels = np.repeat([2, 3, 0, 1], 2)
+            features = np.stack((6. + np.arange(8), np.ones(8), np.ones(8)), axis=1)
+            reg = np.ones((8, 7), dtype=np.float32)
+            reg[labels == 0, :3] = np.nan
+            reg[labels == 1, :3] = [np.nan, 2., 4.]
+            reg[labels == 2, :3] = [10., 6., 8.]
+            reg[labels == 3, :3] = 999.
+            write_ragged(root, "features_pretrain", [features])
+            write_ragged(root, "seg_target_pretrain", [labels])
+            write_ragged(root, "coatjava_seg_pred_pretrain", [labels + 10])
+            write_ragged(root, "reg_target_pretrain", [reg])
+            for source, first_label in [('mctrue', 0), ('coatjava', 10)]:
+                with self.subTest(source=source):
+                    options = dict(segment_min_clusters=2, segment_target_source=source)
+                    dataset = EventSegmentTPCBatchDataset(
+                        data_root=str(root), split='pretrain', train=True, return_dict=True,
+                        normalize=False, serialization='radius', num_pred_points=1,
+                        require_reg_target=True, limit_data=True, limit_size=3, **options)
+                    self.assertEqual(dataset.idxlist, [(0, first_label + i) for i in range(3)])
+                    stats = compute_stats(root, 'pretrain', 1, 100, 3, 10, task='mom', **options)
+                    self.assertEqual(stats['version'], 3)
+                    self.assertEqual(stats['selected_events'], 3)
+                    self.assertEqual(stats['count'], [1, 2, 2])
+                    np.testing.assert_allclose(stats['mean'], [10., 4., 6.])
+                    np.testing.assert_allclose(stats['std'], [0., 2., 2.])
+                    with self.assertRaisesRegex(ValueError, 'mc_entrance_px'):
+                        compute_stats(root, 'pretrain', 1, 100, 2, 10, task='mom', **options)
+
     def test_coatjava_tie_or_low_purity_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -33,6 +33,9 @@ See [Training options](TRAINING_OPTIONS.md#regression-target-and-head).
 
 ## Run and evaluate
 
+Run the momentum trainer with one process. To use a particular GPU, select
+it with `CUDA_VISIBLE_DEVICES` before starting the training CLI.
+
 1. [Set paths and copy the model recipe](../TRAINING_RECIPES.md#1-choose-a-task-and-prepare-the-run-configuration).
 2. [Generate target statistics](../TRAINING_RECIPES.md#2-generate-momentum-target-statistics)
    from the exact accepted **training-track** population. Set

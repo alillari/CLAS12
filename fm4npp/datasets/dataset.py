@@ -30,6 +30,17 @@ def seed_worker_from_base(base_seed, worker_id):
     torch.manual_seed(worker_seed)
 
 
+def accepted_segment_labels(labels, min_clusters, exact_clusters, ignore_label=-1):
+    """Yield eligible segment labels and sizes in the dataset's sample order."""
+    unique, counts = np.unique(labels, return_counts=True)
+    for label, n_points in zip(unique, counts):
+        if label == ignore_label or n_points < min_clusters:
+            continue
+        if exact_clusters and n_points != min_clusters:
+            continue
+        yield int(label), int(n_points)
+
+
 def dominant_truth_segment(labels, ignore_label=-1):
     """Return the unique dominant non-noise truth label and its support."""
     labels = np.asarray(labels)
@@ -1023,19 +1034,6 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
     def _segment_source_for_filtering(self):
         return self.memmap_segment_source or self.memmap_seg_target
 
-    def _accepted_segment_labels(self, labels):
-        labels = np.asarray(labels)
-        out = []
-        for label in sorted(int(x) for x in np.unique(labels) if int(x) != self.segment_ignore_label):
-            n_points = int(np.sum(labels == label))
-            if self.segment_exact_clusters:
-                if n_points != self.segment_min_clusters:
-                    continue
-            elif n_points < self.segment_min_clusters:
-                continue
-            out.append((label, n_points))
-        return out
-
     def _coatjava_truth_target(self, event_idx, candidate_label):
         """Resolve one COATJAVA candidate to its dominant MC truth segment."""
         coat_labels = np.asarray(self.memmap_segment_source[event_idx])
@@ -1071,7 +1069,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
         )
         for event_idx in range(len(self.memmap_feature)):
             labels = np.asarray(segment_source[event_idx])
-            for label, n_points in self._accepted_segment_labels(labels):
+            for label, n_points in accepted_segment_labels(
+                labels, self.segment_min_clusters, self.segment_exact_clusters, self.segment_ignore_label
+            ):
                 if self.segment_target_source == 'coatjava':
                     if self._coatjava_truth_target(event_idx, label) is None:
                         continue

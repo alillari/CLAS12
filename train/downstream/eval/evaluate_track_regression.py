@@ -2042,7 +2042,8 @@ def main():
     if trainer.world_size != 1:
         raise RuntimeError("This baseline analysis currently supports single-process evaluation only")
     trainer.down_model = build_head(trainer)
-    trainer.load_checkpoint(str(config["checkpoint"]), inference=True)
+    use_pretrained = bool(config["use_pretrained_backbone"])
+    trainer.load_checkpoint(str(config["checkpoint"]), inference=True, use_pretrained_backbone=use_pretrained)
     trainer.down_model.eval()
     trainer.model.eval()
     regression_task = trainer.regression_target_stats["task"]
@@ -2055,7 +2056,6 @@ def main():
     target_scale = float(config["target_momentum_scale_to_gev"])
     aux_scale = float(config["auxiliary_momentum_scale_to_gev"])
     max_samples = int(config["max_samples"])
-    use_pretrained = bool(config["use_pretrained_backbone"])
     adapter_sample_mode = str(getattr(params, "adapter_sample_mode", "track_legacy"))
 
     records = []

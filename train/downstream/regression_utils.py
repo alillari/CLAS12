@@ -281,6 +281,41 @@ def load_regression_target_stats(path, task):
         "angular_indices": list(regression_angular_indices(task)),
         "phi_pairs": [list(pair) for pair in regression_phi_pairs(task)],
     }
+
+
+def validate_regression_checkpoint_inputs(checkpoint, state_dict, use_pretrained_backbone, pooling):
+    """Validate the forward path before a legacy non-strict weight load can discard it."""
+    # Older trainers saved vars(YParams), with resolved settings at the top
+    # level and a copy of the YAML settings under "params".
+    params = checkpoint.get("params", {})
+    saved_params = {**params.get("params", {}), **params}
+    if "use_pretrained_backbone" in checkpoint:
+        saved_mode = checkpoint["use_pretrained_backbone"]
+    elif "pretrained_ckpt" in saved_params:
+        saved_mode = saved_params["pretrained_ckpt"] is not None
+    else:
+        raise ValueError(
+            "Adapter checkpoint does not record its input mode. Recover the original "
+            "training configuration before loading these weights."
+        )
+    if not isinstance(saved_mode, bool) or saved_mode != use_pretrained_backbone:
+        raise ValueError(
+            f"Adapter checkpoint input mode mismatch: saved use_pretrained_backbone={saved_mode!r}, "
+            f"requested {use_pretrained_backbone!r}"
+        )
+
+    scorer_keys = {key for key in state_dict if key.startswith("pool_score.")}
+    inferred_pooling = "attention" if scorer_keys else "mean"
+    saved_pooling = checkpoint.get("pooling", saved_params.get("pooling", inferred_pooling))
+    if saved_pooling != pooling:
+        raise ValueError(
+            f"Adapter checkpoint pooling mismatch: saved {saved_pooling!r}, requested {pooling!r}"
+        )
+    expected_keys = {"pool_score.weight", "pool_score.bias"} if pooling == "attention" else set()
+    if scorer_keys != expected_keys:
+        raise ValueError(f"Adapter checkpoint pooling weights do not match {pooling!r} pooling")
+
+
 def validate_regression_training(params):
     """Reject retired experimental recipes before opening data or training."""
     task = canonical_regression_task(params.get("task", "mom"))

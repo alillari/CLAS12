@@ -161,6 +161,23 @@ class RegressionTargetTransformTest(unittest.TestCase):
         np.testing.assert_allclose(cosphi, [0.6], rtol=1.0e-6)
         np.testing.assert_allclose(sinphi, [0.8], rtol=1.0e-6)
 
+    def test_loss_totals_count_only_complete_phi_pairs(self):
+        pred = torch.tensor([[2., -1., 0., 3.], [8., 1., 0., 5.]], requires_grad=True)
+        truth = torch.tensor([[0., 1., 0., 0.], [0., 1., float('nan'), 0.]])
+        valid = torch.tensor([[True, True, True, False], [False, True, True, False]])
+        # The first row contributes a scalar error of 2 and an opposite-direction
+        # penalty of 2. The second row only has half a direction.
+        for selected, count in [(slice(None), 2), (slice(1, 2), 0)]:
+            losses = masked_regression_loss(
+                {"pred": pred[selected]}, {"target": truth[selected], "target_valid": valid[selected]},
+                option="mae", phi_pairs=[(1, 2)],
+            )
+            self.assertEqual(losses["term_count"], count)
+            self.assertAlmostEqual(losses["loss_sum"].item(), 4. if count else 0.)
+            self.assertAlmostEqual(losses["loss"].item(), 2. if count else 0.)
+        losses["loss"].backward()
+        torch.testing.assert_close(pred.grad, torch.zeros_like(pred))
+
     def test_phi_pair_loss_ignores_prediction_radius(self):
         pred = torch.tensor([[0.0, 30.0, 40.0, 0.0]])
         truth = torch.tensor([[0.0, 0.6, 0.8, 0.0]])

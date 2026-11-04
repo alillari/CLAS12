@@ -108,7 +108,7 @@ class TPCBatchDataset(Dataset):
                  data_root, 
                  version = 'pp_100k',
                  train = True,
-                 split = 'pretrain',
+                 split = None,
                  nleave = 1e6,
                  npoint_lower_thr = 5,                  
                  group_size = 32, 
@@ -131,33 +131,28 @@ class TPCBatchDataset(Dataset):
                  use_aux_features = False,
                  aux_extra_feature = 'length'):
         
-        split = split
         self.band_classification = band_classification
-        # [READER TOGGLE] 'ragged_mmap' = real mmap_ninja.RaggedMmap (existing data/mmap).
-        # 'ragged_npy' = Alessio's values.npy+offsets.npy format (e.g. data/mmap_v4),
-        # which is NOT a real RaggedMmap despite similar structure -- see each
-        # folder's WARNING_NOT_RAGGEDMMAP.txt. Default preserves current behavior.
-        reader_cls = RaggedNpyReader if reader_type == 'ragged_npy' else RaggedMmap
-        self.memmap_feature = reader_cls(os.path.join(data_root, 'features_{}'.format(split)))
-        self.memmap_seg_target = reader_cls(os.path.join(data_root, 'seg_target_{}'.format(split)))
-        self.memmap_reg_target = reader_cls(os.path.join(data_root, 'reg_target_{}'.format(split)))
-
-        # [NEW] Optional auxiliary per-point geometric features (measurement
-        # direction sx,sy,sz + strip length), from cluster_geometry_context_target.
-        # Off by default -- existing behavior/callers are completely unaffected.
-        # Layout of that bank: [x1,y1,z1,x2,y2,z2,sx,sy,sz,physical_length_cm,pitch_cm].
-        # We only use sx,sy,sz (cols 6:9) and physical_length_cm (col 9); endpoints
-        # and pitch are intentionally not used (see team design discussion).
         self.use_aux_features = use_aux_features
-        # [NEW] which scalar(s) beyond direction to include: 'length' (along-
-        # strip physical length, the unmeasured-axis uncertainty bound),
-        # 'pitch' (strip pitch, the measured-axis precision -- what sigma
-        # was meant to be, sidestepping the fact that the bank's own `e`
-        # field is confirmed always-zero for SVT), or 'both'.
         assert aux_extra_feature in ('length', 'pitch', 'both')
         self.aux_extra_feature = aux_extra_feature
-        if self.use_aux_features:
-            self.memmap_aux_geom = reader_cls(os.path.join(data_root, 'cluster_geometry_context_target_{}'.format(split)))
+        self.hdf5 = None
+        if reader_type == 'hdf5':
+            from .cvt_hdf5 import CVTClusterEvents
+            self.hdf5 = CVTClusterEvents(data_root, split or ('train' if train else 'validation'))
+            self.fields = ['clusters.xyz', 'clusters.primary_segment']
+            if use_aux_features:
+                self.fields.extend(['clusters.direction', 'clusters.length', 'clusters.pitch'])
+        else:
+            readers = {'ragged_mmap': RaggedMmap, 'ragged_npy': RaggedNpyReader}
+            if reader_type not in readers:
+                raise ValueError(f"Unknown pretraining reader_type {reader_type!r}")
+            reader_cls = readers[reader_type]
+            split = split or 'pretrain'
+            self.memmap_feature = reader_cls(os.path.join(data_root, f'features_{split}'))
+            self.memmap_seg_target = reader_cls(os.path.join(data_root, f'seg_target_{split}'))
+            self.memmap_reg_target = reader_cls(os.path.join(data_root, f'reg_target_{split}'))
+            if use_aux_features:
+                self.memmap_aux_geom = reader_cls(os.path.join(data_root, f'cluster_geometry_context_target_{split}'))
         
 
         self.reco_cols = ['x', 'y', 'z']   # CLAS12: no energy
@@ -209,8 +204,19 @@ class TPCBatchDataset(Dataset):
         
         self.train = train
         self.chunk_training = chunk_training
-        self.filter_data(low_thr = 1, high_thr = 50)   # capped at 50 to bound O(N^2) kNNN memory cost -- keeps 96.7% of events, cuts worst-case N^2 20x (was 100, see check_event_length_dist.py)
-        import math
+        if self.hdf5 is None:
+            self.filter_data(low_thr=1, high_thr=50)
+        else:
+            # Every published event contains clusters. Index the full split without
+            # scanning shards or building millions of Python ints in every worker.
+            count = len(self.hdf5)
+            if limit_data:
+                count = min(count, limit_size)
+            if data_fraction < 1.0 and count:
+                count = max(1, round(count * data_fraction))
+            self.idxlist = range(count)
+            if not train and chunk_training:
+                self._index_validation_chunks(self.hdf5.event_lengths('clusters'))
         self.data_scaler = 1 # [TOGGLE][TEMPORARY] SCALER
         
     def znormalize(self, arr, mean_, std_):
@@ -312,15 +318,14 @@ class TPCBatchDataset(Dataset):
         
         
         if not self.train and self.chunk_training:
-            self.idxlist_chunking = []
-            for k, idx in enumerate(self.idxlist):
-                seqlen = self.seqlens[k]
-                start_indices = get_chunk_start_indices(self.len_chunk, seqlen)
-                for sidx in start_indices:
-                    if seqlen - sidx > self.low_thr: # minimum multiplicity at 50 points.
-                        self.idxlist_chunking.append((idx, sidx))
-                    
-            print('[INFO] Chunking the validation set. Original {} -> Chunk all {}'.format(len(self.idxlist), len(self.idxlist_chunking)))
+            self._index_validation_chunks(self.seqlens)
+
+    def _index_validation_chunks(self, lengths):
+        self.idxlist_chunking = [
+            (idx, start) for idx, length in zip(self.idxlist, lengths)
+            for start in range(0, length, self.len_chunk) if length - start > self.low_thr
+        ]
+        print(f'[INFO] Chunking validation: {len(self.idxlist)} events -> {len(self.idxlist_chunking)} chunks')
         
     def cut_chunk(self, sequence, maxlen):
         """
@@ -356,8 +361,19 @@ class TPCBatchDataset(Dataset):
         else:
             real_idx = self.idxlist[index]
             
-        features = torch.from_numpy(np.copy(self.memmap_feature[real_idx])).unsqueeze(0)
-        target = torch.from_numpy(np.copy(self.memmap_seg_target[real_idx])).unsqueeze(0)
+        if self.hdf5 is not None:
+            rows = self.hdf5.read(real_idx, self.fields)
+            xyz = rows['clusters.xyz']
+            segments = rows['clusters.primary_segment'].astype(np.int64, copy=False)
+            if self.use_aux_features:
+                geometry = np.column_stack((rows['clusters.direction'], rows['clusters.length'], rows['clusters.pitch']))
+        else:
+            xyz = np.copy(self.memmap_feature[real_idx])
+            segments = np.copy(self.memmap_seg_target[real_idx])
+            if self.use_aux_features:
+                geometry = np.copy(self.memmap_aux_geom[real_idx][:, 6:11])
+        features = torch.from_numpy(xyz).unsqueeze(0)
+        target = torch.from_numpy(segments).unsqueeze(0)
 
         # [NEW] Load auxiliary geometric features (sx,sy,sz,length), same
         # real_idx as position/target -- one row per point, same point order,
@@ -378,10 +394,10 @@ class TPCBatchDataset(Dataset):
         # descriptors) -- projecting onto a local frame makes the same
         # physical direction type produce the same numbers everywhere.
         if self.use_aux_features:
-            aux_raw = torch.from_numpy(np.copy(self.memmap_aux_geom[real_idx])).unsqueeze(0).float()
-            aux_sxyz = aux_raw[..., 6:9]      # (1, N, 3) raw global Cartesian direction
-            aux_length = aux_raw[..., 9:10]   # (1, N, 1) physical_length_cm, raw
-            aux_pitch = aux_raw[..., 10:11]   # (1, N, 1) pitch_cm, raw
+            aux_raw = torch.from_numpy(geometry).unsqueeze(0).float()
+            aux_sxyz = aux_raw[..., :3]
+            aux_length = aux_raw[..., 3:4]
+            aux_pitch = aux_raw[..., 4:5]
 
             x_raw, y_raw = features[..., 0], features[..., 1]  # raw (x, y), same points/order as aux_sxyz
             rho = torch.sqrt(x_raw**2 + y_raw**2).clamp(min=1e-6)
@@ -425,14 +441,14 @@ class TPCBatchDataset(Dataset):
             norm_features = polar_features
         
         # Sort by R (index -1 is still r in the 3-column [eta,phi,r] layout)
-        ind = norm_features[...,-1].argsort(dim=1)
-        norm_features = norm_features[:, ind.squeeze()]
+        ind = norm_features[...,-1].argsort(dim=1).squeeze(0)
+        norm_features = norm_features[:, ind]
         if self.use_aux_features:
-            aux_features = aux_features[:, ind.squeeze()]
+            aux_features = aux_features[:, ind]
         # CLAS12: norm_features is already 3 columns [eta,phi,r] — pass directly,
         # no [..., 1:] slice (that would drop eta and leave only 2 columns).
         knearest_points = knn_later_indices_batch(norm_features, k=self.num_pred_points)
-        norm_target = target[:, ind.squeeze()]
+        norm_target = target[:, ind]
         
         # CLAS12 ordering: exact-layer-band radius grouping + 2D Hilbert over (phi, eta)
         # within each band. Replaces both the old space_filling (rescale_serialize_Rlast)
@@ -443,9 +459,9 @@ class TPCBatchDataset(Dataset):
             eta=nf[:, 0],
             r=nf[:, 2],
         )
-        serialized_points = norm_features[:, zsorter.squeeze()].squeeze(0)
-        knearest_points = knearest_points[:, zsorter.squeeze()].squeeze(0)
-        serialized_target = norm_target[:, zsorter.squeeze()].squeeze(0)
+        serialized_points = norm_features[:, zsorter].squeeze(0)
+        knearest_points = knearest_points[:, zsorter].squeeze(0)
+        serialized_target = norm_target[:, zsorter].squeeze(0)
 
         # [NEW] Apply the SAME final reorder to aux features, then
         # concatenate onto the position output: (N, 3) -> (N, 7) =
@@ -454,7 +470,7 @@ class TPCBatchDataset(Dataset):
         # targets are position-only, unaffected by this addition) but
         # before serialized_points is returned.
         if self.use_aux_features:
-            serialized_aux = aux_features[:, zsorter.squeeze()].squeeze(0)
+            serialized_aux = aux_features[:, zsorter].squeeze(0)
             serialized_points = torch.cat([serialized_points, serialized_aux], dim=-1)
 
         # [BAND CLASSIFICATION TOGGLE] When enabled, replace the r component of
@@ -517,111 +533,46 @@ class MyCollator(object):
 
 
 
+def _split_loader(params, distributed, *, train):
+    reader_type = getattr(params, 'reader_type', 'ragged_mmap')
+    if reader_type == 'hdf5':
+        split = 'train' if train else 'validation'
+    else:
+        split = 'pretrain' if train else 'test'
+    dataset = TPCBatchDataset(
+        params.data_root, version=params.data_version, reader_type=reader_type,
+        split=split, train=train, normalize=True, group_size=params.group_size,
+        limit_data=params.limit_data if train else False,
+        limit_size=getattr(params, 'limit_size', 8000),
+        data_fraction=getattr(params, 'data_fraction', 1.0) if train else 1.0,
+        nleave=params.nleave, order=params.order, num_pred_points=params.klen,
+        chunk_training=params.chunk_training,
+        # Legacy validation used the constructor's 512-token chunk size.
+        len_chunk=getattr(params, 'len_chunk', 512) if train or reader_type == 'hdf5' else 512,
+        voxelize=getattr(params, 'voxelize', True), bin_dir=getattr(params, 'stat_dir', ''),
+        space_filling_order=getattr(params, 'space_filling_order', None),
+        space_filling_curve=getattr(params, 'space_filling_curve', 'z'),
+        band_classification=getattr(params, 'band_classification', False),
+        use_aux_features=getattr(params, 'use_aux_features', False),
+        aux_extra_feature=getattr(params, 'aux_extra_feature', 'length'),
+    )
+    sampler = DistributedSampler(dataset, shuffle=train) if distributed else None
+    workers = params.num_data_workers
+    loader = DataLoader(
+        dataset, batch_size=int(params.local_batch_size if train else params.local_valid_batch_size),
+        num_workers=workers, shuffle=train and sampler is None, sampler=sampler,
+        drop_last=reader_type != 'hdf5', pin_memory=True, persistent_workers=workers > 0,
+        prefetch_factor=2 if workers > 0 else None, collate_fn=MyCollator(),
+    )
+    return loader, sampler
+
+
 def get_data_loader(params, distributed):
+    train, train_sampler = _split_loader(params, distributed, train=True)
+    valid, valid_sampler = _split_loader(params, distributed, train=False)
+    return train, train_sampler, valid, valid_sampler
 
-    train_dataset = TPCBatchDataset(data_root = params.data_root, 
-                                    version = params.data_version, 
-                                    split = 'pretrain', 
-                                    group_size = params.group_size, 
-                                    normalize = True, 
-                                    limit_data = params.limit_data, 
-                                    limit_size = params.limit_size, 
-                                    data_fraction = getattr(params, 'data_fraction', 1.0), 
-                                    reader_type = getattr(params, 'reader_type', 'ragged_mmap'), 
-                                    nleave = params.nleave, 
-                                    order = params.order, 
-                                    num_pred_points = params.klen, 
-                                    len_chunk = params.len_chunk,
-                                    chunk_training = params.chunk_training,
-                                    voxelize = params.voxelize,
-                                    bin_dir = params.stat_dir,
-                                    space_filling_order = params.space_filling_order,
-                                    space_filling_curve = params.space_filling_curve,
-                                    band_classification = getattr(params, 'band_classification', False),
-                                    use_aux_features = getattr(params, 'use_aux_features', False),
-                                    aux_extra_feature = getattr(params, 'aux_extra_feature', 'length'),
-                                    train = True)
-    
-    test_dataset = TPCBatchDataset(data_root = params.data_root, 
-                                   version = params.data_version, 
-                                   split = 'test', 
-                                   num_pred_points = params.klen,
-                                   group_size = params.group_size, 
-                                   normalize = True, 
-                                   nleave = params.nleave, 
-                                   chunk_training = params.chunk_training,
-                                   bin_dir = params.stat_dir,
-                                   voxelize = params.voxelize,
-                                   order = params.order,
-                                   space_filling_order = params.space_filling_order,
-                                   space_filling_curve = params.space_filling_curve,
-                                   band_classification = getattr(params, 'band_classification', False),
-                                   use_aux_features = getattr(params, 'use_aux_features', False),
-                                   aux_extra_feature = getattr(params, 'aux_extra_feature', 'length'),
-                                   reader_type = getattr(params, 'reader_type', 'ragged_mmap'), 
-                                   train = False)
-
-    train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
-    test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
-
-    my_collate_fn = MyCollator()
-    
-    train_dataloader = DataLoader(train_dataset,
-                            batch_size=int(params.local_batch_size),
-                            num_workers=params.num_data_workers,
-                            shuffle=(train_sampler is None),
-                            sampler=train_sampler,
-                            drop_last=True,
-                            pin_memory=True,
-                            persistent_workers=True,
-                            prefetch_factor=2,
-                            collate_fn = my_collate_fn)
-    
-    test_dataloader = DataLoader(test_dataset,
-                            batch_size=int(params.local_valid_batch_size),
-                            num_workers=params.num_data_workers,
-                            shuffle=False,
-                            sampler=test_sampler,
-                            drop_last=True,
-                            pin_memory=True,
-                            persistent_workers=True,
-                            prefetch_factor=2,
-                            collate_fn = my_collate_fn)
-    
-    return train_dataloader, train_sampler, test_dataloader, test_sampler
 
 def get_val_loader(params, distributed):
-
-    test_dataset = TPCBatchDataset(data_root = params.data_root, 
-                                   version = params.data_version, 
-                                   split = 'test', 
-                                   num_pred_points = params.klen,
-                                   group_size = params.group_size, 
-                                   normalize = True, 
-                                   nleave = params.nleave, 
-                                   chunk_training = params.chunk_training,
-                                   train = False,
-                                   order = params.order,
-                                   band_classification = getattr(params, 'band_classification', False),
-                                   use_aux_features = getattr(params, 'use_aux_features', False),
-                                   aux_extra_feature = getattr(params, 'aux_extra_feature', 'length'),
-                                   reader_type = getattr(params, 'reader_type', 'ragged_mmap'),)
-
-   
-    test_sampler = DistributedSampler(test_dataset, shuffle=False) if distributed else None
-
-    my_collate_fn = MyCollator()
-    
-        
-    test_dataloader = DataLoader(test_dataset,
-                            batch_size=int(params.local_valid_batch_size),
-                            num_workers=params.num_data_workers,
-                            shuffle=False,
-                            sampler=test_sampler,
-                            drop_last=True,
-                            pin_memory=True,
-                            persistent_workers=True,
-                            prefetch_factor=2,
-                            collate_fn = my_collate_fn)
-    
-    return test_dataloader
+    valid, _ = _split_loader(params, distributed, train=False)
+    return valid

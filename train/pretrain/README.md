@@ -22,18 +22,40 @@ families does not imply equal parameter count or compute.
 
 ## Prepare inputs and run
 
-The shared loader accepts 1–50 clusters/event, converts xyz to normalized
-eta/phi/r, serializes with calibrated12 band-Hilbert ordering and constructs
+The legacy loaders accept 1–50 clusters/event, convert xyz to normalized
+eta/phi/r, serialize with calibrated12 band-Hilbert ordering and construct
 outward-band coordinate targets. Point cuts and target construction affect the
 training population/objective; preserve them when comparing these recipes.
 
-Required split trees are `features_{pretrain,test}`, `seg_target_{pretrain,test}`
+Their required split trees are `features_{pretrain,test}`, `seg_target_{pretrain,test}`
 and `reg_target_{pretrain,test}`. The trainer uses the `test` trees for
 validation, so reserve separate source events for final downstream evaluation.
 `reader_type: ragged_mmap` selects RaggedMmap input; `ragged_npy` is the legacy
 values/offsets reader. Geometry recipes additionally need aligned
 `cluster_geometry_context_target_{pretrain,test}` with the selected four
 auxiliary features.
+
+For the background-merged HDF5 skim, point `CLAS12_PRETRAIN_DATA` at the
+published directory containing `manifest.json` and run the command below with
+`--config scale_w64_d12_bgmerged_hdf5`. This width-64 position-only profile
+uses all retained events in `train` and validates on `validation`. Each cluster
+contributes one xyz token, including noise clusters. HDF5 has no 50-cluster
+cut or 10-million-event limit in this profile. Longer events increase the
+cost of the pairwise neighbor calculation. Measure batch size on your hardware.
+
+Other pretraining profiles can opt in with `reader_type: hdf5` and
+`limit_data: false`. The usual geometry options read direction, length and
+pitch from cluster rows. The reader opens shards lazily in each worker and
+only reads the requested fields. `CVTClusterEvents.read(i, fields)` in
+`fm4npp.datasets.cvt_hdf5` also accepts event, particle and native reco
+fields, sliced with each collection's own offsets. The loader requires h5py.
+
+To repeat the real-event parity check with the single-part qualification skim:
+
+```bash
+CVT_HDF5_PILOT=/path/to/published/pilot-root \
+  python -m unittest train.pretrain.tests.test_cvt_hdf5
+```
 
 Set paths from the repository root in the [CUDA environment](../../SETUP.md):
 

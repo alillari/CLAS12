@@ -611,6 +611,7 @@ def collate_summary(manifest: dict[str, Any]) -> None:
                     "adapter_relative_resolution_68": momentum.get("relative_resolution_68"),
                     "adapter_relative_bias": momentum.get("relative_bias"),
                     "adapter_tail_fraction_10pct": momentum.get("relative_tail_fraction_10pct"),
+                    "adapter_cvt_matched_tracks": summary_data.get("adapter_cvt_matched_tracks"),
                     "adapter_to_cvt_resolution_ratio": summary_data.get("adapter_to_cvt_resolution_ratio"),
                 })
             table_row.update(physics_by_run[run["run_id"]]["table"])
@@ -724,6 +725,7 @@ def collate_seed_ablation_summary(summary_dir: Path, table_rows: list[dict[str, 
         "best_val_loss",
         "adapter_relative_resolution_68",
         "adapter_tail_fraction_10pct",
+        "adapter_cvt_matched_tracks",
         "adapter_to_cvt_resolution_ratio",
     ]
     rows = [

@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -275,6 +276,27 @@ class ValidationLossTrainingTest(unittest.TestCase):
             trainer.down_model = self.regression_head('attention')
             with self.assertRaisesRegex(ValueError, 'pooling weights'):
                 trainer.load_checkpoint(path, inference=True, use_pretrained_backbone=False)
+
+    def test_multirank_launch_fails_before_training_side_effects(self):
+        from train.downstream.track_regression_experiment import train_experiment
+
+        with patch.dict(os.environ, WORLD_SIZE='2'), \
+             patch('torch.distributed.init_process_group') as init_group, \
+             patch('torch.cuda.set_device') as set_device:
+            for launch in (lambda: train_experiment(None), lambda: DownstreamTrainer(None, None)):
+                with self.assertRaisesRegex(RuntimeError, 'supports one process'):
+                    launch()
+            init_group.assert_not_called()
+            set_device.assert_not_called()
+
+    def test_existing_multirank_group_is_rejected_without_launcher_environment(self):
+        from train.downstream.track_regression_trainer import require_single_process
+
+        with patch.dict(os.environ, WORLD_SIZE='1'), \
+             patch('torch.distributed.is_initialized', return_value=True), \
+             patch('torch.distributed.get_world_size', return_value=2):
+            with self.assertRaisesRegex(RuntimeError, 'supports one process'):
+                require_single_process()
 
     def test_defaults_and_retired_recipes(self):
         validate_regression_training({'task': 'mom'})

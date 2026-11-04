@@ -36,7 +36,8 @@ Backbone pretraining's coordinate MSE does not use this target normalizer either
 `scripts/compute_regression_target_stats.py` scans source events in order and
 accepted non-background segment labels in sorted order. It selects the first
 accepted tracks up to `--limit-size`, matching the ordinary event-segment
-loader's ordering for valid data and identical filters.
+loader's ordering with the same filters. Selected tracks consume the label
+budget even when their momentum targets are partially or entirely missing.
 
 Each track contributes **one target vector**, formed by averaging finite copies
 of the target stored on its clusters. Long tracks do not receive more statistical
@@ -44,12 +45,14 @@ weight than short tracks. Statistics use population variance (`ddof=0`) across
 these track vectors. For COATJAVA candidates, the target copies come from the
 candidate's dominant matched truth segment after the purity requirement.
 
-The helper skips a track if any required target component has no finite copy.
-It checks aligned event/hit counts and target layout, but it does not prove that
-a separately prepared manifest or custom loader selected identical track IDs.
-For custom/random cohorts, compute statistics from those exact IDs rather than
-using the ordinary prefix helper. A skipped/short cohort must be investigated;
-do not change filters just to obtain the requested count.
+Each component uses the selected tracks with at least one finite copy of
+that component. The JSON records the number of selected tracks in
+`selected_events` and the contributing track counts in `count`. The helper
+fails if a component has no finite observations in that cohort. New statistics
+files use version 3. Regenerate older statistics for future runs if the training
+cohort contains missing labels, since older generators could include later
+tracks. For custom or random cohorts, compute statistics from the exact
+selected track IDs.
 
 ## Command options
 

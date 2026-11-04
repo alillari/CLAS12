@@ -29,9 +29,9 @@ from train.downstream.validation_config import configure_validation
 from train.downstream.physics_checkpoints import MOMENTUM_TASKS, resolve_config as resolve_physics_config, selection_mode
 
 try:
-    from .track_regression_trainer import DownstreamTrainer
+    from .track_regression_trainer import DownstreamTrainer, require_single_process
 except ImportError:
-    from track_regression_trainer import DownstreamTrainer
+    from track_regression_trainer import DownstreamTrainer, require_single_process
 
 
 MODEL2CKPT = {
@@ -201,6 +201,7 @@ def train_experiment(
 ) -> dict[str, Any]:
     """Train one resolved downstream track-regression configuration."""
 
+    require_single_process()
     params = resolve_params(config)
     set_global_seed(
         getattr(params, "seed", None),

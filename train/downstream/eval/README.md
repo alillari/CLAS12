@@ -266,6 +266,14 @@ After per-run evaluations finish, campaign collation writes:
 - `<campaign-dir>/summary/delta_p_over_p_fits.csv` when per-run fit files exist
 - `<campaign-dir>/summary/delta_theta_fits.csv` when per-run fit files exist
 
+The adapter/CVT resolution ratio uses the central 68% widths of relative
+momentum error on tracks with finite residuals for both methods and nonzero
+truth momentum. `adapter_cvt_matched_tracks` reports this population in the
+summary, comparison headline, and campaign run table. Individual methods retain
+their own coverage counts. The ratio is null when no tracks match or the
+matched CVT width is zero. Rerun evaluation on the saved checkpoint to replace
+an older ratio that has no matched-track count.
+
 The analysis writes:
 
 - `predictions.csv.gz`: one row per evaluated track, including entrance adapter

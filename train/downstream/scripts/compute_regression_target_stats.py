@@ -13,7 +13,7 @@ REPOSITORY_ROOT = ROOT.parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from fm4npp.datasets.dataset import RaggedMmap, dominant_truth_segment
+from fm4npp.datasets.dataset import RaggedMmap, accepted_segment_labels, dominant_truth_segment
 from regression_utils import (
     REGRESSION_TARGET_COLUMNS,
     canonical_regression_task,
@@ -66,34 +66,23 @@ def _finite_segment_target(values, task):
         values = transform_regression_target_numpy(values, task)
     finite = np.isfinite(values)
     counts = finite.sum(axis=0)
-    if np.any(counts == 0):
-        return None
+    safe = np.where(finite, values, 0.0)
     if canonical_regression_task(task) == "phi":
-        safe = np.where(finite, values, 0.0)
-        return np.arctan2(
+        target = np.arctan2(
             np.where(finite, np.sin(safe), 0.0).sum(axis=0),
             np.where(finite, np.cos(safe), 0.0).sum(axis=0),
         )
-    return np.where(finite, values, 0.0).sum(axis=0) / counts
-
-
-def _selected_event_segments(seg, min_clusters, exact_clusters, ignore_label=-1):
-    out = []
-    for label in sorted(int(x) for x in np.unique(seg) if int(x) != int(ignore_label)):
-        n_points = int(np.sum(seg == label))
-        if exact_clusters:
-            if n_points != min_clusters:
-                continue
-        elif n_points < min_clusters:
-            continue
-        out.append(label)
-    return out
+    else:
+        target = safe.sum(axis=0) / np.maximum(counts, 1)
+    return np.where(counts > 0, target, np.nan)
 
 
 def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, task=None,
                   adapter_sample_mode="event_segment", segment_target_source="mctrue",
                   segment_min_clusters=12, segment_exact_clusters=False,
                   segment_min_truth_purity=1.0):
+    if limit_size is not None and limit_size < 1:
+        raise ValueError("limit_size must be positive")
     reg = RaggedMmap(data_root / f"reg_target_{split}")
     features = RaggedMmap(data_root / f"features_{split}")
     if len(reg) != len(features):
@@ -149,15 +138,14 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
                     or labels.shape[0] != feature_values.shape[0]
                     or truth_labels.shape[0] != feature_values.shape[0]):
                 raise ValueError(f"features/reg_target/segment-target hit counts differ for event {event_idx}")
-            for label in _selected_event_segments(
+            for label, n_points in accepted_segment_labels(
                 labels,
                 min_clusters=int(segment_min_clusters),
                 exact_clusters=bool(segment_exact_clusters),
             ):
-                mask = labels == int(label)
-                n_points = int(np.sum(mask))
                 if n_points < low_thr or n_points > high_thr:
                     continue
+                mask = labels == label
                 target_values = values[mask]
                 if coat is not None:
                     dominant = dominant_truth_segment(truth_labels[mask])
@@ -168,8 +156,6 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
                         continue
                     target_values = values[mask & (truth_labels == truth_label)]
                 target = _finite_segment_target(target_values, task)
-                if target is None:
-                    continue
                 update_running_stats(count, mean, m2, target.reshape(1, -1))
                 selected_count += 1
                 if limit_size is not None and selected_count == int(limit_size):
@@ -181,9 +167,12 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
     else:
         raise ValueError("adapter_sample_mode must be 'track_legacy' or 'event_segment'")
 
-    variance = m2 / np.maximum(count, 1)
+    missing = [name for name, n in zip(output_columns, count) if n == 0]
+    if missing:
+        raise ValueError(f"No finite training targets in the selected cohort for: {', '.join(missing)}")
+    variance = m2 / count
     return {
-        "version": 2 if task is not None else 1,
+        "version": 3,
         "data_root": str(data_root.resolve()),
         "split": split,
         "task": task or "raw",

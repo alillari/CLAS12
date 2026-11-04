@@ -7,7 +7,9 @@ import numpy as np
 import torch
 
 from train.downstream.eval.evaluate_track_regression import (
-    adapter_to_cvt_resolution_ratio,
+    matched_resolution_comparison,
+    calculate_metrics,
+    build_campaign_headline_rows,
     attach_sample_metadata,
     aux_row_for_sample,
     resolve_charge,
@@ -120,19 +122,33 @@ class EvaluationSampleIdentityTest(unittest.TestCase):
         self.assertEqual(charges.tolist(), [1])
         self.assertEqual(summary["records_missing_metadata_charge"], 1)
 
-    def test_missing_cvt_momentum_metrics_have_no_ratio(self):
-        methods = {
-            "adapter": {"momentum": {"relative_resolution_68": 0.12}},
-            "cvt": {"n": 0},
-        }
-        self.assertIsNone(adapter_to_cvt_resolution_ratio(methods))
+    def test_resolution_ratio_compares_only_shared_finite_residuals(self):
+        # Rows 2 and 3 are valid for only one method. Row 4 has zero truth
+        # momentum and row 5 has missing truth.
+        truth = np.zeros((6, 3))
+        truth[:, 0] = [1, 1, 1, 1, 0, np.nan]
+        adapter = np.zeros_like(truth)
+        cvt = np.zeros_like(truth)
+        adapter[:, 0] = [.9, 1.1, 12, np.nan, 1, 1]
+        cvt[:, 0] = [.8, 1.2, np.nan, 7, 1, 1]
+        predictions = {"adapter": adapter, "cvt": cvt}
+        comparison = matched_resolution_comparison(truth, predictions)
+        self.assertEqual(comparison["adapter_cvt_matched_tracks"], 2)
+        self.assertAlmostEqual(comparison["adapter_to_cvt_resolution_ratio"], .5)
+        summary = {"methods": {k: calculate_metrics(truth, p, [.1]) for k, p in predictions.items()},
+                   **comparison}
+        self.assertEqual([m["n"] for m in summary["methods"].values()], [4, 4])
+        row = next(row for row in build_campaign_headline_rows({}, summary, [])
+                   if row["record_type"] == "comparison_summary")
+        self.assertEqual(row["adapter_cvt_matched_tracks"], 2)
+        self.assertAlmostEqual(row["adapter_to_cvt_resolution_ratio"], .5)
 
-    def test_available_cvt_momentum_metrics_compute_ratio(self):
-        methods = {
-            "adapter": {"momentum": {"relative_resolution_68": 0.12}},
-            "cvt": {"momentum": {"relative_resolution_68": 0.24}},
-        }
-        self.assertEqual(adapter_to_cvt_resolution_ratio(methods), 0.5)
+    def test_undefined_resolution_ratio_still_reports_matched_count(self):
+        truth = np.ones((3, 3))
+        for cvt, expected_count in [(np.full_like(truth, np.nan), 0), (truth, 3)]:
+            comparison = matched_resolution_comparison(truth, {"adapter": truth, "cvt": cvt})
+            self.assertIsNone(comparison["adapter_to_cvt_resolution_ratio"])
+            self.assertEqual(comparison["adapter_cvt_matched_tracks"], expected_count)
 
 
 if __name__ == "__main__":

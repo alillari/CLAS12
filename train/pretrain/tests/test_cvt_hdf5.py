@@ -80,7 +80,6 @@ class HDF5PretrainingTest(unittest.TestCase):
                     for prefix, key in (
                         ("features", "clusters/xyz"),
                         ("seg_target", "clusters/primary_segment"),
-                        ("reg_target", "clusters/xyz"),
                     ):
                         path = root / f"{prefix}_{split}"
                         values = [row[key] for row in rows]
@@ -98,6 +97,27 @@ class HDF5PretrainingTest(unittest.TestCase):
                     self.assertEqual(len(loader.dataset), 1)
                     _, segments, _ = next(iter(loader))
                     self.assertEqual(segments.tolist(), [[label] * 7])
+                self.assertFalse((root / "reg_target_pretrain").exists())
+
+    def test_singleton_and_chunked_train_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            long = event(9, 2)
+            long["clusters/primary_segment"] = np.arange(9, dtype=np.int32)
+            publish_fixture(root, {"train": [[event(1, 3), long]], "validation": [[long]]})
+            p = loaders_params(root)
+            p.len_chunk = 4
+            p.chunk_training = True
+            train, _, valid, _ = get_data_loader(p, distributed=False)
+            x, segment, neighbors = train.dataset[0]
+            self.assertEqual((x.shape, segment.shape, neighbors.shape), ((1, 3), (1,), (1, 3)))
+            self.assertTrue((neighbors == -100).all())
+            for _ in range(8):
+                x, labels, _ = train.dataset[1]
+                self.assertEqual(len(x), 4)
+                self.assertEqual(sorted(labels.tolist()), list(range(int(labels.min()), int(labels.min()) + 4)))
+            self.assertEqual([sorted(valid.dataset[i][1].tolist()) for i in range(len(valid.dataset))],
+                             [[0, 1, 2, 3], [4, 5, 6, 7]])
 
     def test_reader_and_loader_across_parts(self):
         with tempfile.TemporaryDirectory() as tmp:

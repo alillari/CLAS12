@@ -73,10 +73,9 @@ From the repository root in a compatible CUDA environment:
 
 ```bash
 export CLAS12_PRETRAIN_DATA=/absolute/path/to/cluster_event_product
-export CLAS12_PRETRAIN_STATS=/absolute/path/to/pretraining_stats
 export CLAS12_ARTIFACT_ROOT=/absolute/path/to/result_deep_storage
 
-python -m train.pretrain.nppmamba.train_multi_gpu_mamba1 \
+python -m train.pretrain \
   --yaml_config scripts/configs/mamba_chinchilla_sweep.yaml \
   --config scale_w512_d12_chinchilla --run_num seed42 \
   --root_dir "$CLAS12_ARTIFACT_ROOT/pretrain"
@@ -87,30 +86,11 @@ initializes Torch's seed to 42. For a controlled seed change, inspect that setup
 rather than renaming the run. Render a copy of the YAML when changing model or
 optimizer options, as shown in the [pretraining workflow](pretrain/README.md).
 
-The stats directory must contain `loss_bin_pp.pkl` and `loss_weight_pp.pkl`,
-which this trainer loads even with `loss_reweight: false`. These compatibility
-inputs are separate from downstream target-standardization JSON. For an
-unweighted run, a bin-edge array `[0.0, 1e9]` and unit-weight array `[1.0]` can
-be written as pickle files; they do not fit or change coordinate normalization.
-For a new, unweighted run, create those files before launching:
-
-```bash
-python - <<'PYSTATS'
-import os, pickle
-from pathlib import Path
-import numpy as np
-root = Path(os.environ["CLAS12_PRETRAIN_STATS"])
-root.mkdir(parents=True, exist_ok=True)
-for name, values in [("loss_bin_pp.pkl", [0.0, 1e9]), ("loss_weight_pp.pkl", [1.0])]:
-    with (root / name).open("xb") as stream:
-        pickle.dump(np.asarray(values), stream)
-PYSTATS
-```
-
-Exclusive creation avoids overwriting an existing weighting recipe. Do not
-substitute unit weights when intentionally enabling loss reweighting. See
-[pretraining setup](pretrain/README.md) for required RaggedMmap trees and
-auxiliary sidecars.
+Set `CLAS12_PRETRAIN_STATS` (or the recipe's `stat_dir`) only for
+multiplicity-weighted pretraining. With `loss_reweight: true` the trainer
+loads the bin edges from `loss_bin_pp.pkl` and the corresponding event
+weights from `loss_weight_pp.pkl`. The unweighted profiles need neither file.
+See [pretraining setup](pretrain/README.md) for the HDF5 and mmap profiles.
 
 The trainer writes under `<root_dir>/<config>/<run_num>/training_checkpoints/`:
 `ckpt.tar` is the latest state and `ckpt_best.tar` is validation-selected.

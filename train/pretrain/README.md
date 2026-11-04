@@ -27,8 +27,7 @@ eta/phi/r, serialize with calibrated12 band-Hilbert ordering and construct
 outward-band coordinate targets. Point cuts and target construction affect the
 training population/objective; preserve them when comparing these recipes.
 
-Their required split trees are `features_{pretrain,test}`, `seg_target_{pretrain,test}`
-and `reg_target_{pretrain,test}`. The trainer uses the `test` trees for
+Their required split trees are `features_{pretrain,test}` and `seg_target_{pretrain,test}`. The trainer uses the `test` trees for
 validation, so reserve separate source events for final downstream evaluation.
 `reader_type: ragged_mmap` selects RaggedMmap input; `ragged_npy` is the legacy
 values/offsets reader. Geometry recipes additionally need aligned
@@ -57,30 +56,31 @@ CVT_HDF5_PILOT=/path/to/published/pilot-root \
   python -m unittest train.pretrain.tests.test_cvt_hdf5
 ```
 
-Set paths from the repository root in the [CUDA environment](../../SETUP.md):
+Run the HDF5 profile from the repository root in the [CUDA environment](../../SETUP.md):
 
 ```bash
-export CLAS12_PRETRAIN_DATA=/absolute/path/to/cluster_event_product
-export CLAS12_PRETRAIN_STATS=/absolute/path/to/pretraining_stats
 export CLAS12_ARTIFACT_ROOT=/absolute/path/to/result_deep_storage
+python -m train.pretrain --data-root /absolute/path/to/published/cluster_skim
 ```
 
-Before launching, create `loss_bin_pp.pkl` and `loss_weight_pp.pkl` using the
-[unweighted compatibility-file recipe](../BACKBONE_RECIPES.md#run-pretraining).
-The loader requires both even with `loss_reweight: false`. They do not fit
-coordinate normalization and are separate from downstream momentum target
-statistics. Preserve existing files if intentionally using loss weights.
+The default profile is `scale_w64_d12_bgmerged_hdf5`. Runs write to
+`$CLAS12_ARTIFACT_ROOT/pretrain/<config>/<run_num>`. For another recipe,
+pass `--yaml_config` and `--config`; `--data-root` overrides its data path.
+The original module name remains available to existing launchers.
+Only runs with `loss_reweight: true` need `loss_bin_pp.pkl` and
+`loss_weight_pp.pkl` in `stat_dir`.
 
-```bash
-python -m train.pretrain.nppmamba.train_multi_gpu_mamba1 \
-  --yaml_config scripts/configs/mamba_chinchilla_sweep.yaml \
-  --config scale_w512_d12_chinchilla --run_num seed42 \
-  --root_dir "$CLAS12_ARTIFACT_ROOT/pretrain"
-```
+Only batches with eligible outward-neighbor targets advance the optimizer
+and scheduler. Validation reports mean squared error over the valid target
+coordinates in the evaluated batches. A validation set with no eligible
+targets fails before checkpoint selection.
+Resuming a checkpoint with the older batch-averaged metric starts a fresh
+best-loss comparison at the next validation. Model and optimizer state resume
+as usual. With chunking enabled, training takes a random contiguous window
+of at most `len_chunk` cluster rows before ordering and target construction.
 
 `run_num` names the output; it does not set the seed. The dataset module
-initializes Torch's seed to 42. The public entrypoint is a single-process CUDA
-workflow despite its filename; do not infer multi-process launch support.
+initializes Torch's seed to 42. The documented command starts a single training process.
 
 For intentional recipe changes, copy the chosen YAML to an external run/config
 directory, edit the named profile and pass that copy via `--yaml_config`.

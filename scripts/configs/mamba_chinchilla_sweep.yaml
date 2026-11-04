@@ -1,6 +1,7 @@
 # Chinchilla width-dependent budgets; see train/BACKBONE_RECIPES.md.
 # Training values retain Mike's sweep recipe; input/output paths are portable.
-# Required: CLAS12_PRETRAIN_DATA, CLAS12_PRETRAIN_STATS, CLAS12_ARTIFACT_ROOT.
+# CLAS12_PRETRAIN_DATA and CLAS12_ARTIFACT_ROOT select data and output paths.
+# CLAS12_PRETRAIN_STATS is used only with loss_reweight: true.
 
 default: &default
   # === Data Paths (UPDATE THESE) ===

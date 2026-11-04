@@ -24,7 +24,7 @@ Use the following prepared CLAS12 event products:
 
 | Root | Required contents and role |
 | --- | --- |
-| `CLAS12_PRETRAIN_DATA` | `features`, `seg_target` and `reg_target` trees for both `pretrain` and `test`. Its test trees select the backbone checkpoint. |
+| `CLAS12_PRETRAIN_DATA` | `features` and `seg_target` trees for both `pretrain` and `test`. Its test trees select the backbone checkpoint. |
 | `CLAS12_DATA_ROOT` | Adapter training `features_pretrain`, `seg_target_pretrain`, `reg_target_pretrain`; can share the pretraining product's training events. |
 | `CLAS12_VALIDATION_DATA_ROOT` | Adapter checkpoint-selection `features_test`, `seg_target_test`, `reg_target_test`. |
 | `CLAS12_EVAL_DATA_ROOT` | Final evaluation test trees plus `aux_target_test` and `metadata.json` declaring `aux_target_layout` for momentum/CVT comparison. |
@@ -43,7 +43,6 @@ export CLAS12_EVAL_DATA_ROOT=/absolute/path/to/final_evaluation_product
 export CLAS12_ARTIFACT_ROOT=/absolute/path/to/result_deep_storage
 
 export EXAMPLE_ROOT="$CLAS12_ARTIFACT_ROOT/backbone_to_adapters_w512"
-export CLAS12_PRETRAIN_STATS="$EXAMPLE_ROOT/pretrain_stats"
 export TRAIN_ROOT="$EXAMPLE_ROOT/adapters"
 export MODEL_YAML="$TRAIN_ROOT/config/model.yaml"
 export CLAS12_MOMENTUM_STATS="$TRAIN_ROOT/config/momentum_stats_train50k.json"
@@ -56,25 +55,12 @@ cp scripts/configs/clas12_adapter_recipes.yaml "$MODEL_YAML"
 Use a new `EXAMPLE_ROOT` for a new run. Keep these environment variables set for
 all commands; the copied configurations resolve input and output paths from them.
 
-## 2. Prepare pretraining compatibility files and pretrain
+## 2. Pretrain the backbone
 
-This recipe has `loss_reweight: false`. The trainer nevertheless opens two
-pickle files at startup. Create unit-weight compatibility inputs in the new
-directory; these do not fit coordinate or momentum normalization:
+The unweighted recipe runs directly on the prepared data:
 
 ```bash
-python - <<'PYSTATS'
-import os, pickle
-from pathlib import Path
-import numpy as np
-root = Path(os.environ["CLAS12_PRETRAIN_STATS"])
-root.mkdir(parents=True, exist_ok=True)
-for name, values in [("loss_bin_pp.pkl", [0.0, 1e9]), ("loss_weight_pp.pkl", [1.0])]:
-    with (root / name).open("xb") as stream:
-        pickle.dump(np.asarray(values), stream)
-PYSTATS
-
-python -m train.pretrain.nppmamba.train_multi_gpu_mamba1 \
+python -m train.pretrain \
   --yaml_config "$EXAMPLE_ROOT/config/pretraining.yaml" \
   --config scale_w512_d12_chinchilla --run_num seed42 \
   --root_dir "$EXAMPLE_ROOT/pretrain"
@@ -98,7 +84,7 @@ python train/pretrain/plot_pretraining_history.py \
 
 `pretraining_history.png/.pdf` shows raw logged loss and LR versus updates, with
 the best validation observation marked. Logged training losses are sampled
-batch losses; validation losses average the configured validation batches.
+batch losses; validation loss averages the squared errors of eligible target coordinates.
 The LR is the logged schedule value; rank-based matrix scaling is specified
 in the recipe. Do not interpret it as every parameter group's applied LR.
 

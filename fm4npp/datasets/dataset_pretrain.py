@@ -150,7 +150,10 @@ class TPCBatchDataset(Dataset):
             split = split or 'pretrain'
             self.memmap_feature = reader_cls(os.path.join(data_root, f'features_{split}'))
             self.memmap_seg_target = reader_cls(os.path.join(data_root, f'seg_target_{split}'))
-            self.memmap_reg_target = reader_cls(os.path.join(data_root, f'reg_target_{split}'))
+            # Pretraining derives its targets from positions. Preserve the legacy
+            # attribute for consumers of an existing regression sidecar.
+            reg_path = os.path.join(data_root, f'reg_target_{split}')
+            self.memmap_reg_target = reader_cls(reg_path) if os.path.isdir(reg_path) else None
             if use_aux_features:
                 self.memmap_aux_geom = reader_cls(os.path.join(data_root, f'cluster_geometry_context_target_{split}'))
         
@@ -204,6 +207,8 @@ class TPCBatchDataset(Dataset):
         
         self.train = train
         self.chunk_training = chunk_training
+        if chunk_training and len_chunk < 1:
+            raise ValueError("len_chunk must be positive for chunk training")
         if self.hdf5 is None:
             self.filter_data(low_thr=1, high_thr=50)
         else:
@@ -327,27 +332,6 @@ class TPCBatchDataset(Dataset):
         ]
         print(f'[INFO] Chunking validation: {len(self.idxlist)} events -> {len(self.idxlist_chunking)} chunks')
         
-    def cut_chunk(self, sequence, maxlen):
-        """
-        Apply chunk-based training. 
-        If seq_len > maxlen, cut a sub-chunk from a random location.
-        If the seq_len <= maxlen, return as it is.
-        """
-        N, D = sequence.shape
-        start_idx = 0
-        
-        if maxlen > N:
-            return sequence, start_idx
-        
-        else:
-            # Select a random starting position
-            start_idx = torch.randint(0, N - self.low_thr + 1, (1,)).item()
-            
-            # Slice out the chunk
-            chunk = sequence[start_idx : start_idx + maxlen]
-            return chunk, start_idx
-        
-        
     def __len__(self):
         if not self.train and self.chunk_training:
             return len(self.idxlist_chunking)   
@@ -419,16 +403,16 @@ class TPCBatchDataset(Dataset):
 
             aux_features = torch.cat([s_r, s_phi, s_z, extra], dim=-1)  # (1, N, 4) or (1, N, 5) for 'both'
 
-        # print(features.shape, target.shape)
-        if not self.train and self.chunk_training:
-            features = features[:, start_idx : start_idx+self.len_chunk]
-            target = target[:, start_idx : start_idx+self.len_chunk]
+        if self.chunk_training:
+            if self.train:
+                last_start = features.size(1) - self.len_chunk
+                start_idx = torch.randint(last_start + 1, ()).item() if last_start > 0 else 0
+            window = slice(start_idx, start_idx + self.len_chunk)
+            features = features[:, window]
+            target = target[:, window]
             if self.use_aux_features:
-                aux_features = aux_features[:, start_idx : start_idx+self.len_chunk]
-            # print(features.shape, target.shape)
-            
-        # features, target = set_simpler(features.unsqueeze(0), target.unsqueeze(0), nleave = self.nleave, npoint_lower_thr = self.npoint_lower_thr)
-        
+                aux_features = aux_features[:, window]
+
         ## To polar representation — CLAS12: input is 3-column (x,y,z), no energy.
         ## cartesian_to_polar_batched returns [eta, phi, r].
         polar_features = cartesian_to_polar_batched(features)
@@ -547,8 +531,7 @@ def _split_loader(params, distributed, *, train):
         data_fraction=getattr(params, 'data_fraction', 1.0) if train else 1.0,
         nleave=params.nleave, order=params.order, num_pred_points=params.klen,
         chunk_training=params.chunk_training,
-        # Legacy validation used the constructor's 512-token chunk size.
-        len_chunk=getattr(params, 'len_chunk', 512) if train or reader_type == 'hdf5' else 512,
+        len_chunk=getattr(params, 'len_chunk', 512),
         voxelize=getattr(params, 'voxelize', True), bin_dir=getattr(params, 'stat_dir', ''),
         space_filling_order=getattr(params, 'space_filling_order', None),
         space_filling_curve=getattr(params, 'space_filling_curve', 'z'),

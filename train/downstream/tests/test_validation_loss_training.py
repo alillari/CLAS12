@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,7 @@ import numpy as np
 import torch
 
 from train.downstream.eval.evaluate_track_regression import DownstreamTrainer
-from train.downstream.model import RegressionTargetNormalizer
+from train.downstream.model import MambaTrackRegressionHead, RegressionTargetNormalizer
 from train.downstream.physics_checkpoints import resolve_config, selection_mode
 from train.downstream.regression_utils import validate_regression_training
 
@@ -21,6 +22,8 @@ class Params(dict):
 
 
 class Head(torch.nn.Module):
+    pooling = "mean"
+
     def __init__(self):
         super().__init__()
         self.offset = torch.nn.Parameter(torch.tensor(0.))
@@ -37,6 +40,7 @@ class ValidationLossTrainingTest(unittest.TestCase):
         trainer.physics_config = resolve_config('mom')
         trainer.checkpoint_selection = 'validation_loss'
         trainer.device = 'cpu'
+        trainer.use_pretrained_backbone = False
         trainer.down_model = Head()
         trainer.model = torch.nn.Identity()
         trainer.down_optimizer = torch.optim.SGD(trainer.down_model.parameters(), lr=.1)
@@ -135,6 +139,34 @@ class ValidationLossTrainingTest(unittest.TestCase):
             self.assertGreater(trainer.validate_end_to_end_one_epoch(), 0.)
             self.assertEqual(len(trainer.down_results['val']), 1)
 
+    def test_validation_weights_terms_across_short_partial_and_unlabeled_batches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            nan = float('nan')
+            reg = torch.tensor([[0., 0., 0.], [0., nan, nan], [9., nan, nan], [nan, nan, nan]])
+            points = torch.zeros_like(reg).unsqueeze(1)
+            reg = reg.unsqueeze(1)
+            for option, expected in [('mae', 9. / 5), ('mse', 81. / 5), ('huber', 8.5 / 5)]:
+                trainer.regression_loss = option
+                for batch_size in (1, 2, 3, 4):
+                    with self.subTest(option=option, batch_size=batch_size):
+                        trainer.val_data_loader = [
+                            dict(points=x, reg_target=y)
+                            for x, y in zip(points.split(batch_size), reg.split(batch_size))
+                        ]
+                        self.assertAlmostEqual(trainer.validate_end_to_end_one_epoch(), expected)
+
+    def test_validation_without_any_labeled_terms_cannot_save_a_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            trainer.global_step = 1
+            trainer.val_data_loader = [dict(points=torch.ones(2, 1, 3),
+                                            reg_target=torch.full((2, 1, 3), float('nan')))]
+            with self.assertRaisesRegex(RuntimeError, 'no valid regression loss terms'):
+                trainer._finish_validation(False, 'selected.pth')
+            self.assertFalse(Path(tmp, 'selected.pth').exists())
+            self.assertTrue(trainer.down_model.training)
+
     def test_final_validation_when_epoch_cap_precedes_interval(self):
         with tempfile.TemporaryDirectory() as tmp:
             trainer = self.trainer(tmp)
@@ -179,6 +211,92 @@ class ValidationLossTrainingTest(unittest.TestCase):
             self.assertEqual(trainer.loaded_checkpoint_metadata['checkpoint_selection'], 'physics')
             with self.assertRaisesRegex(ValueError, 'Cannot resume width-selected training'):
                 trainer.load_checkpoint(path, inference=False)
+
+    @staticmethod
+    def regression_head(pooling):
+        return MambaTrackRegressionHead(
+            input_dim=64, embed_dim=64, num_layers=1, num_feature_layers=2,
+            num_embedder_layers=0, embed_method='pos_only', pooling=pooling,
+        )
+
+    def test_checkpoint_requires_trained_mode_and_pooling_for_evaluation_and_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            for frozen, pooling in [(True, 'attention'), (False, 'mean')]:
+                trainer.down_model = self.regression_head(pooling)
+                trainer.use_pretrained_backbone = frozen
+                path = trainer._save_checkpoint('adapter.pth', 0, 0.)
+                checkpoint = torch.load(path, weights_only=False)
+                self.assertIs(checkpoint['use_pretrained_backbone'], frozen)
+                self.assertEqual(checkpoint['pooling'], pooling)
+                for inference in (True, False):
+                    with self.subTest(frozen=frozen, pooling=pooling, inference=inference):
+                        trainer.down_model = self.regression_head(pooling)
+                        trainer.load_checkpoint(path, inference=inference, use_pretrained_backbone=frozen)
+                        for name, weight in trainer.down_model.state_dict().items():
+                            torch.testing.assert_close(weight, checkpoint['model_state_dict'][name])
+                        with self.assertRaisesRegex(ValueError, 'input mode mismatch'):
+                            trainer.load_checkpoint(path, inference=inference, use_pretrained_backbone=not frozen)
+                        other_pooling = 'mean' if pooling == 'attention' else 'attention'
+                        trainer.down_model = self.regression_head(other_pooling)
+                        with self.assertRaisesRegex(ValueError, 'pooling mismatch'):
+                            trainer.load_checkpoint(path, inference=inference, use_pretrained_backbone=frozen)
+
+    def test_legacy_checkpoint_uses_saved_mode_and_scorer_weights(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            trainer.down_model = self.regression_head('attention')
+            path = trainer._save_checkpoint('adapter.pth', 0, 0.)
+            checkpoint = torch.load(path, weights_only=False)
+            del checkpoint['use_pretrained_backbone'], checkpoint['pooling'], checkpoint['validation_loss_reduction']
+            checkpoint['model_state_dict'] = {
+                'module.' + key: value for key, value in checkpoint['model_state_dict'].items()
+            }
+            for params, frozen in [({'pretrained_ckpt': None}, False),
+                                   ({'params': {'pretrained_ckpt': '/old/backbone.pth'}}, True)]:
+                checkpoint['params'] = params
+                torch.save(checkpoint, path)
+                trainer.down_model = self.regression_head('attention')
+                trainer.load_checkpoint(path, inference=True, use_pretrained_backbone=frozen)
+                with self.assertRaisesRegex(ValueError, 'validation loss reduction'):
+                    trainer.load_checkpoint(path, inference=False, use_pretrained_backbone=frozen)
+                with self.assertRaisesRegex(ValueError, 'input mode mismatch'):
+                    trainer.load_checkpoint(path, inference=True, use_pretrained_backbone=not frozen)
+                trainer.down_model = self.regression_head('mean')
+                with self.assertRaisesRegex(ValueError, 'pooling mismatch'):
+                    trainer.load_checkpoint(path, inference=True, use_pretrained_backbone=frozen)
+
+            checkpoint['params'] = {}
+            torch.save(checkpoint, path)
+            with self.assertRaisesRegex(ValueError, 'does not record its input mode'):
+                trainer.load_checkpoint(path, inference=True, use_pretrained_backbone=False)
+            checkpoint['params'] = {'pooling': 'attention', 'pretrained_ckpt': None}
+            del checkpoint['model_state_dict']['module.pool_score.bias']
+            torch.save(checkpoint, path)
+            trainer.down_model = self.regression_head('attention')
+            with self.assertRaisesRegex(ValueError, 'pooling weights'):
+                trainer.load_checkpoint(path, inference=True, use_pretrained_backbone=False)
+
+    def test_multirank_launch_fails_before_training_side_effects(self):
+        from train.downstream.track_regression_experiment import train_experiment
+
+        with patch.dict(os.environ, WORLD_SIZE='2'), \
+             patch('torch.distributed.init_process_group') as init_group, \
+             patch('torch.cuda.set_device') as set_device:
+            for launch in (lambda: train_experiment(None), lambda: DownstreamTrainer(None, None)):
+                with self.assertRaisesRegex(RuntimeError, 'supports one process'):
+                    launch()
+            init_group.assert_not_called()
+            set_device.assert_not_called()
+
+    def test_existing_multirank_group_is_rejected_without_launcher_environment(self):
+        from train.downstream.track_regression_trainer import require_single_process
+
+        with patch.dict(os.environ, WORLD_SIZE='1'), \
+             patch('torch.distributed.is_initialized', return_value=True), \
+             patch('torch.distributed.get_world_size', return_value=2):
+            with self.assertRaisesRegex(RuntimeError, 'supports one process'):
+                require_single_process()
 
     def test_defaults_and_retired_recipes(self):
         validate_regression_training({'task': 'mom'})

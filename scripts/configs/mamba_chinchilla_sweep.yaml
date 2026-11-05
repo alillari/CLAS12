@@ -1,8 +1,10 @@
 # Chinchilla width-dependent budgets; see train/BACKBONE_RECIPES.md.
 # Training values retain Mike's sweep recipe; input/output paths are portable.
-# Required: CLAS12_PRETRAIN_DATA, CLAS12_PRETRAIN_STATS, CLAS12_ARTIFACT_ROOT.
+# CLAS12_PRETRAIN_DATA and CLAS12_ARTIFACT_ROOT select data and output paths.
+# CLAS12_PRETRAIN_STATS is used only with loss_reweight: true.
 
 default: &default
+  hilbert_angular_grid: unit_v2
   # === Data Paths (UPDATE THESE) ===
   data_root: ${CLAS12_PRETRAIN_DATA:-/path/to/cluster_event_product}
   stat_dir: ${CLAS12_PRETRAIN_STATS:-/path/to/pretraining_stats}
@@ -70,7 +72,7 @@ default: &default
 # completed all six widths successfully.
 # ============================================================================
 
-scale_w64_d12_chinchilla:
+scale_w64_d12_chinchilla: &w64_chinchilla
   <<: *default
   data_root: ${CLAS12_PRETRAIN_DATA:-/path/to/cluster_event_product}
   reader_type: ragged_mmap
@@ -106,6 +108,14 @@ scale_w64_d12_chinchilla:
   max_val_batches: 1000
   use_wandb: true
   save_version: scale_w64_d12_chinchilla
+
+scale_w64_d12_bgmerged_hdf5:
+  <<: *w64_chinchilla
+  data_version: cvt-clusters-h5-v1
+  reader_type: hdf5
+  limit_data: false
+  data_fraction: 1.0
+  save_version: scale_w64_d12_bgmerged_hdf5
 
 scale_w128_d12_chinchilla:
   <<: *default

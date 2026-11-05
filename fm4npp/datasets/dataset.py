@@ -11,6 +11,7 @@ from functools import partial
 
 import torch
 from fm4npp.utils import *
+from fm4npp.hilbert import DEFAULT_HILBERT_GRID, validate_hilbert_grid
 from .voxelizer import *
 
 try:
@@ -28,6 +29,17 @@ def seed_worker_from_base(base_seed, worker_id):
     worker_seed = int(base_seed) + int(worker_id)
     np.random.seed(worker_seed)
     torch.manual_seed(worker_seed)
+
+
+def accepted_segment_labels(labels, min_clusters, exact_clusters, ignore_label=-1):
+    """Yield eligible segment labels and sizes in the dataset's sample order."""
+    unique, counts = np.unique(labels, return_counts=True)
+    for label, n_points in zip(unique, counts):
+        if label == ignore_label or n_points < min_clusters:
+            continue
+        if exact_clusters and n_points != min_clusters:
+            continue
+        yield int(label), int(n_points)
 
 
 def dominant_truth_segment(labels, ignore_label=-1):
@@ -353,7 +365,8 @@ class TPCBatchDataset(Dataset):
                  require_noise_target=False,
                  return_coatjava_seg_pred=False,
                  require_coatjava_seg_pred=False,
-                 input_representation='center_only'):
+                 input_representation='center_only',
+                 hilbert_angular_grid=DEFAULT_HILBERT_GRID):
 
         self.data_root = data_root
         self.split = split
@@ -424,6 +437,7 @@ class TPCBatchDataset(Dataset):
         self.input_layout = input_layout.lower()
         self.serialization = serialization
         self.clas12_band_config = clas12_band_config
+        self.hilbert_angular_grid = validate_hilbert_grid(hilbert_angular_grid)
         if self.serialization in {'clas12_band_hilbert_legacy6', 'clas12_band_hilbert_6'}:
             self.serialization = 'clas12_band_hilbert'
             self.clas12_band_config = 'legacy6'
@@ -691,6 +705,7 @@ class TPCBatchDataset(Dataset):
                     eta=nf[:, 0],
                     r=nf[:, 2],
                     band_config=self.clas12_band_config,
+                    angular_grid=self.hilbert_angular_grid,
                 ).squeeze()
             # Robust fallback: radius-only ordering.
             return norm_features[..., -1].argsort(dim=1).squeeze(0)
@@ -1023,19 +1038,6 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
     def _segment_source_for_filtering(self):
         return self.memmap_segment_source or self.memmap_seg_target
 
-    def _accepted_segment_labels(self, labels):
-        labels = np.asarray(labels)
-        out = []
-        for label in sorted(int(x) for x in np.unique(labels) if int(x) != self.segment_ignore_label):
-            n_points = int(np.sum(labels == label))
-            if self.segment_exact_clusters:
-                if n_points != self.segment_min_clusters:
-                    continue
-            elif n_points < self.segment_min_clusters:
-                continue
-            out.append((label, n_points))
-        return out
-
     def _coatjava_truth_target(self, event_idx, candidate_label):
         """Resolve one COATJAVA candidate to its dominant MC truth segment."""
         coat_labels = np.asarray(self.memmap_segment_source[event_idx])
@@ -1071,7 +1073,9 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
         )
         for event_idx in range(len(self.memmap_feature)):
             labels = np.asarray(segment_source[event_idx])
-            for label, n_points in self._accepted_segment_labels(labels):
+            for label, n_points in accepted_segment_labels(
+                labels, self.segment_min_clusters, self.segment_exact_clusters, self.segment_ignore_label
+            ):
                 if self.segment_target_source == 'coatjava':
                     if self._coatjava_truth_target(event_idx, label) is None:
                         continue
@@ -1333,6 +1337,7 @@ def get_data_loader(params, distributed):
                                     input_layout=getattr(params, 'input_layout', 'xyz'),
                                     serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                     clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
+                                    hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
                                     low_thr=getattr(params, 'low_thr', 1),
                                     high_thr=getattr(params, 'high_thr', 100),
                                     max_tracks=getattr(params, 'max_tracks', 150),
@@ -1367,6 +1372,7 @@ def get_data_loader(params, distributed):
                                    input_layout=getattr(params, 'input_layout', 'xyz'),
                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                    clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
+                                   hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
                                    low_thr=getattr(params, 'low_thr', 1),
                                    high_thr=getattr(params, 'high_thr', 100),
                                    max_tracks=getattr(params, 'max_tracks', 150),
@@ -1446,6 +1452,7 @@ def get_val_loader(params, distributed):
                                    input_layout=getattr(params, 'input_layout', 'xyz'),
                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                    clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
+                                   hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
                                    low_thr=getattr(params, 'low_thr', 1),
                                    high_thr=getattr(params, 'high_thr', 100),
                                    max_tracks=getattr(params, 'max_tracks', 150),

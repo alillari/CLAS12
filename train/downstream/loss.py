@@ -597,15 +597,6 @@ def masked_regression_loss(
 
     valid = targets["target_valid"] & torch.isfinite(pred) & torch.isfinite(truth)
 
-    if not valid.any():
-        # Return a differentiable zero if a batch contains no valid targets.
-        return {"loss": pred[valid].sum()}
-
-    phi_pair_indices = {
-        int(index)
-        for pair in phi_pairs
-        for index in pair
-    }
     # Mask before trigonometry: a masked NaN angle otherwise produces NaN
     # gradients even when its loss entry is later excluded.
     residual = torch.where(valid, pred, 0.0) - torch.where(valid, truth, 0.0)
@@ -620,63 +611,20 @@ def masked_regression_loss(
             residual = residual.clone()
             residual[..., int(index)] = wrapped / scale
 
-    component_losses = []
-    if phi_pair_indices:
-        scalar_mask = torch.ones(pred.shape[-1], dtype=torch.bool, device=pred.device)
-        scalar_mask[list(phi_pair_indices)] = False
-        if scalar_mask.any():
-            scalar_valid = valid[..., scalar_mask]
-            if scalar_valid.any():
-                scalar_residual = residual[..., scalar_mask]
-                if option == "mse":
-                    component_losses.append(scalar_residual[scalar_valid] ** 2)
-                elif option == "mae":
-                    component_losses.append(torch.abs(scalar_residual[scalar_valid]))
-                elif option == "huber":
-                    component_losses.append(
-                        torch.nn.functional.smooth_l1_loss(
-                            scalar_residual[scalar_valid],
-                            torch.zeros_like(scalar_residual[scalar_valid]),
-                            reduction="none",
-                        )
-                    )
-                else:
-                    raise ValueError(
-                        f"Unsupported regression loss {option!r}; choose one of "
-                        "['mse', 'mae', 'huber']"
-                    )
+    # A complete cosine/sine pair contributes one directional loss term.
+    scalar_valid = valid
+    if phi_pairs:
+        scalar_valid = valid.clone()
         for cos_index, sin_index in phi_pairs:
-            pair_valid = valid[..., int(cos_index)] & valid[..., int(sin_index)]
-            if pair_valid.any():
-                pred_cos, pred_sin = _project_phi_pair(
-                    pred, cos_index, sin_index, eps=phi_eps
-                )
-                true_cos, true_sin = _project_phi_pair(
-                    truth, cos_index, sin_index, eps=phi_eps
-                )
-                cos_delta = pred_cos * true_cos + pred_sin * true_sin
-                component_losses.append((1.0 - cos_delta[pair_valid]).clamp_min(0.0))
-        if component_losses:
-            return {"loss": torch.cat([loss.reshape(-1) for loss in component_losses]).mean()}
-        return {"loss": pred.sum() * 0.0}
-
+            scalar_valid[..., [cos_index, sin_index]] = False
+    scalar_residual = residual[scalar_valid]
     if option == "mse":
-        loss = torch.nn.functional.mse_loss(
-            residual[valid],
-            torch.zeros_like(residual[valid]),
-            reduction="mean",
-        )
+        terms = scalar_residual.square()
     elif option == "mae":
-        loss = torch.nn.functional.l1_loss(
-            residual[valid],
-            torch.zeros_like(residual[valid]),
-            reduction="mean",
-        )
+        terms = scalar_residual.abs()
     elif option == "huber":
-        loss = torch.nn.functional.smooth_l1_loss(
-            residual[valid],
-            torch.zeros_like(residual[valid]),
-            reduction="mean",
+        terms = torch.nn.functional.smooth_l1_loss(
+            scalar_residual, torch.zeros_like(scalar_residual), reduction="none"
         )
     else:
         raise ValueError(
@@ -684,7 +632,22 @@ def masked_regression_loss(
             "['mse', 'mae', 'huber']"
         )
 
-    return {"loss": loss}
+    if phi_pairs:
+        component_losses = [terms]
+        for cos_index, sin_index in phi_pairs:
+            pair_valid = valid[..., cos_index] & valid[..., sin_index]
+            pred_cos, pred_sin = _project_phi_pair(pred[pair_valid], cos_index, sin_index, eps=phi_eps)
+            true_cos, true_sin = _project_phi_pair(truth[pair_valid], cos_index, sin_index, eps=phi_eps)
+            cos_delta = pred_cos * true_cos + pred_sin * true_sin
+            component_losses.append((1.0 - cos_delta).clamp_min(0.0))
+        terms = torch.cat(component_losses)
+
+    # An empty selection still gives training a differentiable zero.
+    term_count = terms.numel()
+    if terms.dtype in (torch.float16, torch.bfloat16):
+        terms = terms.float()
+    loss_sum = terms.sum()
+    return {"loss": loss_sum / max(term_count, 1), "loss_sum": loss_sum, "term_count": term_count}
 
 # Helper functions ============================================================
 def _get_src_permutation_idx(indices):

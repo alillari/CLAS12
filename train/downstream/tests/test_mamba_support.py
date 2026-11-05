@@ -263,7 +263,7 @@ class MambaCheckpointTest(unittest.TestCase):
     @unittest.skipUnless(MAMBA3_AVAILABLE, "Mamba3 dependencies are optional")
     def test_mamba3_pretraining_trainer_preserves_ssm_initialization(self):
         from train.pretrain.nppmamba import train_multi_gpu_mamba1 as pretrain
-        params = SimpleNamespace(**backbone_params("mamba3"), stat_dir="/unused",
+        params = SimpleNamespace(**backbone_params("mamba3"), stat_dir="/unused", loss_reweight=False,
                                  min_lr=1e-3, max_lr=2e-3, total_steps=4, warmup_steps=0)
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(root_dir=directory, config="mamba3", run_num="test")

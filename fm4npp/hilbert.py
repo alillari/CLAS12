@@ -417,9 +417,31 @@ def assign_clas12_layer(r, band_config=CLAS12_DEFAULT_BAND_CONFIG):
 
 
 LEGACY_HILBERT_GRID = "legacy_v1"
+DEFAULT_HILBERT_GRID = "unit_v2"
 
 
-def clas12_hilbert_cells(phi, eta, num_bits=10, *, angular_grid=LEGACY_HILBERT_GRID, scaler=1e4):
+def validate_hilbert_grid(angular_grid):
+    if angular_grid not in (LEGACY_HILBERT_GRID, DEFAULT_HILBERT_GRID):
+        raise ValueError(f"Unknown Hilbert angular grid: {angular_grid!r}")
+    return angular_grid
+
+
+def validate_checkpoint_hilbert_grid(checkpoint, params):
+    """Require matching ordering for resumes and frozen-backbone/adapter loads."""
+    serialization = getattr(params, "serialization", "clas12_band_hilbert")
+    if serialization not in ("clas12_band_hilbert", "clas12_band_hilbert_legacy6", "clas12_band_hilbert_6"):
+        return
+    requested = validate_hilbert_grid(getattr(params, "hilbert_angular_grid", DEFAULT_HILBERT_GRID))
+    saved = validate_hilbert_grid(checkpoint.get("hilbert_angular_grid", LEGACY_HILBERT_GRID))
+    if requested != saved:
+        raise ValueError(
+            f"Checkpoint Hilbert grid {saved!r} differs from requested {requested!r}. "
+            f"Set hilbert_angular_grid: {saved} in the model recipe to use this checkpoint. "
+            "Unmarked historical checkpoints use legacy_v1."
+        )
+
+
+def clas12_hilbert_cells(phi, eta, num_bits=10, *, angular_grid=DEFAULT_HILBERT_GRID, scaler=1e4):
     """Quantize normalized (phi, eta) for ordering only; model inputs retain full precision."""
     angles = torch.stack([phi, eta], dim=-1)
     cells_per_axis = 2 ** num_bits
@@ -446,12 +468,12 @@ def clas12_band_hilbert_order(
     scaler=1e4,
     band_config=CLAS12_DEFAULT_BAND_CONFIG,
     *,
-    angular_grid=LEGACY_HILBERT_GRID,
+    angular_grid=DEFAULT_HILBERT_GRID,
 ):
     """Sort by detector band, then by the 2D Hilbert code of normalized (phi, eta).
 
-    The default grid preserves the historical scale and clipping. The opt-in
-    unit_v2 grid spans the normalized axes at the requested bit depth.
+    The default unit_v2 grid spans the normalized axes at the requested bit depth.
+    Select legacy_v1 explicitly to reproduce historical scaling and clipping.
     """
     assert phi.shape == eta.shape == r.shape
     layer_idx = assign_clas12_layer(r, band_config=band_config)

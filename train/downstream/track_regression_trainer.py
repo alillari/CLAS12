@@ -25,6 +25,9 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
+from fm4npp.hilbert import (
+    DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
+)
 from fm4npp.models.mamba_config import (
     adapter_options, adapter_dimensions, backbone_version, build_backbone, architecture_metadata,
     legacy_initialization_parameters, optimizer_parameters,
@@ -46,61 +49,50 @@ from regression_utils import (
     resolve_regression_loss,
     validate_regression_training,
     transform_regression_target_torch,
+    validate_regression_checkpoint_inputs,
 )
 from physics_checkpoints import (
     MOMENTUM_TASKS, resolve_config as resolve_physics_config,
     selection_mode, write_evaluation_summary,
 )
 
+VALIDATION_LOSS_REDUCTION = "mean_over_valid_terms"
+
+
+def require_single_process():
+    """The regression head and checkpoint writer are single-process only."""
+    if (int(os.environ.get("WORLD_SIZE", 1)) != 1
+            or (dist.is_initialized() and dist.get_world_size() != 1)):
+        raise RuntimeError(
+            "Momentum regression supports one process. Launch with WORLD_SIZE=1 "
+            "or torchrun --nproc-per-node=1."
+        )
+
+
 class DownstreamTrainer():
-    
-    def _find_available_gpu(self, max_memory_threshold=1000):
-        '''Find the first GPU with memory usage below a threshold (in MB).'''
-        for gpu_id in range(torch.cuda.device_count()):
-            allocated = torch.cuda.memory_allocated(gpu_id) / 1024**2  # Convert to MB
-            if allocated < max_memory_threshold:
-                return gpu_id
-        return None 
 
-
-    """ trainer class """
     def __init__(self, params, args):
-        
-        ''' init vars for distributed training (ddp) and logging'''
+        require_single_process()
         self.root_dir = args.root_dir
         self.global_log_dir = os.path.join(args.root_dir, args.global_log_dir)
-        self.config = args.config 
+        self.config = args.config
         self.run_num = args.run_num
         self.world_size = 1
-        
-        if 'WORLD_SIZE' in os.environ:
-            self.world_size = int(os.environ['WORLD_SIZE'])
-
         self.local_rank = 0
         self.world_rank = 0
-        
-        if self.world_size > 1: # multigpu, use DDP with standard NCCL backend for communication routines
-            dist.init_process_group(backend='nccl',
-                                    init_method='env://')
-            self.world_rank = dist.get_rank()
-            self.local_rank = int(os.environ["LOCAL_RANK"])
+        self.log_to_screen = True
 
         if torch.cuda.is_available():
             torch.cuda.set_device(self.local_rank)
             torch.backends.cudnn.benchmark = True
-
-        self.log_to_screen = (self.world_rank==0)
-        if torch.cuda.is_available():
-            available_gpu = self._find_available_gpu()
-            if available_gpu is not None:
-                available_gpu = 0
-                torch.cuda.set_device(available_gpu)
-                print(f"Using GPU {available_gpu} with memory below threshold.")
             self.device = torch.cuda.current_device()
         else:
             self.device = torch.device('cpu')
-        
+
         self.params = params
+        params.hilbert_angular_grid = validate_hilbert_grid(
+            getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
+        )
         input_representation = getattr(params, "input_representation", "center_only")
         if input_representation == "clas12_pos_plus_aux_v1":
             if getattr(params, "embed_method", None) != "pos_plus_aux":
@@ -481,7 +473,7 @@ class DownstreamTrainer():
         torch.serialization.add_safe_globals([ScalarFloat])
     
         try:
-            self.load_checkpoint(checkpoint_path, inference=True)
+            self.load_checkpoint(checkpoint_path, inference=True, use_pretrained_backbone=pretrain)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to load regression checkpoint: {checkpoint_path}"
@@ -495,7 +487,8 @@ class DownstreamTrainer():
         target_list = []
         target_valid_list = []
         truth_xyz_list = []
-        loss_list = []
+        loss_sum = 0.0
+        term_count = 0
 
         with torch.no_grad():  # Disable gradient calculation
             for i, inputdict in enumerate(tqdm(self.val_data_loader)):
@@ -560,13 +553,15 @@ class DownstreamTrainer():
                 target_valid_list.append(targets['target_valid'].cpu())
                 output_list.append(outputs['pred'].cpu())
                
-                loss = losses['loss']
-                loss_list.append(loss.cpu().numpy())
+                loss_sum += losses['loss_sum'].item()
+                term_count += losses['term_count']
 
+        if not term_count:
+            raise RuntimeError("Evaluation yielded no valid regression loss terms")
         all_predictions = torch.cat(output_list, dim=0)
         all_targets = torch.cat(target_list, dim=0)
         all_target_valid = torch.cat(target_valid_list, dim=0)
-        avg_loss = np.mean(loss_list)
+        avg_loss = loss_sum / term_count
         mae = torch.mean(
             torch.abs(all_predictions[all_target_valid] - all_targets[all_target_valid])
         ).item()
@@ -601,6 +596,7 @@ class DownstreamTrainer():
         ###%%%%%%%
         # Debugging
         validate_regression_training(self.params.params)
+        self.use_pretrained_backbone = bool(pretrain)
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
         self.bwd_hooks = register_param_backward_nan_hooks(self.model)
         ###%%%%%%%%
@@ -776,7 +772,7 @@ class DownstreamTrainer():
         self.early_stopping_min_steps = int(getattr(self.params, "early_stopping_min_steps", self.warmup_steps))
         if train_from_checkpoint:
             try:
-                self.load_checkpoint(checkpoint_path, inference=False)
+                self.load_checkpoint(checkpoint_path, inference=False, use_pretrained_backbone=pretrain)
             except Exception as e:
                 raise RuntimeError(f"Checkpoint loading failed: {checkpoint_path}") from e
 
@@ -1176,6 +1172,8 @@ class DownstreamTrainer():
         self.model.eval()
         self.down_model.eval()
         self.down_results['val'] = []
+        loss_sum = 0.0
+        term_count = 0
         max_val_batches = getattr(self.params, "max_val_batches", 2001)
         try:
             with torch.no_grad():
@@ -1205,22 +1203,32 @@ class DownstreamTrainer():
                         target_std=self.regression_target_stats["std"],
                         phi_pairs=self.regression_target_stats.get("phi_pairs", ()),
                     )
-                    self.down_results['val'].append(losses['loss'].item())
+                    batch_sum = losses['loss_sum'].item()
+                    batch_count = losses['term_count']
+                    if batch_count:
+                        self.down_results['val'].append(batch_sum / batch_count)
+                        loss_sum += batch_sum
+                        term_count += batch_count
         finally:
             self.model.train(backbone_training)
             self.down_model.train(head_training)
-        if not self.down_results['val']:
-            raise RuntimeError("Validation yielded no batches; cannot select a checkpoint")
-        avg_loss = float(np.mean(self.down_results['val']))
+        if not term_count:
+            raise RuntimeError("Validation yielded no valid regression loss terms; cannot select a checkpoint")
+        avg_loss = loss_sum / term_count
         if self.log_to_screen:
             print(f"\nValidation Loss: {avg_loss:.4f}")
         return avg_loss
 
     def _save_checkpoint(self, filename, epoch, loss):
+        head = self.down_model
+        if isinstance(head, DistributedDataParallel):
+            head = head.module
         checkpoint = {
             'epoch': epoch,
             'global_step': getattr(self, "global_step", None),
-            'model_state_dict': self.down_model.state_dict(),
+            'model_state_dict': head.state_dict(),
+            'use_pretrained_backbone': self.use_pretrained_backbone,
+            'pooling': head.pooling,
             'backbone_architecture': architecture_metadata(self.model),
             'adapter_architecture': architecture_metadata(self.down_model),
             'optimizer_state_dict': self.down_optimizer.state_dict(),
@@ -1230,6 +1238,7 @@ class DownstreamTrainer():
             'best_step': getattr(self, "best_step", None),
             'best_epoch': getattr(self, "best_epoch", None),
             'current_loss': loss,
+            'validation_loss_reduction': VALIDATION_LOSS_REDUCTION,
             'best_loss_step': getattr(self, 'best_loss_step', None),
             'best_loss_epoch': getattr(self, 'best_loss_epoch', None),
             'checkpoint_selection': self.checkpoint_selection,
@@ -1238,19 +1247,16 @@ class DownstreamTrainer():
             'regression_target_columns': self.regression_target_stats["columns"],
             'regression_target_stats': self.regression_target_stats["path"],
             'input_representation': getattr(self.params, 'input_representation', 'center_only'),
+            'hilbert_angular_grid': getattr(self.params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
             'params': vars(self.params)  # Save all hyperparameters
         }
-
-        # Handle DistributedDataParallel wrapper
-        if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
-            checkpoint['model_state_dict'] = self.down_model.module.state_dict()
 
         checkpoint_path = os.path.abspath(os.path.join(self.params.checkpoint_dir, filename))
         torch.save(checkpoint, checkpoint_path)
         self.params["trained_checkpoint_path"] = checkpoint_path
         return checkpoint_path
 
-    def load_checkpoint(self, checkpoint_path, inference=False):
+    def load_checkpoint(self, checkpoint_path, inference=False, *, use_pretrained_backbone=None):
         """Load checkpoint with proper device mapping and DDP handling. 
            If inference=True, only loads the model weights."""
         
@@ -1266,6 +1272,7 @@ class DownstreamTrainer():
 
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
         if "model_state_dict" not in checkpoint:
             raise KeyError(
                 f"Adapter checkpoint {checkpoint_path} is missing 'model_state_dict'. "
@@ -1292,22 +1299,25 @@ class DownstreamTrainer():
             "physics_validation_summary", "physics_checkpoint_summary_path", "checkpoint_selection")}
         if not inference and checkpoint.get("checkpoint_selection") == "physics":
             raise ValueError("Cannot resume width-selected training; start a new validation-loss run")
-        # 3. Handle DDP keys
+        head = self.down_model
+        if isinstance(head, DistributedDataParallel):
+            head = head.module
+        state_dict = {k.removeprefix('module.'): v for k, v in checkpoint['model_state_dict'].items()}
+        if use_pretrained_backbone is None:
+            use_pretrained_backbone = getattr(self.params, 'pretrained_ckpt', None) is not None
+        validate_regression_checkpoint_inputs(checkpoint, state_dict, use_pretrained_backbone, head.pooling)
+        if not inference and checkpoint.get("validation_loss_reduction") != VALIDATION_LOSS_REDUCTION:
+            raise ValueError(
+                "Cannot resume with an incompatible validation loss reduction. "
+                "Evaluate these weights or start a new validation-loss run."
+            )
         validate_checkpoint_architecture(
-            checkpoint, self.down_model, 'adapter',
-            backbone=self.model if getattr(self.params, 'pretrained_ckpt', None) else None,
+            checkpoint, head, 'adapter', backbone=self.model if use_pretrained_backbone else None,
         )
-        state_dict = checkpoint['model_state_dict']
         if "weighted_avg_weights" in state_dict:
             print("Trained weighted_avg_weights:", state_dict["weighted_avg_weights"])
-        new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-
-        # 4. Load model weights
         try:
-            if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
-                self.down_model.module.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
-            else:
-                self.down_model.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
+            head.load_state_dict(state_dict, strict=uses_mamba3(head))
         except RuntimeError as exc:
             raise RuntimeError(
                 "Failed to load adapter checkpoint with the current regression-head "
@@ -1381,6 +1391,7 @@ class DownstreamTrainer():
         else:
             device_str = str(self.device)
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
         if "model_state" not in checkpoint:
             raise KeyError(
                 f"Pretrained checkpoint {checkpoint_path} is missing 'model_state'. "

@@ -1,6 +1,7 @@
 """Compatibility with the current pretraining integration and historical optimizers."""
 
 import os
+import pickle
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,26 +41,83 @@ def make_trainer(directory, version="mamba2", **overrides):
     batch = (torch.rand(2, 5, channels), None, torch.rand(2, 5, 3))
     args = SimpleNamespace(root_dir=directory, config=version, run_num="test")
     with patch.object(pretrain, "get_data_loader", return_value=([batch], None, [batch], None)), \
-            patch.object(pretrain, "pickle_load", return_value=[0., 1.]), \
             patch("fm4npp.models.mamba2.RMSNormGated", None):
         return pretrain.Trainer(params(version, **overrides), args)
 
 
 class PretrainingIntegrationTest(unittest.TestCase):
-    def test_checkpoint_rejects_a_different_hilbert_grid(self):
+    def test_checkpoint_records_default_and_requires_legacy_for_unmarked_weights(self):
         with tempfile.TemporaryDirectory() as root:
-            trainer = make_trainer(root, "transformer", hilbert_angular_grid="unit_v2")
+            trainer = make_trainer(root, "transformer")
             trainer.save_checkpoint(trainer.checkpoint_path)
             saved = torch.load(trainer.checkpoint_path, map_location="cpu", weights_only=False)
             self.assertEqual(saved["hilbert_angular_grid"], "unit_v2")
-            make_trainer(root, "transformer", hilbert_angular_grid="unit_v2")
-            with self.assertRaisesRegex(ValueError, "Checkpoint Hilbert grid"):
-                make_trainer(root, "transformer")
-            del saved["hilbert_angular_grid"]
-            torch.save(saved, trainer.checkpoint_path)
             make_trainer(root, "transformer")
             with self.assertRaisesRegex(ValueError, "Checkpoint Hilbert grid"):
-                make_trainer(root, "transformer", hilbert_angular_grid="unit_v2")
+                make_trainer(root, "transformer", hilbert_angular_grid="legacy_v1")
+            del saved["hilbert_angular_grid"]
+            torch.save(saved, trainer.checkpoint_path)
+            with self.assertRaisesRegex(ValueError, "Unmarked historical checkpoints"):
+                make_trainer(root, "transformer")
+            make_trainer(root, "transformer", hilbert_angular_grid="legacy_v1")
+
+    def test_short_cli_uses_the_hdf5_recipe(self):
+        with patch("sys.argv", ["train.pretrain", "--data-root", "/sample/skim"]), \
+             patch.dict(os.environ, {"CLAS12_ARTIFACT_ROOT": "/sample/results"}), \
+             patch.object(pretrain, "Trainer") as trainer:
+            pretrain.main()
+            config, args = trainer.call_args.args
+            self.assertEqual(args.config, "scale_w64_d12_bgmerged_hdf5")
+            self.assertEqual(args.root_dir, "/sample/results/pretrain")
+            self.assertEqual((config.reader_type, config.data_root), ("hdf5", "/sample/skim"))
+            trainer.return_value.launch.assert_called_once()
+
+    def test_singleton_without_targets_does_not_step_or_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = make_trainer(directory, "transformer", n_eval_steps=40)
+            singleton = (torch.zeros(1, 1, 3), None, torch.full((1, 1, 3), -100.))
+            trainer.train_data_loader = [singleton]
+            before = trainer.scheduler.state_dict()
+            with self.assertRaisesRegex(ValueError, "no valid outward-neighbor targets"):
+                trainer.train_one_epoch()
+            self.assertEqual(trainer.iters, 0)
+            self.assertEqual(trainer.scheduler.state_dict(), before)
+            self.assertFalse(trainer.optimizer.state)
+            trainer.valid_data_loader = [singleton]
+            with self.assertRaisesRegex(ValueError, "no valid outward-neighbor targets"):
+                trainer.val_one_epoch(0.)
+            self.assertFalse(Path(trainer.checkpoint_path).exists())
+
+    def test_validation_depends_on_coordinates_not_batch_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = make_trainer(directory, "transformer", save_checkpoint=False)
+            trainer.model = torch.nn.Identity()
+            targets = torch.tensor([[[2.]*3, [-100.]*3], [[1.]*3, [1.]*3], [[-100.]*3]*2])
+            def batch(target):
+                return torch.zeros_like(target), None, target
+            for groups in ([targets], list(targets.split(1)), [targets[:1], targets[1:]]):
+                trainer.valid_data_loader = [batch(t) for t in groups]
+                trainer.val_one_epoch(0.)
+                self.assertAlmostEqual(trainer.logs['val_loss'].item(), 2.0)
+
+    def test_weighted_mixed_batch_excludes_unsupervised_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for name, data in (("loss_bin_pp", [0., 10.]), ("loss_weight_pp", [2.])):
+                with (Path(directory) / (name + ".pkl")).open("wb") as out:
+                    pickle.dump(data, out)
+            trainer = make_trainer(directory, "transformer", loss_reweight=True,
+                                   stat_dir=directory, dropout=0., n_eval_steps=30, total_steps=1, warmup_steps=0)
+            x, _, targets = trainer.train_data_loader[0]
+            targets[1] = -100
+            with torch.no_grad():
+                predictions = trainer.model(x.to(trainer.device)).cpu()
+                expected = 2 * (predictions[0] - targets[0]).square().mean().item()
+            trainer.train_data_loader = [(x, None, torch.full_like(targets, -100)), (x, None, targets)]
+            with patch.object(trainer, "log_globalfile") as log:
+                trainer.train_one_epoch()
+            self.assertAlmostEqual(log.call_args_list[0].args[2], expected, places=5)
+            self.assertEqual(trainer.iters, 1)
+            self.assertTrue(Path(trainer.checkpoint_path).is_file())
 
     def test_current_recipe_defaults_keep_mamba1_weights_and_shapes(self):
         for file, key in (("mamba_v602_sweep.yaml", "scale_w64_d12_v602"),
@@ -102,9 +160,16 @@ class PretrainingIntegrationTest(unittest.TestCase):
             resumed = make_trainer(directory, use_mup=True, mup_base_width=128,
                                    max_val_batches=1, weight_decay=.02)
             self.assertEqual(resumed.iters, trainer.iters)
+            self.assertEqual(resumed.best_loss, trainer.best_loss)
             self.assertEqual(resumed.scheduler.state_dict(), trainer.scheduler.state_dict())
             self.assertEqual(parameter_names(resumed.model, resumed.optimizer),
                              parameter_names(trainer.model, trainer.optimizer))
+            old = torch.load(trainer.checkpoint_path, map_location="cpu", weights_only=False)
+            del old["validation_metric"]
+            torch.save(old, trainer.checkpoint_path)
+            legacy = make_trainer(directory, use_mup=True, mup_base_width=128, weight_decay=.02)
+            self.assertEqual(legacy.iters, trainer.iters)
+            self.assertEqual(legacy.best_loss, float("inf"))
 
     def test_offline_wandb_logging_is_preserved(self):
         tracking = Mock()

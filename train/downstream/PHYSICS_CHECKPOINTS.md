@@ -24,6 +24,19 @@ validation instead of disappearing through the regression-loss mask.
 Optuna uses best validation loss and retains its
 existing repeated-seed aggregation.
 
+Validation loss sums errors across the full cohort and divides by the number of
+valid loss terms. Each finite supervised Cartesian component contributes one
+term. For angular encodings, a complete cosine/sine pair contributes one
+directional term. A validation set with zero valid terms fails before selection.
+
+Checkpoints record whether training used frozen features or raw inputs, the
+pooling method, and the validation loss reduction. Evaluation requires the
+trained input mode and pooling, including for older checkpoints when their
+saved parameters and scorer weights identify those settings. Checkpoints that
+used the older batch-mean score are supported for evaluation. Resuming training
+requires a checkpoint scored with the current reduction so that subsequent
+validation scores can be compared with the saved best loss.
+
 Validation defaults to 50,000 accepted samples with batch size 128, independently
 of the training label budget. The final partial batch is retained. An explicit
 batch cap cannot truncate the requested sample limit. This still uses the

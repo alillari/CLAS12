@@ -1,30 +1,37 @@
 # Branch inventory and historical experiments
 
-Updated 2026-11-02 after the authorized branch cleanup on GitHub, the laptop,
-and both EdgeExperts (a02c and a518). The cleanup is based on `main` at
-`c629855f1d0a66fa66d2586d4321f2e74eae14c1`; the inventory update is a subsequent
-documentation-only commit. No experimental implementation was merged.
+## Active GitHub branches
 
-## Active branches
+GitHub branch tips for 2026-11-04. The `main` tip is the parent of this update.
 
-| Branch | Code tip before inventory update | Purpose and next action |
+| Branch | Commit | Purpose |
 | --- | --- | --- |
-| `main` | `c629855f1d0a` | Shared research baseline; adapter baseline, pretraining, Mamba2/3, Transformer support and training guides are merged through PRs #1–5 |
-| `mike` | `38c82ec06265` | Collaborator-owned development; retain and review selected contributions independently |
-| `feature/momentum-coordinate-bypass` | `544f21ba9114` | Separate PR candidate; opt-in coordinate input alongside frozen features; representative CUDA validation remains necessary |
-| `tooling/edge-mcp` | `3f209712c096` | Separate PR candidate for isolated Edge inspection/execution tooling |
-| `experiment/momentum-last-two-layers` | `5f51ff5cb254` | Retain for a selective port and separate review; conflicts with the current regression trainer and predates current architecture selection |
+| `main` | `3915772faba4` | Shared research baseline, including the momentum fixes from PR #10 |
+| `mike` | `38c82ec06265` | Collaborator-owned development. Review selected contributions independently |
+| `feature/cvt-hdf5-pretraining` | `1598b5f38765` | CVT HDF5 pretraining and launcher |
+| `feature/momentum-coordinate-bypass` | `544f21ba9114` | Candidate for separate review. Opt-in coordinate input alongside frozen features still needs representative CUDA validation |
+| `experiment/momentum-last-two-layers` | `5f51ff5cb254` | Retained for a selective port. The branch conflicts with the current regression trainer and predates current architecture selection |
+| `experiment/cvt-hilbert-angular-grid` | `896a351b5410` | Within-band Hilbert grid for v6 pretraining |
+| `codex/track-finding-review-fixes` | `270c00ffa1cd` | Track-finding checkpoint selection and evaluation fixes |
+| `tooling/reproducible-environments` | `716d2bef2f76` | x86 and ARM training environment recipes |
 
-These five branch tips remain on GitHub. The laptop retains its existing four
-local development branches (`main` and the three pending-review branches);
-a02c and a518 retain local `main` and fetch all five GitHub branches.
-No collaborator branch was rewritten. The cleanup does not approve any pending
-implementation for integration.
+## Edge MCP
+
+On 2026-11-04, the Edge SSH/Docker tooling moved to the standalone
+[alillari/edge-mcp](https://github.com/alillari/edge-mcp) repository (private).
+Its initial commit `d3127cc77692` has the exact Git tree of
+`integrations/edge_mcp` at CLAS12 commit `3f209712c0963f3857691e19640f24eff936756a`.
+The laptop worktree and the local and GitHub `tooling/edge-mcp` branches were
+removed after verifying the standalone server on a02c and a518.
+
+The sections below record the 2026-11-02 cleanup at CLAS12 baseline
+`c629855f1d0a66fa66d2586d4321f2e74eae14c1`. The dated manifests describe
+the branches and directories as they stood that day.
 
 ## Published archive tags
 
-All retired tips are preserved by **annotated tags** published to GitHub and
-available on all three machines. The tag prefix is `archive/2026-11-02/`;
+Annotated tags preserve the tips retired in the 2026-11-02 branch cleanup.
+They are published to GitHub and available on all three machines. The tag prefix is `archive/2026-11-02/`;
 the table gives suffixes. Never move these tags. Create a new branch from a tag
 to resume an investigation.
 
@@ -91,10 +98,11 @@ not ancestors of one another; both are retained as tags and in recovery bundles.
 
 ## Directory cleanup
 
-Only the main checkout and the three pending-review worktrees remain registered
-on the laptop. Each EdgeExpert retains its main checkout. The standalone
-`/home/alessio/ML-work/CLAS12-momentum-last-two` source snapshot on a02c is retained
-for the pending fine-tuning review, along with all recovery archives.
+At the end of the 2026-11-02 cleanup, the laptop retained the main checkout
+and three pending-review worktrees. Each EdgeExpert retained its main checkout.
+The standalone `/home/alessio/ML-work/CLAS12-momentum-last-two` source snapshot
+on a02c was retained for the pending fine-tuning review, along with all
+recovery archives.
 
 Before removal, every tracked file was compared directly with its Git blob;
 untracked files, symlinks, embedded repositories and active processes were

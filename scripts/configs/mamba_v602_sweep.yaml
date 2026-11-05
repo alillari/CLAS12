@@ -1,4 +1,5 @@
 default: &default
+  hilbert_angular_grid: unit_v2
   # === Data Paths (UPDATE THESE) ===
   data_root: /global/cfs/cdirs/m4722/NPFM/data/pp_12M_mmap  # Directory containing features_train, features_test
   stat_dir:  /global/homes/d/dpark1/NPFN/PP_collision/fm4npp/datasets/stats         # Directory with normalization statistics
@@ -104,7 +105,12 @@ scale_w64_d12_v602: &w64_v602
   use_wandb: true
   save_version: scale_w64_d12_v602
 
-# Matched v6_02 ordering experiment; the existing profile remains the control.
+# Explicit v6_02 ordering profiles with matching budgets.
+scale_w64_d12_v602_legacy_v1:
+  <<: *w64_v602
+  hilbert_angular_grid: legacy_v1
+  save_version: scale_w64_d12_v602_legacy_v1
+
 scale_w64_d12_v602_unit_v2:
   <<: *w64_v602
   hilbert_angular_grid: unit_v2

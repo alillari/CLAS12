@@ -10,27 +10,29 @@ import os
 import time
 import numpy as np
 import argparse
+from itertools import islice
+from pathlib import Path
 
 import torch
-import torch.nn as nn
 import torch.nn.init as init
-import torch.optim as optim
 from torch.nn.parallel import DistributedDataParallel
 import torch.distributed as dist
 
-from torch.utils.data import DataLoader, Dataset
-from torch.utils.data.distributed import DistributedSampler
-
-from fm4npp.hilbert import LEGACY_HILBERT_GRID
+from fm4npp.artifact_paths import artifact_path
+from fm4npp.hilbert import (
+    DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
+)
 from fm4npp.models.mamba_config import (
     backbone_version, build_backbone, architecture_metadata,
     optimizer_parameters, validate_checkpoint_architecture,
 )
 from train.pretrain.nppmamba.optimizer_state import parameter_names, restore_optimizer
 from fm4npp.datasets.dataset_pretrain import get_data_loader
-from fm4npp.utils import *
+from fm4npp.utils import YParams, pickle_load
 
 from cosine_annealing_warmup import CosineAnnealingWarmupRestarts
+
+VALIDATION_METRIC = "mse_per_valid_coordinate_v1"
 
 # [W&B] Optional experiment tracking. Enabled per-config via `use_wandb: true`.
 # Runs in OFFLINE mode (no account needed): logs are written to ./wandb/ locally
@@ -44,14 +46,6 @@ except ImportError:
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-def check_model_parameters(model):
-    """Check for NaN or Inf in model parameters."""
-    for name, param in model.named_parameters():
-        if torch.isnan(param).any() or torch.isinf(param).any():
-            return f"NaN/Inf detected in {name}"
-    return ""
 
 
 def apply_bin_weights_torch(bin_list, weight_list, target):
@@ -72,7 +66,9 @@ def apply_bin_weights_torch(bin_list, weight_list, target):
 class Trainer():
     def __init__(self, params, args):
         self.params = params
-        self.hilbert_angular_grid = getattr(params, 'hilbert_angular_grid', LEGACY_HILBERT_GRID)
+        params.hilbert_angular_grid = validate_hilbert_grid(
+            getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
+        )
         # The shared adapter/backbone contract uses continuous coordinate targets.
         # Mike's retired band-classification head is not part of this integration.
         if getattr(params, 'band_classification', False):
@@ -102,9 +98,7 @@ class Trainer():
         self.checkpoint_path = os.path.join(exp_dir, 'training_checkpoints/ckpt.tar')
 
         if self.world_rank == 0:
-            if not os.path.isdir(self.exp_dir):
-                os.makedirs(self.exp_dir, exist_ok=True)
-                os.makedirs(os.path.join(self.exp_dir, 'training_checkpoints'), exist_ok=True)
+            os.makedirs(os.path.dirname(self.checkpoint_path), exist_ok=True)
 
         # Setup logging
         self.iters = 0
@@ -125,9 +119,14 @@ class Trainer():
                 with open(self.globalfile, 'w') as f:
                     f.write("split,step,loss,lr\n")
 
-        # Load loss bin weights
-        self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
-        self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
+        if self.params.loss_reweight:
+            self.loss_bin = torch.as_tensor(pickle_load(Path(params.stat_dir) / 'loss_bin_pp.pkl'),
+                                            dtype=torch.float32, device=self.device)
+            self.loss_weight = torch.as_tensor(pickle_load(Path(params.stat_dir) / 'loss_weight_pp.pkl'),
+                                               dtype=torch.float32, device=self.device)
+            if (self.loss_weight.ndim != 1 or self.loss_bin.shape != (len(self.loss_weight) + 1,)
+                    or not torch.all(self.loss_bin[1:] > self.loss_bin[:-1])):
+                raise ValueError("Loss reweighting requires one weight per increasing bin interval")
 
         # Get data loaders
         self.train_data_loader, self.train_sampler, self.valid_data_loader, _ = \
@@ -162,8 +161,7 @@ class Trainer():
         if dist.is_initialized():
             self.model = DistributedDataParallel(
                 self.model,
-                device_ids=[self.local_rank],
-                output_device=[self.local_rank],
+                device_ids=[self.local_rank] if self.device.type == 'cuda' else None,
                 find_unused_parameters=True
             )
 
@@ -228,16 +226,6 @@ class Trainer():
             gamma=1.0
         )
 
-        # Loss function
-        self.loss_func = nn.MSELoss(reduction='none')
-        # [BAND CLASSIFICATION TOGGLE]
-        self.band_classification = getattr(self.params, 'band_classification', False)
-        self.n_bands = getattr(self.params, 'n_bands', 6)
-        self.band_loss_weight = getattr(self.params, 'band_loss_weight', 1.0)
-        if self.band_classification:
-            self.ce_func = nn.CrossEntropyLoss(reduction='none', ignore_index=-100)
-        self.loss_func_eval = nn.MSELoss(reduction='none')
-
         # [W&B] Optional offline experiment tracking (no account needed).
         # Enable per-config with `use_wandb: true`. Logs hyperparameters,
         # train loss/lr, and val loss. Written locally to <root_dir>/wandb/.
@@ -258,36 +246,6 @@ class Trainer():
         # Load checkpoint if exists (previously dead code -- never ran)
         self.restore_checkpoint()
 
-    def band_mixed_loss(self, point_pred, klabel):
-        """[BAND CLASSIFICATION] Mixed loss.
-        point_pred: (b, N, klen*(2+n_bands)) = per neighbor [eta, phi, band_logits x n_bands]
-        klabel:     (b, N, klen*3)           = per neighbor [eta, phi, band_idx] (-100 padding)
-        Returns scalar: masked MSE on (eta,phi) + weighted CE on band.
-        """
-        b, N, _ = point_pred.shape
-        k = self.klen
-        pp = point_pred.reshape(b, N, k, 2 + self.n_bands)
-        kl = klabel.reshape(b, N, k, 3)
-
-        cont_pred = pp[..., :2]                  # (b,N,k,2) eta,phi
-        band_logits = pp[..., 2:]                # (b,N,k,n_bands)
-        cont_tgt = kl[..., :2]                   # (b,N,k,2)
-        band_tgt = kl[..., 2]                    # (b,N,k) band index or -100
-
-        # continuous part: masked MSE
-        cmask = cont_tgt != -100
-        mse = self.loss_func(cont_pred, cont_tgt)
-        mse = (mse * cmask).sum() / cmask.sum().clamp(min=1)
-
-        # classification part: CE with ignore_index=-100 handles padding natively
-        ce = self.ce_func(band_logits.reshape(-1, self.n_bands),
-                          band_tgt.reshape(-1).long())
-        valid = (band_tgt.reshape(-1) != -100)
-        ce = ce.sum() / valid.sum().clamp(min=1)
-
-        return mse + self.band_loss_weight * ce
-
-
     def log_infile(self, log):
         """Write log to file"""
         if self.world_rank == 0:
@@ -299,13 +257,6 @@ class Trainer():
         if self.world_rank == 0:
             with open(self.globalfile, "a") as f:
                 f.write("{},{},{},{}\n".format(split, step, loss, lr))
-
-    def init_exp_dir(self, exp_dir):
-        """Initialize experiment directory"""
-        if self.world_rank == 0:
-            if not os.path.isdir(exp_dir):
-                os.makedirs(exp_dir, exist_ok=True)
-                os.makedirs(os.path.join(exp_dir, 'training_checkpoints'), exist_ok=True)
 
     def _scale_mup_matrix_lr(self):
         if self.use_mup and self.mup_matrix_ratio != 1.0:
@@ -320,9 +271,7 @@ class Trainer():
                 print(f"Loading checkpoint from {self.checkpoint_path}")
 
             checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
-            saved_grid = checkpoint.get('hilbert_angular_grid', LEGACY_HILBERT_GRID)
-            if saved_grid != self.hilbert_angular_grid:
-                raise ValueError(f"Checkpoint Hilbert grid {saved_grid!r} differs from requested {self.hilbert_angular_grid!r}")
+            validate_checkpoint_hilbert_grid(checkpoint, self.params)
             validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
 
             try:
@@ -336,7 +285,10 @@ class Trainer():
             restore_optimizer(self.model, self.optimizer, checkpoint)
             if 'scheduler_state_dict' in checkpoint:
                 self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            self.best_loss = checkpoint.get('best_loss', self.best_loss)
+            if checkpoint.get('validation_metric') == VALIDATION_METRIC:
+                self.best_loss = checkpoint.get('best_loss', self.best_loss)
+            elif self.world_rank == 0:
+                self.log_infile(f"Resuming at step {checkpoint['iters']} with a new best-loss baseline for {VALIDATION_METRIC}")
             self.iters = checkpoint['iters']
             self.startEpoch = checkpoint['epoch'] + 1
 
@@ -361,7 +313,8 @@ class Trainer():
             'optimizer_param_names': parameter_names(self.model, self.optimizer),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
-            'hilbert_angular_grid': self.hilbert_angular_grid,
+            'validation_metric': VALIDATION_METRIC,
+            'hilbert_angular_grid': self.params.hilbert_angular_grid,
             'backbone_architecture': architecture_metadata(self.model),
         }
         torch.save(payload, checkpoint_path)
@@ -375,184 +328,96 @@ class Trainer():
             if self.world_rank == 0:
                 print(f"Saved checkpoint to {checkpoint_path}")
 
-    def report_loss(self, loss, dist_state):
-        """Report loss across distributed processes"""
-        if dist_state:
-            loss_tensor = loss.clone().detach()
-            dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
-            return loss_tensor.item()
-        else:
-            return loss.item()
+    def _batch_targets(self, grouped, knearest):
+        inputs = grouped.to(self.device)
+        offset = (2 if self.params.nexttoken else 1) if self.params.rep_aaai else 0
+        targets = knearest.to(self.device)[:, offset:]
+        return inputs, targets, targets != -100, offset
+
+    def _squared_errors(self, inputs, targets, mask):
+        predictions = self.model(inputs)[:, :targets.size(1)]
+        return (predictions - targets).masked_fill(~mask, 0.).square().sum(dim=(1, 2))
 
     def train_one_epoch(self):
-        """Train for one epoch"""
-        tr_time = 0
         self.model.train()
+        start_iter = self.iters
+        tr_time = 0.
+        tr_start = time.monotonic()
+        for grouped, _, knearest in self.train_data_loader:
+            inputs, targets, mask, offset = self._batch_targets(grouped, knearest)
+            counts = mask.sum(dim=(1, 2))
+            supervised = counts > 0
+            # Unweighted MSE averages coordinates; reweighting averages supervised events.
+            denominator = supervised.sum() if self.params.loss_reweight else counts.sum()
+            if dist.is_initialized():
+                dist.all_reduce(denominator)
+            if denominator.item() == 0:
+                continue
 
-        tr_start = time.time()
-
-        for i, (grouped, _, knearest) in enumerate(self.train_data_loader):
-            self.iters += 1
-            b, c = grouped.size(0), grouped.size(-1)
-
-            # Prepare targets
-            # [FIX] was: grouped.reshape(b, -1, 3) -- hardcoded 3 columns.
-            # targets is only ever used for padding detection via
-            # targets[..., 0] (always eta, regardless of column count --
-            # the collator pads every column uniformly with -100), so it's
-            # safe and correct to reshape with the same dynamic `c` already
-            # used for `grouped` right below. Broke when use_aux_features
-            # widens each point from 3 to 7 columns (position + sx,sy,sz,length).
-            targets = grouped.reshape(b, -1, c).to(self.device)
-            klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
-            grouped = grouped.reshape(b, -1, c).to(self.device)
-
-            self.model.zero_grad()
-
-            # Mamba3 manages BF16 inside each block.
-            point_pred = self.model(grouped)
-
-            # Handle rep_aaai logic
-            if self.params.rep_aaai:
-                if not self.params.nexttoken:
-                    point_pred = point_pred[:, :-1]
-                    targets = targets[:, 1:]
-                    klabel = klabel[:, 1:]
-                else:
-                    point_pred = point_pred[:, :-2]
-                    targets = targets[:, 2:]
-                    klabel = klabel[:, 2:]
-
-            kpred = point_pred
-            kmask = klabel != -100
-            tmask = targets[..., 0] != -100
-
-            # [BAND CLASSIFICATION TOGGLE] loss-only branch; shared tail
-            # (backward/clip/step/log/validate) runs identically for both modes.
-            if self.band_classification:
-                loss = self.band_mixed_loss(point_pred, klabel)
-            else:
-                loss = self.loss_func(kpred, klabel)
-
-            # Loss weighting
-            if not self.band_classification and self.params.loss_reweight:
-                loss = (loss * kmask).sum(-1).sum(-1) / kmask.sum(-1).sum(-1)
-                loss_weight_ = apply_bin_weights_torch(
-                    torch.Tensor(self.loss_bin).to(self.device),
-                    torch.Tensor(self.loss_weight).to(self.device),
-                    tmask.sum(-1)
-                )
-                loss = loss * loss_weight_
-                loss = loss.mean()
-            elif not self.band_classification:
-                loss = (loss * kmask).sum() / kmask.sum()
-            # (band mode: loss already reduced to a scalar in band_mixed_loss)
-
+            self.optimizer.zero_grad()
+            errors = self._squared_errors(inputs, targets, mask)
+            if self.params.loss_reweight:
+                lengths = (inputs[:, offset:, 0] != -100).sum(dim=1)
+                weights = apply_bin_weights_torch(self.loss_bin, self.loss_weight, lengths)
+                errors = errors / counts.clamp_min(1) * weights
+            # DDP averages gradients across ranks after backward.
+            loss = errors.sum() * self.world_size / denominator
             if self.params.ablate_loss_scale:
                 loss = loss * self.params.ablate_loss_scale_rate
 
-            # Backward pass (FP32)
             loss.backward()
-
-            # Gradient clipping
-            grad_norm = torch.zeros(1)
-            clip_value = self.params.grad_clip_value
-            torch.nn.utils.clip_grad_value_(self.model.parameters(), clip_value=clip_value)
-
+            torch.nn.utils.clip_grad_value_(self.model.parameters(), clip_value=self.params.grad_clip_value)
             self.optimizer.step()
             self.scheduler.step()
-            # [muP] scheduler sets all groups to the same scheduled LR; divide the
-            # matrix group down by the width ratio so muP scaling survives each step.
             self._scale_mup_matrix_lr()
+            self.iters += 1
 
-            # Logging
-            loss_log = '{},{},{},{},{}'.format(
-                self.report_loss(loss, dist.is_initialized()),
-                grad_norm.item(),
-                tmask.sum(-1).float().mean().item(),
-                tmask.sum(-1).float().std().item(),
-                check_model_parameters(self.model) if self.iters % 100 == 0 or torch.isnan(loss) else ''
-            )
-
+            reported = loss.detach().clone()
+            if dist.is_initialized():
+                dist.all_reduce(reported)
+                reported /= self.world_size
             if self.world_rank == 0:
+                value = reported.item()
+                lr = self.scheduler.get_lr()[0]
                 if self.iters % 100 == 0:
-                    print(f'Iter {self.iters}: loss={self.report_loss(loss, dist.is_initialized()):.4f}')
-                self.log_globalfile('train', self.iters, self.report_loss(loss, dist.is_initialized()), self.scheduler.get_lr()[0])
+                    print(f'Iter {self.iters}: loss={value:.4f}')
+                self.log_globalfile('train', self.iters, value, lr)
                 if self.use_wandb:
-                    wandb.log({'train/loss': self.report_loss(loss, dist.is_initialized()),
-                               'train/lr': self.scheduler.get_lr()[0]}, step=self.iters)
+                    wandb.log({'train/loss': value, 'train/lr': lr}, step=self.iters)
 
-            # Validation every n_eval_steps
-            if self.iters % self.params.n_eval_steps == 0:
-                tr_time += time.time() - tr_start
+            finished = self.iters >= self.params.total_steps
+            if finished or self.iters % self.params.n_eval_steps == 0:
+                tr_time += time.monotonic() - tr_start
                 self.val_one_epoch(tr_time)
-                tr_start = time.time()
-
-            # Stop at total steps
-            if self.iters >= self.params.total_steps:
+                tr_start = time.monotonic()
+            if finished:
                 break
 
-        return 0
+        if self.iters == start_iter:
+            raise ValueError("Training epoch produced no valid outward-neighbor targets")
+        return tr_time + (time.monotonic() - tr_start)
 
     def val_one_epoch(self, tr_time):
-        """Validate for one epoch"""
+        """Evaluate MSE over all supervised coordinates in the selected batches."""
         self.model.eval()
         val_start = time.time()
-
-        logs_buff = torch.zeros((1), dtype=torch.float32, device=self.device)
-        self.logs['val_loss'] = logs_buff[0].view(-1)
-
+        totals = torch.zeros(2, dtype=torch.float64, device=self.device)
+        batch_limit = getattr(self.params, 'max_val_batches', None)
         with torch.no_grad():
-            for i, (grouped, _, knearest) in enumerate(self.valid_data_loader):
-                if i >= getattr(self.params, 'max_val_batches', int(1e12)): break
-                b, c = grouped.size(0), grouped.size(-1)
-                # CLAS12: 3 columns [eta, phi, r], no energy (was reshape(...,4)[:,:,1:]).
-                # [FIX] same reasoning as the train loop above.
-                targets = grouped.reshape(b, -1, c).to(self.device)
-                klabel = knearest.reshape(b, -1, self.klen * 3).to(self.device)
-                grouped = grouped.reshape(b, -1, c).to(self.device)
-
-                point_pred = self.model(grouped)
-
-                if self.params.rep_aaai:
-                    if not self.params.nexttoken:
-                        point_pred = point_pred[:, :-1]
-                        targets = targets[:, 1:]
-                        klabel = klabel[:, 1:]
-                    else:
-                        point_pred = point_pred[:, :-2]
-                        targets = targets[:, 2:]
-                        klabel = klabel[:, 2:]
-
-                kpred = point_pred
-                kmask = klabel != -100
-                tmask = targets[..., 0] != -100
-
-                # [BAND CLASSIFICATION TOGGLE] same mixed loss as training.
-                if self.band_classification:
-                    loss = self.band_mixed_loss(point_pred, klabel)
-                else:
-                    loss_kpred = self.loss_func_eval(kpred[kmask], klabel[kmask]).mean()
-                    loss = loss_kpred
-
-                if self.params.ablate_loss_scale:
-                    loss = loss * self.params.ablate_loss_scale_rate
-
-                self.logs['val_loss'] += loss.detach()
-
-        # [FIX] Divide by the number of batches ACTUALLY iterated, not the full
-        # loader length. With max_val_batches set, the loop breaks early -- dividing
-        # by len(loader) understated val loss by (len(loader)/max_val_batches)x.
-        n_val_batches = min(
-            getattr(self.params, 'max_val_batches', int(1e12)),
-            len(self.valid_data_loader),
-        )
-        self.logs['val_loss'] /= max(n_val_batches, 1)
+            for grouped, _, knearest in islice(self.valid_data_loader, batch_limit):
+                inputs, targets, mask, _ = self._batch_targets(grouped, knearest)
+                errors = self._squared_errors(inputs, targets, mask)
+                totals[0] += errors.sum(dtype=torch.float64)
+                totals[1] += mask.sum()
 
         if dist.is_initialized():
-            dist.all_reduce(self.logs['val_loss'].detach())
-            self.logs['val_loss'] = self.logs['val_loss'] / dist.get_world_size()
-
+            dist.all_reduce(totals)
+        if totals[1].item() == 0:
+            raise ValueError("Validation produced no valid outward-neighbor targets")
+        val_loss = (totals[0] / totals[1]).float()
+        if self.params.ablate_loss_scale:
+            val_loss *= self.params.ablate_loss_scale_rate
+        self.logs['val_loss'] = val_loss.view(1)
         val_time = time.time() - val_start
 
         # Track best model
@@ -620,16 +485,24 @@ class Trainer():
             wandb.finish()
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--yaml_config", default='./config/AFNO.yaml', type=str)
-    parser.add_argument("--config", default='full_field_train', type=str)
+def main():
+    parser = argparse.ArgumentParser(prog="python -m train.pretrain", description="Pretrain a CLAS12 backbone")
+    default_recipe = Path(__file__).resolve().parents[3] / 'scripts/configs/mamba_chinchilla_sweep.yaml'
+    parser.add_argument("--yaml_config", default=str(default_recipe), type=str)
+    parser.add_argument("--config", default='scale_w64_d12_bgmerged_hdf5', type=str)
+    parser.add_argument("--data-root", help="Override the recipe's pretraining dataset directory")
     parser.add_argument("--run_num", default='00', type=str)
-    parser.add_argument("--root_dir", default='/pscratch/sd/d/dpark1/NPFN/PRETRAIN_MAMBA', type=str)
+    parser.add_argument("--root_dir", default=artifact_path('pretrain'), type=str)
     parser.add_argument("--global_log_dir", default='globallogs', type=str)
 
     args = parser.parse_args()
     params = YParams(os.path.abspath(args.yaml_config), args.config)
 
+    if args.data_root:
+        params['data_root'] = args.data_root
     trainer = Trainer(params, args)
     trainer.launch()
+
+
+if __name__ == '__main__':
+    main()

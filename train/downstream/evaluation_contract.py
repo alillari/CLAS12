@@ -37,13 +37,14 @@ def is_entrance_evaluation(payload):
         payload.get("evaluation_contract") == EVALUATION_CONTRACT
         and payload.get("comparison_truth") == "mctrue_inner_hit"
         and not payload.get("swingback_enabled", False)
+        and ("adapter_to_cvt_resolution_ratio" not in payload or "adapter_cvt_matched_tracks" in payload)
     )
 
 
 def require_entrance_evaluation(payload, source):
     if not is_entrance_evaluation(payload):
         raise ValueError(
-            f"{source} contains legacy or unversioned momentum evaluation. "
+            f"{source} contains legacy, unversioned, or unmatched momentum metrics. "
             "Reevaluate the existing adapter checkpoint with the entrance-only "
             "evaluator, then collate again; retraining is not required."
         )

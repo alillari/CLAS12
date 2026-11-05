@@ -22,6 +22,33 @@ The configuration is `hdf5_noise_5k` in `scripts/configs/clas12_adapter_recipes.
 Samples are whole events. The trainer forces event sampling to retain background.
 Labels use `primary_segment < 0` (including contested clusters) as noise. The
 COATJAVA baseline is explicitly its unassigned clusters, not a dedicated noise
-prediction. Checkpoints are selected by validation loss; evaluation uses argmax.
+prediction. Checkpoints are selected by validation loss. Evaluation reports the
+default threshold and thresholds selected on validation for 95%, 99%, and
+COATJAVA-matched signal retention. Test labels never select thresholds.
 The ordinary `eval_point_classification.py` CLI accepts the explicit downstream
 checkpoint and optional pretrained backbone, and evaluates the HDF5 test split.
+
+## Class-balanced training
+
+Use `--class-balance inverse_frequency` for the matched 5k/3k control, or
+`--config hdf5_noise_50k_balanced` for 50,000 training events and 30,000 updates
+with 5,000 validation and 10,000 test events. The larger recipe uses batch 32,
+AdamW with peak learning rate 3e-4, weight decay 1e-4, 1,000 warmup updates,
+cosine decay to 1e-5, gradient norm clipping at 1.0, and validation every 1,000
+updates. It retains the pilot's 759,310-parameter attention head and seed 42.
+Both runs are AdapterOnly: no pretrained backbone features enter the head.
+
+For each class c, the weight is N/(2*N_c), counted from accepted training
+events. This gives equal total weight to signal and noise; it does not force
+equal prediction counts. Padding is excluded. These weights are fixed during
+validation and recorded in the resolved config and checkpoint. Validation loss
+is pooled over clusters; per-class losses, signal retention, and noise rejection
+are also logged in `checkpoints/training.log.jsonl`.
+
+`validation_metrics.json` records calibration; `test_metrics.json` records fixed
+operating points and a threshold curve. Compressed score files and per-event
+prediction records allow subsequent analysis without rerunning inference. Class
+weighting changes score calibration, so interpret scores through these measured
+tradeoffs. For diagnosis of a previous run use `--checkpoint /path/to/checkpoint`
+with the matching original recipe and cohort sizes; add `--evaluate-training`
+to compare training and validation score separation.

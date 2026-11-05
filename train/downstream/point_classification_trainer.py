@@ -2,6 +2,7 @@ import numpy as np
 from sklearn.metrics import adjusted_rand_score
 import os, sys, time, shutil, random
 import argparse
+import json
 import torch
 
 import torch.nn as nn
@@ -37,6 +38,7 @@ from fm4npp.models.mamba2 import Mamba2
 from model import *
 from loss import *
 from downstream_util import *
+from train.downstream.noise_metrics import inverse_frequency_weights, training_class_counts, confusion_metrics
 
 class DownstreamTrainer():
     
@@ -98,6 +100,7 @@ class DownstreamTrainer():
         self.params["require_pid_target"] = self.params.task == "pid"
         self.params["require_noise_target"] = self.params.task == "nid"
         self.params["require_reg_target"] = False
+        self.class_weights = None
         if self.params.task == "nid":
             # Noise is an event-level task: selecting a truth segment removes
             # precisely the negative examples this head needs to learn from.
@@ -107,6 +110,23 @@ class DownstreamTrainer():
 
 
         
+    def configure_class_weights(self):
+        policy = getattr(self.params, "noise_class_balance", "none")
+        if policy not in {"none", "inverse_frequency"}:
+            raise ValueError("noise_class_balance must be none or inverse_frequency")
+        if policy == "inverse_frequency":
+            if self.params.task != "nid":
+                raise ValueError("noise_class_balance is only defined for task=nid")
+            counts = training_class_counts(self.train_data_loader.dataset)
+            weights = inverse_frequency_weights(counts)
+            self.params["noise_class_counts"] = counts.tolist()
+            self.params["point_class_weights"] = weights.tolist()
+            self.class_weights = torch.tensor(weights, dtype=torch.float32, device=self.device)
+            print(f"Training class counts [signal, noise]: {counts.tolist()}; weights: {weights.tolist()}", flush=True)
+        else:
+            self.params["point_class_weights"] = None
+            self.class_weights = None
+
     def init_exp_dir(self, exp_dir):
                    
         if self.world_rank==0:
@@ -360,6 +380,8 @@ class DownstreamTrainer():
         self.train_data_loader, self.train_sampler, self.val_data_loader, _ = get_data_loader(self.params, 
                                                                                               dist.is_initialized())
 
+        self.configure_class_weights()
+
         # set loss functions
         self.loss_func = nn.MSELoss(reduction='none')
         self.centroid_loss_func = nn.MSELoss(reduction='none')
@@ -387,15 +409,7 @@ class DownstreamTrainer():
         #  training
         #self.train()
 
-    def inference(self, checkpoint_path, pretrain=True, logfile=None):
-        """Initialize model and load weights for inference"""
-        # 1. Initialize model architecture
-        #self.down_model = MambaHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
-        #                          d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone,
-        #                          num_embedder_layers= self.params.num_embedder_layers, 
-        #                          ).to(self.device)
-
-
+    def build_head(self):
         if self.params.use_attention_head and getattr(self.params, "adapter_version", "mamba2") != "transformer":
             self.down_model = AttentionHead(**adapter_options(self.params), input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
                           embed_method=self.params.embed_method, pe_method=self.params.pe_method,
@@ -413,6 +427,12 @@ class DownstreamTrainer():
                                       ).to(self.device)
 
     
+        return self.down_model
+
+    def inference(self, checkpoint_path, pretrain=True, logfile=None):
+        """Initialize model and load weights for inference"""
+        self.build_head()
+
         total_params = sum(p.numel() for p in self.down_model.parameters())
         print(f"Total parameters in down_model: {total_params}")
         self.down_optimizer = optim.AdamW(optimizer_parameters(self.down_model),
@@ -471,6 +491,7 @@ class DownstreamTrainer():
                 }
 
                 losses = simple_point_loss(
+                    class_weights=self.class_weights,
                     outputs=outputs,
                     targets=targets,
                     mask=mask,
@@ -568,21 +589,7 @@ class DownstreamTrainer():
         #                          num_embedder_layers= self.params.num_embedder_layers, 
         #                          ).to(self.device)
 
-        if self.params.use_attention_head and getattr(self.params, "adapter_version", "mamba2") != "transformer":
-            self.down_model = AttentionHead(**adapter_options(self.params), input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
-                          embed_method=self.params.embed_method, pe_method=self.params.pe_method,
-                          num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
-                          num_embedder_layers= self.params.num_embedder_layers, 
-                          ).to(self.device)
-        
-        else:
-            self.down_model = MambaHead(**adapter_options(self.params), **adapter_dimensions(self.params),
-                                      embed_method=self.params.embed_method, pe_method=self.params.pe_method,
-                                      pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4),
-                                      input_dim=self.params.embed_dim, num_output_dim = self.params.num_output_classes,
-                                      d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone,
-                                      num_embedder_layers= self.params.num_embedder_layers, 
-                                      ).to(self.device)
+        self.build_head()
 
         #print number of parameters in the model
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -746,6 +753,7 @@ class DownstreamTrainer():
         }
 
         losses = simple_point_loss(
+            class_weights=self.class_weights,
             outputs=outputs,
             targets=targets,
             mask=mask,
@@ -792,6 +800,12 @@ class DownstreamTrainer():
                     if val_loss < self.best_loss:
                         self.best_loss = val_loss
                         self._save_checkpoint(filename, epoch, True, val_loss)
+                    metrics = getattr(self, "last_validation_metrics", {})
+                    history = dict(step=self.global_step, epoch=epoch, train_loss=float(np.mean(losses)),
+                                   learning_rate=self.down_optimizer.param_groups[0]["lr"] if hasattr(self, "down_optimizer") else None,
+                                   validation=metrics)
+                    with open(log_path + ".jsonl", "a") as stream:
+                        stream.write(json.dumps(history) + "\n")
                     with open(log_path, "a") as stream:
                         stream.write(f"step={self.global_step}\ttrain={np.mean(losses):.8f}\tvalidation={val_loss:.8f}\n")
                     print(f"step={self.global_step} train={np.mean(losses):.6f} validation={val_loss:.6f}", flush=True)
@@ -805,6 +819,9 @@ class DownstreamTrainer():
         self.down_model.eval()  # Set downstream head to eval mode
         val_loss = 0.0
         total_samples = 0
+        class_counts = np.zeros(self.params.num_output_classes, dtype=np.int64)
+        class_losses = np.zeros(self.params.num_output_classes, dtype=np.float64)
+        confusion = np.zeros((self.params.num_output_classes, self.params.num_output_classes), dtype=np.int64)
 
         with torch.no_grad():  # Disable gradient calculation
             for i, inputdict in enumerate(tqdm(self.val_data_loader)):
@@ -835,10 +852,18 @@ class DownstreamTrainer():
                 }
 
                 losses = simple_point_loss(
+                    class_weights=self.class_weights,
                     outputs=outputs,
                     targets=targets,
                     mask=mask,
                 )
+                labels = targets["labels"][mask]
+                logits = pred_logits[mask]
+                raw_loss = F.cross_entropy(logits, labels, reduction="none")
+                classes = self.params.num_output_classes
+                class_counts += torch.bincount(labels, minlength=classes).cpu().numpy()
+                class_losses += torch.bincount(labels, weights=raw_loss, minlength=classes).cpu().numpy()
+                confusion += torch.bincount(classes * labels + logits.argmax(-1), minlength=classes**2).reshape(classes, classes).cpu().numpy()
                 metric_outputs = {"pred_logits": pred_logits[mask].unsqueeze(0)}
                 metric_targets = {"labels": targets["labels"][mask].unsqueeze(0)}
                 precision, recall, accuracy = compute_multiclass_metrics(
@@ -854,7 +879,18 @@ class DownstreamTrainer():
 
 
         # Final validation metrics
-        avg_loss = np.mean(self.down_results['val'])
+        weights = self.class_weights.detach().cpu().numpy() if self.class_weights is not None else np.ones_like(class_losses)
+        denominator = float(class_counts @ weights)
+        avg_loss = float(class_losses @ weights / denominator) if denominator else float("nan")
+        if self.params.task != "nid":
+            # Preserve the existing PID checkpoint-selection behavior.
+            avg_loss = float(np.mean(self.down_results['val']))
+        per_class = np.divide(class_losses, class_counts, out=np.full_like(class_losses, np.nan), where=class_counts > 0)
+        self.last_validation_metrics = dict(loss=avg_loss, class_counts=class_counts.tolist(),
+            per_class_ce=per_class.tolist(), unweighted_ce=float(class_losses.sum() / max(1, class_counts.sum())))
+        if self.params.task == "nid":
+            self.last_validation_metrics.update(confusion_metrics(confusion))
+            self.last_validation_metrics["balanced_ce"] = float(np.mean(per_class))
 
         # Print validation results
         if self.log_to_screen:
@@ -871,6 +907,9 @@ class DownstreamTrainer():
             'adapter_architecture': architecture_metadata(self.down_model),
             'optimizer_state_dict': self.down_optimizer.state_dict(),
             'scheduler_state_dict': self.down_scheduler.state_dict(),
+            'validation_metrics': getattr(self, 'last_validation_metrics', {}),
+            'class_weights': self.params.params.get('point_class_weights'),
+            'class_counts': self.params.params.get('noise_class_counts'),
             'best_loss': self.best_loss,
             'current_loss': loss,
             'params': vars(self.params)  # Save all hyperparameters
@@ -897,12 +936,15 @@ class DownstreamTrainer():
     
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        self.loaded_checkpoint_step = checkpoint.get('global_step')
     
         # 3. Handle DDP keys
         validate_checkpoint_architecture(
             checkpoint, self.down_model, 'adapter',
             backbone=self.model if getattr(self.params, 'pretrained_ckpt', None) else None,
         )
+        weights = checkpoint.get("class_weights")
+        self.class_weights = None if weights is None else torch.tensor(weights, dtype=torch.float32, device=self.device)
         state_dict = checkpoint['model_state_dict']
         print("Trained weighted_avg_weights:", state_dict["weighted_avg_weights"])
         new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}

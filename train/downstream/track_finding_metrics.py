@@ -100,6 +100,7 @@ def event_track_metrics(
     truth_background = valid & (truth == config.background_label)
     truth_signal = valid & ~truth_background
     pred_signal = pred_signal & valid
+    pred = np.where(pred_signal, pred, -1)
 
     true_ids = sorted(np.unique(truth[truth_signal]).tolist())
     pred_ids = sorted(np.unique(pred[pred_signal]).tolist())
@@ -141,14 +142,14 @@ def event_track_metrics(
 
     matches = []
     if n_pred and n_true:
-        row_ind, col_ind = linear_sum_assignment(-iou)
+        eligible = ((iou >= config.iou_threshold) & (purity >= config.min_purity)
+                    & (efficiency >= config.min_efficiency))
+        # One more eligible match outweighs the largest possible total IoU gain.
+        bonus = min(n_pred, n_true) + 1
+        weights = np.where(eligible, bonus + iou, 0.)
+        row_ind, col_ind = linear_sum_assignment(-weights)
         for pidx, tidx in zip(row_ind, col_ind):
-            is_match = (
-                iou[pidx, tidx] >= config.iou_threshold
-                and purity[pidx, tidx] >= config.min_purity
-                and efficiency[pidx, tidx] >= config.min_efficiency
-            )
-            if is_match:
+            if eligible[pidx, tidx]:
                 matches.append({
                     "pred_id": int(pred_ids[pidx]),
                     "true_id": int(true_ids[tidx]),

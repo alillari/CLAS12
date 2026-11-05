@@ -1,5 +1,6 @@
 """Validation aggregation, immutable snapshot, and trend-analysis integration."""
 
+import os
 import json
 from pathlib import Path
 import tempfile
@@ -18,6 +19,12 @@ from train.downstream.campaign.plot_track_finding_validation import main as plot
 
 
 class FixtureHead(torch.nn.Module):
+    softmax_mask = False
+    do_masked_attn = True
+    num_heads = 4
+    embed_method = "add"
+    pe_method = "nerf"
+
     def __init__(self):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.ones(()))
@@ -45,6 +52,8 @@ def fixture_trainer(directory):
         checkpoint_dir=str(directory), training_log_path=str(Path(directory) / "training.log"),
         save_validation_checkpoints=True,
     )
+    trainer.use_pretrained_backbone = False
+    trainer.backbone_sha256 = None
     trainer.device = "cpu"
     trainer.use_lora = trainer.use_amp = trainer.log_to_screen = False
     trainer.model = torch.nn.Identity()
@@ -103,9 +112,129 @@ class ValidationHistoryTest(unittest.TestCase):
             self.assertAlmostEqual(summary["track_purity"], 5/6)
             self.assertAlmostEqual(summary["track_purity_global"], 4/5)
             self.assertAlmostEqual(summary["background_rejection"], 2/3)
-            # Preserve the historical selection rule separately from event means.
-            self.assertAlmostEqual(np.mean(trainer.down_results["ARI_2"]), .5)
+            self.assertAlmostEqual(trainer._selection_ari(2), 2/3)
+            self.assertAlmostEqual(loss, trainer._last_validation_loss_event_mean)
             self.assertIn("val/option2/ari_with_background", trainer._validation_metric_callback())
+
+    def test_selection_is_batch_invariant_and_restores_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = fixture_trainer(directory)
+            points = torch.cat([b["points"] for b in trainer.val_data_loader])[:3]
+            labels = torch.cat([b["target"] for b in trainer.val_data_loader])[:3]
+            losses = []
+            trainer.model.eval()
+            trainer.down_model.train()
+            for size in (1, 2, 3):
+                trainer.val_data_loader = [dict(points=x, target=y)
+                                           for x, y in zip(points.split(size), labels.split(size))]
+                losses.append(trainer.validate_end_to_end_one_epoch())
+                self.assertAlmostEqual(trainer._selection_ari(2), 2/3)
+                self.assertTrue(trainer.down_model.training)
+                self.assertFalse(trainer.model.training)
+            np.testing.assert_allclose(losses, losses[0], rtol=1e-6)
+            trainer.model.train()
+            trainer.down_model.eval()
+            trainer.val_data_loader = [dict(points=points, target=torch.full_like(labels, -1))]
+            with self.assertRaisesRegex(RuntimeError, "no events eligible"):
+                trainer.validate_end_to_end_one_epoch()
+            self.assertTrue(trainer.model.training)
+            self.assertFalse(trainer.down_model.training)
+
+    def test_option_one_validation_excludes_no_object_queries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = fixture_trainer(directory)
+            trainer.down_model.classes[0, 1] = torch.tensor([.95, .05])
+            first = trainer.val_data_loader[0]
+            trainer.val_data_loader = [{k: v[:1] for k, v in first.items()}]
+            trainer.validate_end_to_end_one_epoch()
+            metrics = trainer._last_validation_metrics[1]
+            self.assertEqual(metrics["n_matched_tracks"], 1)
+            self.assertAlmostEqual(metrics["signal_loss_to_background"], .5)
+
+    def test_epoch_cap_validates_last_update_and_saves_only_a_selected_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = fixture_trainer(directory)
+            trainer.params.max_optimizer_steps = 10
+            trainer.params.max_epochs = 1
+            trainer.params.val_interval_steps = 4
+            trainer.startEpoch = trainer.global_step = trainer.iters = 0
+            trainer.last_validation_step = None
+            trainer.patience = 3
+            trainer.grad_clip_value = 1.
+            trainer.scaler = torch.amp.GradScaler("cuda", enabled=False)
+            trainer.train_data_loader = [None, None]
+            trainer._compute_batch_loss = lambda *args, **kwargs: (trainer.down_model.weight.square(), {}, {})
+            best = Path(directory, "selected.pth")
+            best.write_bytes(b"stale")
+            trainer.params.trained_checkpoint_path = None
+            with self.assertRaisesRegex(RuntimeError, "no finite validation checkpoint"):
+                trainer._require_selected_checkpoint()
+            trainer._train_by_optimizer_step(False, trainer.params.training_log_path, best.name)
+            trainer._require_selected_checkpoint()
+            self.assertEqual(trainer.params.trained_checkpoint_path, str(best))
+            record, = read_history(trainer.params.validation_history_dir)
+            self.assertEqual(record['selection_aggregation'], 'mean_of_eligible_events')
+            self.assertEqual(record['step'], 2)
+            self.assertEqual(torch.load(best, weights_only=False)['best_step'], 2)
+
+    def test_failed_checkpoint_write_preserves_destination_and_published_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = fixture_trainer(directory)
+            trainer.params.trained_checkpoint_path = None
+            best = Path(directory, 'best.pth')
+            best.write_bytes(b'prior run')
+            with patch('torch.save', side_effect=OSError('write failed')):
+                with self.assertRaisesRegex(OSError, 'write failed'):
+                    trainer._save_checkpoint(best.name, 0, True, .5)
+            self.assertIsNone(trainer.params.trained_checkpoint_path)
+            self.assertEqual(best.read_bytes(), b'prior run')
+            self.assertEqual(list(best.parent.iterdir()), [best])
+
+    def test_multirank_guard_precedes_device_setup_and_file_creation(self):
+        from train.downstream.track_finding_experiment import train_experiment
+
+        with patch.dict(os.environ, WORLD_SIZE='2'), patch('torch.distributed.init_process_group') as init:
+            for launch in (lambda: train_experiment(None), lambda: DownstreamTrainer(None, None)):
+                with self.assertRaisesRegex(RuntimeError, "Track finding supports one process"):
+                    launch()
+            init.assert_not_called()
+        with patch.dict(os.environ, WORLD_SIZE='1'), patch('torch.distributed.is_initialized', return_value=True), \
+             patch('torch.distributed.get_world_size', return_value=2):
+            with self.assertRaisesRegex(RuntimeError, "Track finding supports one process"):
+                train_experiment(None)
+
+    def test_checkpoint_guards_mode_decoder_and_backbone_including_legacy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = fixture_trainer(directory)
+            trainer.use_pretrained_backbone = True
+            trainer.params.pretrained_ckpt = '/old/mount/base.pth'
+            trainer.backbone_sha256 = 'trained-digest'
+            best = Path(directory, 'adapter.pth')
+            trainer._save_checkpoint(best.name, 0, True, .5)
+            trainer.load_checkpoint(best, inference=True, use_pretrained_backbone=True)
+            with self.assertRaisesRegex(ValueError, 'input mode'):
+                trainer.load_checkpoint(best, inference=True, use_pretrained_backbone=False)
+            for key, changed in [('do_masked_attn', False), ('softmax_mask', True), ('num_heads', 8)]:
+                with patch.object(trainer.down_model, key, changed):
+                    with self.assertRaisesRegex(ValueError, 'decoder mismatch'):
+                        trainer.load_checkpoint(best, inference=True, use_pretrained_backbone=True)
+            trainer.backbone_sha256 = 'different-digest'
+            with self.assertRaisesRegex(ValueError, 'different pretrained backbone weights'):
+                trainer.load_checkpoint(best, inference=True, use_pretrained_backbone=True)
+            trainer.backbone_sha256 = None
+            with self.assertRaisesRegex(ValueError, 'loaded pretrained backbone'):
+                trainer.load_checkpoint(best, inference=True, use_pretrained_backbone=True)
+            old = torch.load(best, weights_only=False)
+            del old['forward_config']
+            old['params'] = {'params': {'pretrained_ckpt': None, 'softmax_mask': False}}
+            torch.save(old, best)
+            trainer.load_checkpoint(best, inference=True, use_pretrained_backbone=False)
+            with self.assertRaisesRegex(ValueError, 'input mode'):
+                trainer.load_checkpoint(best, inference=True, use_pretrained_backbone=True)
+            old['params'] = {}
+            torch.save(old, best)
+            with self.assertRaisesRegex(ValueError, 'legacy'):
+                trainer.load_checkpoint(best, inference=True, use_pretrained_backbone=False)
 
     def test_every_validation_is_retained_and_snapshot_roundtrips(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -164,13 +293,16 @@ class ValidationHistoryTest(unittest.TestCase):
             trainer.grad_clip_value = 1.
             trainer.scaler = torch.amp.GradScaler("cuda", enabled=False)
             trainer.train_data_loader = [None, None, None]
-            trainer._compute_batch_loss = lambda *args, **kwargs: (
-                trainer.down_model.weight.square(), {}, {},
-            )
+            training_modes = []
+            def train_batch(*args, **kwargs):
+                training_modes.append(trainer.down_model.training)
+                return trainer.down_model.weight.square(), {}, {}
+            trainer._compute_batch_loss = train_batch
             trainer._train_by_optimizer_step(
                 pretrain=False, log_file_path=trainer.params.training_log_path,
                 checkpoint_file_name="best.pth",
             )
+            self.assertEqual(training_modes, [True, True])
             rows = read_history(trainer.params.validation_history_dir)
             self.assertEqual([row["step"] for row in rows], [1, 2])
             self.assertEqual([row["selected_best"] for row in rows], [True, False])

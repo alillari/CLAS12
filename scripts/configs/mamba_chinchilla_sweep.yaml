@@ -4,6 +4,7 @@
 # CLAS12_PRETRAIN_STATS is used only with loss_reweight: true.
 
 default: &default
+  hilbert_angular_grid: unit_v2
   # === Data Paths (UPDATE THESE) ===
   data_root: ${CLAS12_PRETRAIN_DATA:-/path/to/cluster_event_product}
   stat_dir: ${CLAS12_PRETRAIN_STATS:-/path/to/pretraining_stats}

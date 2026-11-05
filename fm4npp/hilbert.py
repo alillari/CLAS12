@@ -416,6 +416,50 @@ def assign_clas12_layer(r, band_config=CLAS12_DEFAULT_BAND_CONFIG):
     raise ValueError(f"Unsupported CLAS12 band_config={band_config!r}")
 
 
+LEGACY_HILBERT_GRID = "legacy_v1"
+DEFAULT_HILBERT_GRID = "unit_v2"
+
+
+def validate_hilbert_grid(angular_grid):
+    if angular_grid not in (LEGACY_HILBERT_GRID, DEFAULT_HILBERT_GRID):
+        raise ValueError(f"Unknown Hilbert angular grid: {angular_grid!r}")
+    return angular_grid
+
+
+def validate_checkpoint_hilbert_grid(checkpoint, params):
+    """Require matching ordering for resumes and frozen-backbone/adapter loads."""
+    serialization = getattr(params, "serialization", "clas12_band_hilbert")
+    if serialization not in ("clas12_band_hilbert", "clas12_band_hilbert_legacy6", "clas12_band_hilbert_6"):
+        return
+    requested = validate_hilbert_grid(getattr(params, "hilbert_angular_grid", DEFAULT_HILBERT_GRID))
+    saved = validate_hilbert_grid(checkpoint.get("hilbert_angular_grid", LEGACY_HILBERT_GRID))
+    if requested != saved:
+        raise ValueError(
+            f"Checkpoint Hilbert grid {saved!r} differs from requested {requested!r}. "
+            f"Set hilbert_angular_grid: {saved} in the model recipe to use this checkpoint. "
+            "Unmarked historical checkpoints use legacy_v1."
+        )
+
+
+def clas12_hilbert_cells(phi, eta, num_bits=10, *, angular_grid=DEFAULT_HILBERT_GRID, scaler=1e4):
+    """Quantize normalized (phi, eta) for ordering only; model inputs retain full precision."""
+    angles = torch.stack([phi, eta], dim=-1)
+    cells_per_axis = 2 ** num_bits
+    if angular_grid == LEGACY_HILBERT_GRID:
+        cells = (angles * scaler).long()
+        assert torch.all(cells >= 0), "Expected non-negative normalized Hilbert coordinates"
+    elif angular_grid == "unit_v2":
+        if scaler != 1e4:
+            raise ValueError("A custom scaler is only supported with the legacy Hilbert grid")
+        if not torch.isfinite(angles).all():
+            raise ValueError("Hilbert angles must be finite")
+        # Equal-width cells on [0, 1]. Values outside that interval use the boundary cell.
+        cells = (angles.clamp(0., 1.) * cells_per_axis).long()
+    else:
+        raise ValueError(f"Unknown Hilbert angular grid: {angular_grid!r}")
+    return cells.clamp_max(cells_per_axis - 1)
+
+
 def clas12_band_hilbert_order(
     phi,
     eta,
@@ -423,55 +467,17 @@ def clas12_band_hilbert_order(
     num_bits=10,
     scaler=1e4,
     band_config=CLAS12_DEFAULT_BAND_CONFIG,
+    *,
+    angular_grid=DEFAULT_HILBERT_GRID,
 ):
+    """Sort by detector band, then by the 2D Hilbert code of normalized (phi, eta).
+
+    The default unit_v2 grid spans the normalized axes at the requested bit depth.
+    Select legacy_v1 explicitly to reproduce historical scaling and clipping.
     """
-    Order CLAS12 points by: (1) exact layer band [guaranteed, zero
-    cross-layer interleaving], then (2) 2D Hilbert curve over (phi, eta)
-    within each band [locality-preserving angular tie-break].
-
-    Params:
-    -------
-     phi, eta, r: 1D tensors of shape (N,), already in whatever normalized
-                  range apply_norm produces (expected ~[0,1] each, but this
-                  function only requires phi/eta to be non-negative after
-                  scaling -- see note below).
-     num_bits: bits of precision per axis for the 2D Hilbert encoding.
-               10 bits = 1024 distinct values per axis, comfortably more
-               resolution than needed for typical per-layer point counts.
-     scaler: float-to-integer scaling factor applied to phi/eta before
-             quantizing to the Hilbert hypercube. Must be large enough
-             that distinct phi/eta values don't collapse to the same
-             integer, but produce values < 2**num_bits after scaling.
-     band_config: "calibrated12" (default) or "legacy6".
-
-    Returns:
-    --------
-     sorter: 1D long tensor of shape (N,), the permutation that orders
-             the input points as described above. Apply via
-             tensor[sorter] to any (N, ...) array aligned with phi/eta/r.
-
-    Note on phi/eta sign: phi and eta can be negative (e.g. phi in
-    [-pi, pi]). Since encode() requires non-negative integer coordinates,
-    this function shifts both by a fixed offset before scaling. If phi/eta
-    are passed in already normalized to [0, 1] (i.e. apply_norm has already
-    run), no offset is needed -- this is the expected calling convention.
-    """
-    N = phi.shape[0]
-    assert eta.shape[0] == N and r.shape[0] == N
-
-    layer_idx = assign_clas12_layer(r, band_config=band_config)  # (N,)
-
-    # Quantize phi/eta to non-negative integers for the 2D Hilbert encode.
-    # Expects phi, eta already normalized to [0, 1] (apply_norm convention) --
-    # if not, shift to non-negative range before calling this function.
-    locs = torch.stack([phi, eta], dim=-1)  # (N, 2)
-    locs_int = (locs * scaler).long()
-    assert torch.all(locs_int >= 0), (
-        "phi/eta produced negative integers after scaling -- pass "
-        "already-normalized [0,1] values, or add an offset before scaling."
-    )
-    max_val = 2 ** num_bits - 1
-    locs_int = torch.clamp(locs_int, max=max_val)
+    assert phi.shape == eta.shape == r.shape
+    layer_idx = assign_clas12_layer(r, band_config=band_config)
+    locs_int = clas12_hilbert_cells(phi, eta, num_bits, angular_grid=angular_grid, scaler=scaler)
 
     hilbert_codes = encode(locs_int, num_dims=2, num_bits=num_bits)  # (N,)
 

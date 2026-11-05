@@ -39,8 +39,8 @@ class TrackFindingValidationLoggingTest(unittest.TestCase):
                 )
 
                 def validate(**kwargs):
-                    trainer.down_results["ARI"].extend([.1, .3])
-                    trainer.down_results["ARI_2"].extend([.6, .8])
+                    key = 'ari_signal' if mode == 'signal' else 'ari_with_background'
+                    trainer._last_validation_metrics = {1: {key: .2}, 2: {key: .7}}
                     return .5
 
                 trainer.validate_end_to_end_one_epoch = validate

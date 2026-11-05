@@ -104,6 +104,8 @@ class MambaAttentionHead(nn.Module):
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.num_prototypes = num_prototypes
+        self.embed_method = embed_method
+        self.pe_method = pe_method
         self.softmax_mask = softmax_mask
         self.do_masked_attn = do_masked_attn
         self.num_heads = num_heads

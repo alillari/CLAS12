@@ -59,16 +59,6 @@ from physics_checkpoints import (
 VALIDATION_LOSS_REDUCTION = "mean_over_valid_terms"
 
 
-def require_single_process():
-    """The regression head and checkpoint writer are single-process only."""
-    if (int(os.environ.get("WORLD_SIZE", 1)) != 1
-            or (dist.is_initialized() and dist.get_world_size() != 1)):
-        raise RuntimeError(
-            "Momentum regression supports one process. Launch with WORLD_SIZE=1 "
-            "or torchrun --nproc-per-node=1."
-        )
-
-
 class DownstreamTrainer():
 
     def __init__(self, params, args):

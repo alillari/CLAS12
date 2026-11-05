@@ -158,6 +158,7 @@ def main():
     summary.pop('threshold_curve')
     summary.update(
         task='noise',
+        training_mode='adapteronly',
         optimizer_steps=getattr(trainer, 'global_step', None),
         selected_checkpoint_step=trainer.loaded_checkpoint_step,
         evaluated_existing_checkpoint=args.checkpoint is not None,

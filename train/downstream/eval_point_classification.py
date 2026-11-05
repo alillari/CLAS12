@@ -73,6 +73,9 @@ def main():
     params["num_output_classes"] = 2 if params.task == "nid" else 5
     params["limit_data"] = True
     params["limit_size"] = 1  # launch constructs an unused training view
+    # Inference restores the saved training weights; never estimate them from
+    # the unused one-event training view (which may contain only one class).
+    params["noise_class_balance"] = "none"
     params["limit_test_data"] = True
     params["limit_test_size"] = args.eventnumber
     params["drop_last_test"] = False

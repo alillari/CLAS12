@@ -6,12 +6,34 @@ import torch
 
 from train.downstream.loss import simple_point_loss
 from train.downstream.noise_metrics import (
-    at_threshold, calibrate_thresholds, inverse_frequency_weights,
+    at_threshold, calibrate_thresholds, confusion_metrics, inverse_frequency_weights,
     retention_threshold, training_class_counts,
 )
 
 
 class NoiseBalanceTest(unittest.TestCase):
+    def test_explicit_class_precision_recall_and_accuracy(self):
+        metrics = confusion_metrics([[30, 10], [20, 140]])
+        self.assertEqual(metrics['accuracy'], .85)
+        self.assertEqual(metrics['signal_precision'], .6)
+        self.assertEqual(metrics['signal_recall'], .75)
+        self.assertAlmostEqual(metrics['noise_precision'], 140 / 150)
+        self.assertEqual(metrics['noise_recall'], .875)
+        self.assertEqual(metrics['balanced_accuracy'], .8125)
+        self.assertEqual(metrics['signal_retention'], metrics['signal_recall'])
+        self.assertEqual(metrics['noise_rejection'], metrics['noise_recall'])
+
+    def test_undefined_class_metrics_remain_null(self):
+        metrics = confusion_metrics([[0, 5], [0, 15]])
+        self.assertIsNone(metrics['signal_precision'])
+        self.assertIsNone(metrics['macro_precision'])
+        self.assertEqual(metrics['signal_recall'], 0.)
+        self.assertEqual(metrics['accuracy'], .75)
+        self.assertIsNone(confusion_metrics([[0, 0], [0, 0]])['accuracy'])
+        for matrix in ([[1, 2, 3]], [[1, -1], [0, 1]], [[.1, 0], [0, 1]]):
+            with self.assertRaises(ValueError):
+                confusion_metrics(matrix)
+
     def test_equal_class_loss_and_gradient_mass_with_padding(self):
         labels = torch.tensor([[0, 1, 1, 1, 1, -100]])
         logits = torch.zeros(1, 6, 2, requires_grad=True)

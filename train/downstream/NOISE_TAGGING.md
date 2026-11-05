@@ -90,3 +90,52 @@ The immutable training source SHA256 is
 `58f16d9d7cfb411c71f391fc9eee4ef4e5b556371971d7792c483748536e46fb`.
 The audit checks exact control cohorts, common evaluation prefixes, checkpoint
 selection, restored class weights, and completed update budgets.
+
+## Metrics and label-count plotting
+
+Noise evaluation reports accuracy and precision/recall for **both** classes:
+signal is label 0, noise is label 1. Signal recall is the existing signal-retention
+metric; noise recall is noise rejection. Precision answers how many clusters
+predicted as that class actually belong to it. Accuracy uses all valid clusters;
+balanced accuracy averages the two class recalls. Macro precision and recall
+also average the two classes. Metrics pool cluster counts across events and do
+not apply the training loss weights. Zero-denominator metrics are `null`.
+
+These fields appear in benchmark summaries, each calibrated operating point,
+and validation history. The ordinary `eval_point_classification.py` CLI also
+writes an explicitly named metric report beside its legacy log as `<log>.json`.
+
+For future learning curves, copy `scripts/configs/noise_tagging_campaign.example.yaml`
+and list each run's result directory. A completed directory must contain
+`summary.json`, `resolved_config.json`, and `cohorts.json` from the noise benchmark.
+The labeled-event count comes from the actual accepted training cohort. Model IDs
+distinguish model series; repeat a model ID across label budgets and seeds.
+
+```bash
+python -m train.downstream.campaign.collate_noise_tagging_campaign \
+  --manifest /absolute/path/to/noise_campaign.yaml \
+  --output-dir /absolute/path/to/campaign/summary
+
+python -m train.downstream.campaign.plot_noise_tagging_campaign \
+  --run-table /absolute/path/to/campaign/summary/run_table.json \
+  --output-dir /absolute/path/to/campaign/plots \
+  --operating-point default
+```
+
+The plotter also accepts `--manifest` directly. It writes a six-metric overview,
+individual metric plots, and 1x3/3x1 accuracy–precision–recall presentation panels
+for signal and noise, in PNG and PDF. X is labeled training events on a log scale;
+y is the classification metric. COATJAVA's unassigned-cluster baseline is dashed.
+Use `--operating-point retain_95pct`, `retain_99pct`, or
+`match_coatjava_retention` for the other validation-calibrated views.
+
+Different update budgets, recorded optimization schedules, data contracts, or
+validation/test event identities produce separate comparison directories. The
+JSON table retains the full comparison metadata. Different models, input settings,
+and class-balance policies remain distinct curves within a comparison. Repeated
+seeds use equal-weight seed means and sample-standard-deviation bars; duplicate
+model/budget/seed records are rejected. If any seed's metric is undefined, that
+budget is a plot gap. COATJAVA counts must agree on identical evaluation cohorts;
+the baseline is never averaged across different populations. Unfinished runs are
+listed as skipped. These commands only read results and generate reports; they
+do not launch training or alter checkpoints.

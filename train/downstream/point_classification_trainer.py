@@ -38,7 +38,9 @@ from fm4npp.models.mamba2 import Mamba2
 from model import *
 from loss import *
 from downstream_util import *
-from train.downstream.noise_metrics import inverse_frequency_weights, training_class_counts, confusion_metrics
+from train.downstream.noise_metrics import (
+    METRIC_DEFINITIONS, inverse_frequency_weights, training_class_counts, confusion_metrics,
+)
 
 class DownstreamTrainer():
     
@@ -541,6 +543,13 @@ class DownstreamTrainer():
         with open(logfile, "w") as f:
             f.write(header)
             f.write(values)
+
+        if self.params.task == "nid":
+            matrix = torch.bincount(2 * all_labels.flatten() + all_logits.argmax(-1).flatten(),
+                                    minlength=4).reshape(2, 2).numpy()
+            metrics = dict(metric_definitions=METRIC_DEFINITIONS, **confusion_metrics(matrix))
+            with open(str(logfile) + ".json", "w") as stream:
+                json.dump(metrics, stream, indent=2, allow_nan=False)
 
         
 

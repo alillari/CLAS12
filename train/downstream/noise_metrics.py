@@ -2,6 +2,20 @@
 import numpy as np
 from sklearn.metrics import average_precision_score, roc_auc_score
 
+METRIC_DEFINITIONS = {
+    "unit": "cluster; counts pooled over all evaluated events, padding excluded",
+    "labels": {"0": "signal", "1": "noise"},
+    "accuracy": "correctly classified clusters / all clusters",
+    "signal_precision": "true signal retained / all clusters predicted signal",
+    "signal_recall": "true signal retained / all true signal clusters",
+    "noise_precision": "true noise rejected / all clusters predicted noise",
+    "noise_recall": "true noise rejected / all true noise clusters",
+    "balanced_accuracy": "mean of signal recall and noise recall",
+    "macro_precision": "mean of signal precision and noise precision",
+    "macro_recall": "mean of signal recall and noise recall",
+    "undefined": "null when a denominator is zero; macro metrics require both classes",
+}
+
 
 def inverse_frequency_weights(counts):
     counts = np.asarray(counts, dtype=np.int64)
@@ -24,12 +38,23 @@ def training_class_counts(dataset):
 
 
 def confusion_metrics(matrix):
-    matrix = np.asarray(matrix, dtype=np.int64)
+    matrix = np.asarray(matrix)
+    if (matrix.shape != (2, 2) or not np.isfinite(matrix).all()
+            or np.any(matrix < 0) or np.any(matrix != np.floor(matrix))):
+        raise ValueError("Expected a nonnegative integer 2x2 confusion matrix")
+    matrix = matrix.astype(np.int64)
     tn, fp, fn, tp = matrix.ravel()
     div = lambda x, y: float(x / y) if y else None
+    mean = lambda a, b: None if a is None or b is None else (a + b) / 2
+    signal_precision, signal_recall = div(tn, tn + fn), div(tn, tn + fp)
+    noise_precision, noise_recall = div(tp, tp + fp), div(tp, tp + fn)
     return dict(confusion_true_rows_pred_columns=matrix.tolist(), n_clusters=int(matrix.sum()),
-                noise_precision=div(tp, tp + fp), noise_recall=div(tp, tp + fn),
-                signal_retention=div(tn, tn + fp), signal_precision=div(tn, tn + fn),
+                noise_precision=noise_precision, noise_recall=noise_recall,
+                signal_precision=signal_precision, signal_recall=signal_recall,
+                signal_retention=signal_recall, noise_rejection=noise_recall,
+                balanced_accuracy=mean(signal_recall, noise_recall),
+                macro_precision=mean(signal_precision, noise_precision),
+                macro_recall=mean(signal_recall, noise_recall),
                 accuracy=div(tp + tn, matrix.sum()))
 
 
@@ -58,6 +83,7 @@ def score_summary(labels, noise_score, coatjava_noise):
     both = bool(np.all(counts > 0))
     matrix = np.bincount(2 * labels + np.asarray(coatjava_noise, dtype=np.int64), minlength=4).reshape(2, 2)
     return dict(
+        metric_definitions=METRIC_DEFINITIONS,
         signal_clusters=int(counts[0]), noise_clusters=int(counts[1]),
         all_noise_accuracy=float(counts[1] / counts.sum()),
         signal_roc_auc=float(roc_auc_score(labels == 0, 1. - score)) if both else None,

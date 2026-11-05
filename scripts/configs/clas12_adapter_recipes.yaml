@@ -179,6 +179,10 @@ clas12_momentum_50k: &momentum
   adapter_d_conv: 4
   adapter_expand: 2
 
+hdf5_momentum_5k:
+  <<: [*hdf5, *momentum]
+  model_version: hdf5_momentum_5k
+
 # Inference profiles retain training architecture/normalizer settings and change
 # only the test root. Use the matching analysis template for each task.
 clas12_track_finding_50k_evaluation:

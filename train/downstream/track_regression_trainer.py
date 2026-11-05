@@ -124,6 +124,15 @@ class DownstreamTrainer():
         )
         stats_path = getattr(params, "regression_target_stats", default_stats_path)
         self.regression_target_stats = load_regression_target_stats(stats_path, params.task)
+        if getattr(params, 'reader_type', 'ragged_mmap') == 'hdf5':
+            contract = self.regression_target_stats.get('data_contract') or {}
+            if contract.get('momentum_unit') != 'GeV/c' or contract.get('split') != 'train':
+                raise ValueError('HDF5 regression requires GeV/c statistics from its training split')
+            physics = dict(getattr(params, 'physics_checkpoint', None) or {})
+            if float(physics.get('momentum_scale_to_gev', 1.0)) != 1.0:
+                raise ValueError('HDF5 momentum is already GeV/c; momentum_scale_to_gev must be 1')
+            physics['momentum_scale_to_gev'] = 1.0
+            params['physics_checkpoint'] = physics
         self.params["regression_target_stats"] = stats_path
         # The task mapping is the source of truth for the regression head width.
         # Set it here so training and inference construct compatible heads.

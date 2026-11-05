@@ -86,3 +86,32 @@ working recipe and collate comparisons. [Optuna tuning](tuning/GETTING_STARTED.m
 separate optional search workflow; [probes](probes/README.md) diagnose frozen
 representations and layer mixing. For the complete backbone plus both-adapters
 sequence, use [the worked example](../WORKED_EXAMPLE.md).
+
+## HDF5 AdapterOnly benchmark
+
+This branch integrates momentum regression with the published HDF5 cluster product.
+The shared data support is a separate ancestor commit; the other adapter
+integrations are independent sibling branches.
+
+```bash
+python -m train.downstream.benchmark_hdf5_momentum \
+  --data-root /absolute/path/to/cvt-clusters-h5 \
+  --output-dir /absolute/path/to/new/momentum-run
+```
+
+Defaults: 5,000 accepted training samples, 3,000 updates, 1,000 validation
+samples and 2,000 test samples, seed 42. Cohorts use accepted prefixes. The
+runner checks disjoint source-event identities, reloads the validation-selected
+checkpoint and writes configurations, cohort IDs, predictions and `summary.json`.
+For a smoke test add `--train-size 32 --steps 2 --validation-size 16 --test-size 16`.
+The configuration is `hdf5_momentum_5k` in `scripts/configs/clas12_adapter_recipes.yaml`.
+
+Samples are truth segments with at least 12 clusters. Training-only statistics
+join primary particle IDs explicitly and use GeV/c; legacy MeV statistics or a
+different dataset plan are rejected. Checkpoints use validation loss. COATJAVA
+matches require a unique valid owner and exactly one first-pass candidate;
+missing, ambiguous and invalid-entrance cases are recorded separately. The
+reference uses same-pass p, theta and entrance phi rather than the DOCA vector.
+The adapter uses truth cluster groups, so the paired momentum result is not an
+end-to-end reconstructed-track comparison. All accepted truth tracks are also
+reported for the adapter. Standalone evaluation defaults to the `test` split.

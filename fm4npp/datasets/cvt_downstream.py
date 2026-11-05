@@ -8,6 +8,7 @@ contested ownership) are background for finding and noise for binary tagging.
 import numpy as np
 
 NOISE_POLICY = "primary_unassigned_is_noise_v1"
+ENTRANCE_COLUMNS = ("cvt_benchmark_p", "cvt_benchmark_theta", "cvttraj_entrance_phi")
 
 
 def downstream_split(params, role):
@@ -97,6 +98,43 @@ class CVTDownstreamSource:
                 result[owner == tid] = value
             return result
         raise KeyError(name)
+
+    def primary_tid(self, index, segment_label):
+        labels, tids = self.read(index, ["clusters.primary_segment", "clusters.primary_tid"])
+        selected = np.unique(tids[labels == segment_label])
+        if len(selected) != 1 or selected[0] <= 0:
+            raise ValueError(f"Segment {segment_label} has no unique primary ID in event {index}")
+        return int(selected[0])
+
+    def benchmark(self, index, truth_segment, candidate_segment=None):
+        """First-pass CVT entrance reference; never choose arbitrarily among clones.
+
+        Truth samples require exactly one candidate with a valid unique owner.
+        COATJAVA-segment samples use their own native track ID. Readout purity is
+        recorded as evidence, independently of the dataset's cluster-count cut.
+        """
+        tid = self.primary_tid(index, truth_segment)
+        native, owners, valid, unique, purity, p, theta, phi = self.read(index, [
+            "reco.cvt_tracks." + key for key in ("native", "purity_tid", "purity_valid",
+            "unique_owner", "purity", "benchmark_p", "benchmark_theta", "entrance_phi")])
+        eligible = (owners == tid) & valid & unique
+        if candidate_segment is not None:
+            labels, ids = self.read(index, ["clusters.reco_segment", "clusters.native_track_id"])
+            ids = np.unique(ids[labels == candidate_segment])
+            if len(ids) != 1 or ids[0] <= 0:
+                raise ValueError("Candidate segment has no unique native track ID")
+            eligible &= native["ID"] == ids[0]
+        matches = np.flatnonzero(eligible)
+        result = {"truth_tid": tid, "pass": "CVT", "candidate_count": len(matches),
+                  "track_row": -1, "status": "missing" if not len(matches) else "ambiguous",
+                  "values": np.full(3, np.nan), "purity": np.nan}
+        if len(matches) == 1:
+            row = int(matches[0])
+            values = np.array([p[row], theta[row], phi[row]], dtype=float)
+            good = np.isfinite(values).all() and p[row] > 0 and 0 <= theta[row] <= np.pi
+            result.update(track_row=row, status="matched" if good else "invalid_entrance",
+                          values=values if good else np.full(3, np.nan), purity=float(purity[row]))
+        return result
 
     def close(self):
         self.reader.close()

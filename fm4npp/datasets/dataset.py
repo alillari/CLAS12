@@ -21,6 +21,7 @@ except Exception:
 
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
+from .cvt_downstream import CVTDownstreamSource, downstream_split
 
 #torch.manual_seed(42)
 
@@ -366,12 +367,20 @@ class TPCBatchDataset(Dataset):
                  return_coatjava_seg_pred=False,
                  require_coatjava_seg_pred=False,
                  input_representation='center_only',
-                 hilbert_angular_grid=DEFAULT_HILBERT_GRID):
+                 hilbert_angular_grid=DEFAULT_HILBERT_GRID,
+                 reader_type='ragged_mmap',
+                 compute_neighbors=True):
 
         self.data_root = data_root
         self.split = split
-        self.memmap_feature = RaggedMmap(os.path.join(data_root, f'features_{split}'))
-        self.memmap_seg_target = RaggedMmap(os.path.join(data_root, f'seg_target_{split}'))
+        if reader_type not in {'ragged_mmap', 'hdf5'}:
+            raise ValueError(f"Unsupported downstream reader_type: {reader_type}")
+        if reader_type == 'hdf5' and input_layout != 'xyz':
+            raise ValueError('HDF5 clusters.xyz requires input_layout=xyz (coordinates in cm)')
+        self.hdf5_source = CVTDownstreamSource(data_root, split) if reader_type == 'hdf5' else None
+        self.compute_neighbors = bool(compute_neighbors or return_knn_target)
+        self.memmap_feature = self._open_field('features')
+        self.memmap_seg_target = self._open_field('seg_target')
         self.n_feature_events = len(self.memmap_feature)
         self.input_representation = str(input_representation)
         if self.input_representation not in {
@@ -387,10 +396,10 @@ class TPCBatchDataset(Dataset):
         # Downstream loaders often expect reg_target, but CLAS12 adapter-only may not need it.
         # Load it when present; otherwise create a zero placeholder only for return_dict/return_reg compatibility.
         reg_target_path = os.path.join(data_root, f'reg_target_{split}')
-        if require_reg_target and not os.path.isdir(reg_target_path):
+        if require_reg_target and self.hdf5_source is None and not os.path.isdir(reg_target_path):
             raise FileNotFoundError(f"Required regression target is missing: {reg_target_path}")
         try:
-            self.memmap_reg_target = RaggedMmap(reg_target_path)
+            self.memmap_reg_target = self._open_field('reg_target')
             self.has_reg_target = True
         except (FileNotFoundError, OSError):
             if require_reg_target:
@@ -565,8 +574,9 @@ class TPCBatchDataset(Dataset):
         self.shortest = 1e10
         print(f'[INFO] Filtering data by number of points. Low threshold: {low_thr}, High threshold: {high_thr}, Max tracks: {max_tracks}')
         for i in range(len(self.memmap_feature)):
-            len_ = self.memmap_feature[i].shape[0]
-            ntracks = np.unique(self.memmap_seg_target[i])
+            labels = self.memmap_seg_target[i]
+            len_ = len(labels)
+            ntracks = np.unique(labels)
             if len_ < low_thr:
                 self.tooshort.append(i)
             elif len_ > high_thr:
@@ -613,7 +623,19 @@ class TPCBatchDataset(Dataset):
             return len(self.idxlist_chunking)
         return len(self.idxlist)
 
+    def _open_field(self, stem):
+        if self.hdf5_source is not None:
+            return self.hdf5_source.view(stem)
+        return RaggedMmap(os.path.join(self.data_root, f'{stem}_{self.split}'))
+
     def _open_optional_point_target(self, name, require=False):
+        if self.hdf5_source is not None:
+            stem = name.removesuffix('_' + self.split)
+            if stem in self.hdf5_source.fields:
+                return self.hdf5_source.view(stem), True
+            if require:
+                raise ValueError(f"HDF5 has no field for {stem}")
+            return None, False
         path = os.path.join(self.data_root, name)
         try:
             memmap_target = RaggedMmap(path)
@@ -637,7 +659,7 @@ class TPCBatchDataset(Dataset):
 
     def _open_required_context_sidecar(self, name, expected_width, expected_dtype):
         """Open a typed, row-aligned v7 context sidecar without coercion."""
-        memmap_target = RaggedMmap(os.path.join(self.data_root, name))
+        memmap_target = self._open_field(name.removesuffix('_' + self.split))
         if len(memmap_target) != self.n_feature_events:
             raise ValueError(
                 f"{name} has {len(memmap_target)} events but features_{self.split} "
@@ -706,7 +728,7 @@ class TPCBatchDataset(Dataset):
                     r=nf[:, 2],
                     band_config=self.clas12_band_config,
                     angular_grid=self.hilbert_angular_grid,
-                ).squeeze()
+                ).reshape(-1)
             # Robust fallback: radius-only ordering.
             return norm_features[..., -1].argsort(dim=1).squeeze(0)
 
@@ -768,8 +790,10 @@ class TPCBatchDataset(Dataset):
                 return_target=True,
                 pad_value_target=0,
             )
-        else:
+        elif self.compute_neighbors:
             knearest_points = knn_later_indices_batch(knn_input, k=self.num_pred_points)
+        else:
+            knearest_points = torch.full((*knn_input.shape[:2], 3 * self.num_pred_points), -100., dtype=knn_input.dtype)
 
         sorter = self._compute_sorter(norm_features)
         serialized_points = norm_features[:, sorter].squeeze(0)
@@ -836,6 +860,8 @@ class TPCBatchDataset(Dataset):
                 'pid_target': serialized_pid_target,
                 'noise_target': serialized_noise_target,
             }
+            if self.hdf5_source is not None:
+                out.update(self.hdf5_source.identity(real_idx), source_event_index=int(real_idx))
             if self.has_mid_target:
                 out['mid_target'] = serialized_mid_target
             if self.has_coatjava_seg_pred:
@@ -955,6 +981,8 @@ class MyCollator:
         if has_segment_label:
             out['segment_label'] = segment_label
         for key, dtype in (
+            ('source_id', torch.long),
+            ('original_ordinal', torch.long),
             ('truth_segment_label', torch.long),
             ('truth_segment_points', torch.long),
             ('truth_segment_purity', torch.float32),
@@ -1026,8 +1054,7 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
             self.memmap_segment_source = self.memmap_seg_target
 
     def _open_required_segment_source(self, stem):
-        path = os.path.join(self.data_root, f'{stem}_{self.split}')
-        memmap_target = RaggedMmap(path)
+        memmap_target = self._open_field(stem)
         if len(memmap_target) != self.n_feature_events:
             raise ValueError(
                 f"{stem}_{self.split} has {len(memmap_target)} events but "
@@ -1187,8 +1214,10 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
                 return_target=True,
                 pad_value_target=0,
             )
-        else:
+        elif self.compute_neighbors:
             knearest_points = knn_later_indices_batch(knn_input, k=self.num_pred_points)
+        else:
+            knearest_points = torch.full((*knn_input.shape[:2], 3 * self.num_pred_points), -100., dtype=knn_input.dtype)
 
         sorter = self._compute_sorter(norm_features)
         serialized_points = norm_features[:, sorter].squeeze(0)
@@ -1256,6 +1285,8 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
                 'truth_segment_points': int(truth_segment_points),
                 'truth_segment_purity': float(truth_segment_purity),
             }
+            if self.hdf5_source is not None:
+                out.update(self.hdf5_source.identity(real_idx))
             if self.has_mid_target:
                 out['mid_target'] = serialized_mid_target
             if self.return_knn_target:
@@ -1277,6 +1308,7 @@ class EventSegmentTPCBatchDataset(TPCBatchDataset):
 
 
 ADAPTER_SAMPLE_MODE_DATASETS = {
+    'event': TPCBatchDataset,
     'track_legacy': TPCBatchDataset,
     'event_segment': EventSegmentTPCBatchDataset,
 }
@@ -1317,7 +1349,9 @@ def get_data_loader(params, distributed):
 
     train_dataset = dataset_cls(data_root = params.data_root, 
                                     version = params.data_version, 
-                                    split = 'pretrain', 
+                                    split = downstream_split(params, 'train'),
+                                    reader_type=getattr(params, 'reader_type', 'ragged_mmap'),
+                                    compute_neighbors=getattr(params, 'compute_neighbors', True),
                                     group_size = params.group_size, 
                                     normalize = True, 
                                     limit_data = getattr(params, 'limit_data', False), 
@@ -1351,7 +1385,9 @@ def get_data_loader(params, distributed):
     
     test_dataset = dataset_cls(data_root = params.data_root_test, 
                                    version = params.data_version, 
-                                   split = 'test', 
+                                   split = downstream_split(params, 'validation'),
+                                   reader_type=getattr(params, 'reader_type', 'ragged_mmap'),
+                                   compute_neighbors=getattr(params, 'compute_neighbors', True),
                                    num_pred_points = params.klen,
                                    group_size = params.group_size, 
                                    normalize = True, 
@@ -1391,6 +1427,12 @@ def get_data_loader(params, distributed):
                                    ),
                                    input_representation=getattr(params, 'input_representation', 'center_only'),
                                    **sample_mode_kwargs)
+
+    if train_dataset.hdf5_source is not None:
+        contract = train_dataset.hdf5_source.contract
+        setattr(params, 'data_contract', contract)
+        if hasattr(params, 'params'):
+            params.params['data_contract'] = contract
 
     seed = getattr(params, "seed", None)
     seed = int(seed) if seed is not None else None
@@ -1439,7 +1481,9 @@ def get_val_loader(params, distributed):
 
     test_dataset = dataset_cls(data_root=params.data_root,
                                    version=params.data_version,
-                                   split='test',
+                                   split=downstream_split(params, 'test'),
+                                   reader_type=getattr(params, 'reader_type', 'ragged_mmap'),
+                                   compute_neighbors=getattr(params, 'compute_neighbors', True),
                                    num_pred_points=params.klen,
                                    group_size=params.group_size,
                                    normalize=True,

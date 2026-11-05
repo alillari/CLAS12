@@ -267,8 +267,7 @@ class MambaCheckpointTest(unittest.TestCase):
                                  min_lr=1e-3, max_lr=2e-3, total_steps=4, warmup_steps=0)
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(root_dir=directory, config="mamba3", run_num="test")
-            with patch.object(pretrain, "get_data_loader", return_value=([], None, [], None)), \
-                    patch.object(pretrain, "pickle_load", return_value=[]):
+            with patch.object(pretrain, "get_data_loader", return_value=([], None, [], None)):
                 trainer = pretrain.Trainer(params, args)
                 for layer in trainer.model.mamba_layers:
                     self.assertTrue(torch.all(layer[1].dt_bias < 0))

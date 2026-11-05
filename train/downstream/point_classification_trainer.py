@@ -35,12 +35,17 @@ from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
 from fm4npp.models.mamba2 import Mamba2
 
-from model import *
-from loss import *
-from downstream_util import *
+from train.downstream.model import *
+from train.downstream.loss import *
+from train.downstream.downstream_util import *
 from train.downstream.noise_metrics import (
     METRIC_DEFINITIONS, inverse_frequency_weights, training_class_counts, confusion_metrics,
 )
+
+from train.downstream.noise_checkpoint import (
+    require_single_process, seed_everything, training_contract, validate_noise_checkpoint, validate_noise_data,
+)
+
 
 class DownstreamTrainer():
     
@@ -55,6 +60,7 @@ class DownstreamTrainer():
 
     """ trainer class """
     def __init__(self, params, args):
+        require_single_process(getattr(params, 'task', None))
         
         ''' init vars for distributed training (ddp) and logging'''
         self.root_dir = args.root_dir
@@ -283,6 +289,7 @@ class DownstreamTrainer():
 
 
     def launch(self):
+        seed_everything(getattr(self.params, 'seed', None))
         print(self.root_dir, self.config, self.run_num)
         exp_dir = os.path.join(*[self.root_dir, self.config, self.run_num])
         self.init_exp_dir(exp_dir)
@@ -407,6 +414,15 @@ class DownstreamTrainer():
         self.epoch = self.startEpoch
         self.logs = {}
 
+        if self.params.task == 'nid':
+            self.noise_training_contract = training_contract(self.params)
+            self.model.requires_grad_(False)
+            self.model.eval()
+            if getattr(self.params, 'reader_type', None) == 'hdf5':
+                from train.downstream.noise_evaluation import cohort_digest
+                from train.downstream.hdf5_benchmark_utils import cohort
+                self.training_cohort_digest = cohort_digest(cohort(self.train_data_loader.dataset))
+
         # 
         #  training
         #self.train()
@@ -433,6 +449,7 @@ class DownstreamTrainer():
 
     def inference(self, checkpoint_path, pretrain=True, logfile=None):
         """Initialize model and load weights for inference"""
+        self._validate_noise_mode(pretrain)
         self.build_head()
 
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -555,6 +572,9 @@ class DownstreamTrainer():
 
 
     def train(self, pretrain = True, train_from_checkpoint = False, checkpoint_path = None):
+        self._validate_noise_mode(pretrain)
+        if self.params.task == 'nid' and train_from_checkpoint:
+            raise ValueError('Noise adapter resume is not supported; start a fresh run')
         ###%%%%%%%
         # Debugging
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
@@ -928,7 +948,12 @@ class DownstreamTrainer():
         if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
             checkpoint['model_state_dict'] = self.down_model.module.state_dict()
 
-        torch.save(checkpoint, os.path.join(self.params.checkpoint_dir, filename))
+        if self.params.task == 'nid':
+            checkpoint['noise_training_contract'] = self.noise_training_contract
+            checkpoint['training_config'] = dict(self.params.params)
+            checkpoint['training_cohort_digest'] = getattr(self, 'training_cohort_digest', None)
+        self.best_checkpoint_path = os.path.join(self.params.checkpoint_dir, filename)
+        torch.save(checkpoint, self.best_checkpoint_path)
 
         msg = f"Saved {'best ' if is_best else ''}checkpoint at epoch {epoch} with loss {loss:.4f}"
         #print(msg) if self.log_to_screen else None
@@ -945,6 +970,10 @@ class DownstreamTrainer():
     
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        if self.params.task == 'nid':
+            validate_noise_checkpoint(checkpoint, self.noise_training_contract)
+            if getattr(self.params, 'reader_type', None) == 'hdf5':
+                validate_noise_data(checkpoint, self.params.data_contract, self.training_cohort_digest)
         self.loaded_checkpoint_step = checkpoint.get('global_step')
     
         # 3. Handle DDP keys
@@ -960,9 +989,9 @@ class DownstreamTrainer():
     
         # 4. Load model weights
         if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
-            self.down_model.module.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
+            self.down_model.module.load_state_dict(new_state_dict, strict=self.params.task == 'nid' or uses_mamba3(self.down_model))
         else:
-            self.down_model.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
+            self.down_model.load_state_dict(new_state_dict, strict=self.params.task == 'nid' or uses_mamba3(self.down_model))
     
         # 5. If not inference mode, load optimizer/scheduler states
         if not inference:
@@ -981,6 +1010,10 @@ class DownstreamTrainer():
 
     
 
+
+    def _validate_noise_mode(self, pretrain):
+        if self.params.task == 'nid' and bool(pretrain) != bool(self.params.pretrained_ckpt):
+            raise ValueError('Noise adapter input mode must match the configured pretrained backbone')
 
     def report_loss(self, loss_, dist):
         step_loss = torch.zeros((1), dtype=torch.float32, device=self.device)

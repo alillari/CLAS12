@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 from fm4npp.utils import YParams
-from point_classification_trainer import DownstreamTrainer
+from train.downstream.point_classification_trainer import DownstreamTrainer
+from train.downstream.noise_checkpoint import restore_evaluation_config, require_single_process
 
 def main():
     parser = argparse.ArgumentParser(
@@ -66,28 +67,35 @@ def main():
     parser.add_argument("--global_log_dir", default='globallogs', type=str, help="Global dir to store logging only")
     parser.add_argument("--pretrained_ckpt", help="Optional backbone checkpoint; omitted for AdapterOnly")
     parser.add_argument("--task", choices=("pid", "nid"))
+    parser.add_argument("--validation_events", type=int, help="Override calibration cohort size")
     args = parser.parse_args()
 
     params = YParams(os.path.abspath(args.yaml_config), args.config)
     params["task"] = args.task or getattr(params, "task", "pid")
-    params["num_output_classes"] = 2 if params.task == "nid" else 5
-    params["limit_data"] = True
-    params["limit_size"] = 1  # launch constructs an unused training view
-    # Inference restores the saved training weights; never estimate them from
-    # the unused one-event training view (which may contain only one class).
-    params["noise_class_balance"] = "none"
-    params["limit_test_data"] = True
-    params["limit_test_size"] = args.eventnumber
-    params["drop_last_test"] = False
-    params["batch_size"] = args.eval_batch_size
-    params["valid_batch_size"] = args.eval_batch_size
-    params["pretrained_ckpt"] = args.pretrained_ckpt
-    params["continue_from_best"] = False
-    params["log_file_name"] = f"{args.config}_eval_{params.task}_{args.run_num}.log"
-    params["num_embedder_layers"] = 0
-    if getattr(params, "reader_type", None) == "hdf5":
-        params["validation_split"] = "test"
+    require_single_process(params.task)
+    hdf5_noise = params.task == 'nid' and getattr(params, 'reader_type', None) == 'hdf5'
     checkpoint_path = os.path.abspath(args.checkpoint)
+    if hdf5_noise:
+        # Restore training architecture, preprocessing and cohort selection. Only
+        # data locations and evaluation batch/worker counts may come from this YAML.
+        saved = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        restore_evaluation_config(params, saved, args.validation_events)
+    else:
+        params['limit_size'] = 1  # Unused training view for legacy inference.
+        params['limit_test_size'] = args.eventnumber
+        if getattr(params, 'reader_type', None) == 'hdf5':
+            params['validation_split'] = 'test'
+    params['num_output_classes'] = 2 if params.task == 'nid' else 5
+    params['limit_data'] = True
+    # Restore class weights from the checkpoint; do not re-estimate for inference.
+    params['noise_class_balance'] = 'none'
+    params['limit_test_data'] = True
+    params['drop_last_test'] = False
+    params['batch_size'] = args.eval_batch_size
+    params['valid_batch_size'] = args.eval_batch_size
+    params['pretrained_ckpt'] = args.pretrained_ckpt
+    params['continue_from_best'] = False
+    params['log_file_name'] = f'{args.config}_eval_{params.task}_{args.run_num}.log'
 
     # Ensure output directory exists
     log_dir = args.root_dir
@@ -96,13 +104,17 @@ def main():
 
     # Launch and run inference
     trainer = DownstreamTrainer(params, args)
-    trainer.launch()
-    trainer.inference(
-        checkpoint_path=checkpoint_path,
-        pretrain=bool(args.pretrained_ckpt),
-        logfile=logfile
-    )
-    trainer.cleanup()
+    try:
+        trainer.launch()
+        if hdf5_noise:
+            from train.downstream.noise_evaluation import export_noise_evaluation
+            trainer.build_head()
+            export_noise_evaluation(trainer, log_dir, checkpoint_path, args.eventnumber)
+        else:
+            trainer.inference(checkpoint_path=checkpoint_path,
+                              pretrain=bool(args.pretrained_ckpt), logfile=logfile)
+    finally:
+        trainer.cleanup()
 
     # Free GPU memory
     torch.cuda.empty_cache()

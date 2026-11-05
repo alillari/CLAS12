@@ -80,6 +80,7 @@ def load_run(run, manifest_dir):
         model_id = 'adapteronly'
     model_label = run.get('model_label', 'Adapter only' if model_id == 'adapteronly' else model_id)
     model = dict(model_id=model_id, class_balance=balance, adapter_parameters=summary['adapter_parameters'],
+                 backbone_checkpoint_sha256=summary.get('backbone_checkpoint_sha256'),
                  options={key: config.get(key) for key in MODEL_FIELDS})
     common = dict(
         run_id=run['run_id'], results_dir=str(directory), model_id=model_id, model_label=model_label,

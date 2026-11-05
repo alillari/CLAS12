@@ -26,7 +26,8 @@ prediction. Checkpoints are selected by validation loss. Evaluation reports the
 default threshold and thresholds selected on validation for 95%, 99%, and
 COATJAVA-matched signal retention. Test labels never select thresholds.
 The ordinary `eval_point_classification.py` CLI accepts the explicit downstream
-checkpoint and optional pretrained backbone, and evaluates the HDF5 test split.
+checkpoint and optional pretrained backbone. It calibrates on validation and
+evaluates the HDF5 test split with those thresholds held fixed.
 
 ## Class-balanced training
 
@@ -52,7 +53,7 @@ operating points and a threshold curve. Compressed score files and per-event
 prediction records allow subsequent analysis without rerunning inference. Class
 weighting changes score calibration, so interpret scores through these measured
 tradeoffs. For diagnosis of a previous run use `--checkpoint /path/to/checkpoint`
-with the matching original recipe and cohort sizes; add `--evaluate-training`
+to restore its saved training recipe and cohort size; add `--evaluate-training`
 to compare training and validation score separation.
 
 ## 2026-11-05 benchmark
@@ -102,12 +103,13 @@ also average the two classes. Metrics pool cluster counts across events and do
 not apply the training loss weights. Zero-denominator metrics are `null`.
 
 These fields appear in benchmark summaries, each calibrated operating point,
-and validation history. The ordinary `eval_point_classification.py` CLI also
-writes an explicitly named metric report beside its legacy log as `<log>.json`.
+and validation history. For HDF5 noise tagging, the ordinary
+`eval_point_classification.py` CLI writes the same complete report as the benchmark.
+Legacy non-HDF5 inference retains its `<log>.json` metric report.
 
 For future learning curves, copy `scripts/configs/noise_tagging_campaign.example.yaml`
 and list each run's result directory. A completed directory must contain
-`summary.json`, `resolved_config.json`, and `cohorts.json` from the noise benchmark.
+`summary.json`, `resolved_config.json`, and `cohorts.json` from either the noise benchmark or ordinary HDF5 noise evaluator.
 The labeled-event count comes from the actual accepted training cohort. Model IDs
 distinguish model series; repeat a model ID across label budgets and seeds.
 
@@ -132,10 +134,99 @@ Use `--operating-point retain_95pct`, `retain_99pct`, or
 Different update budgets, recorded optimization schedules, data contracts, or
 validation/test event identities produce separate comparison directories. The
 JSON table retains the full comparison metadata. Different models, input settings,
-and class-balance policies remain distinct curves within a comparison. Repeated
+backbone checkpoint fingerprints, and class-balance policies remain distinct curves within a comparison. Repeated
 seeds use equal-weight seed means and sample-standard-deviation bars; duplicate
 model/budget/seed records are rejected. If any seed's metric is undefined, that
 budget is a plot gap. COATJAVA counts must agree on identical evaluation cohorts;
 the baseline is never averaged across different populations. Unfinished runs are
 listed as skipped. These commands only read results and generate reports; they
 do not launch training or alter checkpoints.
+
+
+## Ordinary training and evaluation
+
+The point-classification CLI honors the YAML task, label count, batch size, seed
+and embedder depth unless explicitly overridden. `--run_num` names a run; use
+`--seed` to change initialization. Give each fit its own YAML `checkpoint_dir`;
+`--root_dir` only redirects runtime logs. The public CLI starts fresh training.
+
+```bash
+export CLAS12_DATA_ROOT=/absolute/path/to/cvt-clusters-h5
+export CLAS12_ARTIFACT_ROOT=/absolute/path/to/new/noise-training
+
+python -m train.downstream.train_point_classification \
+  --yaml_config scripts/configs/clas12_adapter_recipes.yaml \
+  --config hdf5_noise_50k_balanced --seed 42 \
+  --root_dir "$CLAS12_ARTIFACT_ROOT/runtime"
+
+python -m train.downstream.eval_point_classification \
+  --yaml_config scripts/configs/clas12_adapter_recipes.yaml \
+  --config hdf5_noise_50k_balanced \
+  --checkpoint "$CLAS12_ARTIFACT_ROOT/downstream_log/hdf5_noise_50k_balanced/checkpoints/hdf5_noise_50k_balanced_nid_0_checkpoint.pth" \
+  --root_dir /absolute/path/to/new/noise-evaluation \
+  --eventnumber 10000 --eval_batch_size 32
+```
+
+For frozen features, pass `--pretrained_ckpt /absolute/path/to/backbone.tar` to
+**both** commands and use a YAML architecture matching that backbone. The training
+flag implies frozen mode; `--usepretrain` is an optional assertion that a backbone
+was supplied. Evaluation requires the explicit path even if training saved one.
+The backbone has gradients disabled and stays in evaluation mode.
+
+New checkpoints store the input mode, SHA256 of the frozen backbone, resolved
+training configuration, data contract, and training-cohort digest. Loading rejects
+mode changes, different backbone bytes, incompatible head state, a changed training
+product, or a different reconstructed cohort. Relocating identical backbone bytes
+is supported. Historical AdapterOnly checkpoints with explicit saved mode are
+supported; historical frozen heads without a fingerprint are rejected because the
+required backbone cannot be verified. Older HDF5 checkpoints lack a cohort digest;
+the report marks that provenance limitation.
+
+HDF5 evaluation restores architecture, preprocessing, training seed and cohort
+selection from the adapter checkpoint. YAML supplies current data paths and worker
+count; `--eval_batch_size`, `--eventnumber` (test events) and optional
+`--validation_events` control evaluation only. `resolved_config.json/.yaml` retain
+training settings; `evaluation_config.json` records evaluation overrides.
+`cohorts.json`, split score/prediction/metric files and `summary.json` feed the
+campaign tools directly. Completed evaluations are not overwritten.
+
+The training directory also receives `training_run.json` with completed updates
+and a checkpoint digest. Keep it alongside the checkpoint: evaluation reports its
+actual completed budget when the digest matches. Without a matching receipt,
+completed updates are unknown and campaign grouping uses the saved requested
+budget; the selected checkpoint step is always reported separately.
+
+Noise tagging supports **one process on one GPU (or CPU)**. Multi-process launches
+fail before distributed/CUDA initialization. Adapter resume, distributed training,
+and full-backbone fine-tuning are outside this implementation.
+
+For a bounded real-data integration check with a width-512/depth-12 Mamba1
+checkpoint matching the supplied recipe:
+
+```bash
+python -m train.downstream.tests.smoke_noise_workflow \
+  --data-root "$CLAS12_DATA_ROOT" \
+  --backbone /absolute/path/to/pretrained/ckpt_best.tar \
+  --output-dir /absolute/path/to/new/noise-smoke
+```
+
+This runs both ordinary CLI workflows on 32 training, 16 validation and 18 test
+events, for two updates each. It checks frozen weights/gradients, reloads, partial
+batches, provenance and campaign collation. It makes no performance claim and does
+not generate a learning curve.
+
+## Workflow validation (2026-11-05)
+
+- `hdf5-noise-cli-smoke-20261105-v2`: both ordinary CLI modes passed training,
+  reload, validation calibration, COATJAVA export and campaign collation; frozen
+  backbone tensors were unchanged and had no gradients.
+- `hdf5-noise-legacy-regression-20261105-v2`: the existing balanced 50k/30k
+  checkpoint reproduced the original scores exactly on 32 events / 4,411 clusters
+  with matched batch size 32. Its saved label/update budgets were retained.
+- `hdf5-noise-readiness-suite-20261105-v2`: 236 downstream tests, 230 passed,
+  five skipped, one existing error. The pretraining fixture
+  `test_mamba3_pretraining_trainer_preserves_ssm_initialization` lacks
+  `loss_reweight`; that test and pretraining source are unchanged from `main`.
+
+These are integration checks. The performance evidence remains the earlier
+balanced AdapterOnly benchmark above.

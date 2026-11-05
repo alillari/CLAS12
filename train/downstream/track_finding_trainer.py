@@ -27,6 +27,9 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
+from fm4npp.hilbert import (
+    DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
+)
 from fm4npp.models.mamba_config import (
     adapter_options, backbone_version, build_backbone, architecture_metadata,
     legacy_initialization_parameters, optimizer_parameters,
@@ -72,6 +75,9 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
 
         self.params = params
+        params.hilbert_angular_grid = validate_hilbert_grid(
+            getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
+        )
         self.backbone_sha256 = None
         self.use_lora = False
         self.use_amp = bool(getattr(self.params, 'use_amp', True))
@@ -1406,6 +1412,7 @@ class DownstreamTrainer():
             },
             'track_target_mode': getattr(self.params, "track_target_mode", SIGNAL_ONLY),
             'validation_ari_mode': getattr(self.params, "validation_ari_mode", "signal"),
+            'hilbert_angular_grid': getattr(self.params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
             'params': vars(self.params)  # Save all hyperparameters
         }
         checkpoint['inference_only'] = inference_only
@@ -1455,6 +1462,7 @@ class DownstreamTrainer():
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
         validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
         if checkpoint.get('inference_only', False) and not inference:
             raise ValueError("Validation snapshots are for inference/selection; resume training from a full checkpoint.")
 
@@ -1533,6 +1541,7 @@ class DownstreamTrainer():
             stream.seek(0)
             checkpoint = torch.load(stream, map_location=device_str, weights_only=False)
         validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
         validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}
         #try:

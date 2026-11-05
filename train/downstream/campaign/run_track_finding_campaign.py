@@ -193,12 +193,17 @@ def eval_command(run: dict[str, Any]) -> list[str]:
 
 
 def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_fraction: float = 0.8) -> dict[str, Any]:
-    """Validate aligned event sidecars for both supervised train and test splits."""
+    """Validate aligned event labels in the published product's splits."""
+    from fm4npp.datasets.cvt_downstream import CVTDownstreamSource
+    hdf5 = (data_root / "manifest.json").is_file()
     split_rows: dict[str, dict[str, Any]] = {}
-    for split in ("pretrain", "test"):
-        features = RaggedMmap(str(data_root / f"features_{split}"))
-        seg = RaggedMmap(str(data_root / f"seg_target_{split}"))
-        coatjava = RaggedMmap(str(data_root / f"coatjava_seg_pred_{split}"))
+    for split in (("train", "validation", "test") if hdf5 else ("pretrain", "test")):
+        source = CVTDownstreamSource(data_root, split) if hdf5 else None
+        def field(name):
+            return source.view(name) if source else RaggedMmap(str(data_root / f"{name}_{split}"))
+        features = field("features")
+        seg = field("seg_target")
+        coatjava = field("coatjava_seg_pred")
         n = min(len(features), len(seg), len(coatjava), int(max_events))
         rows = []
         for idx in range(n):
@@ -226,7 +231,9 @@ def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_f
                 and all(row["length_match"] and row["coatjava_length_match"] for row in rows)
                 and fraction >= min_multitrack_fraction,
         }
-    train = split_rows["pretrain"]
+        if source is not None:
+            source.close()
+    train = split_rows["train" if hdf5 else "pretrain"]
     summary = {
         "data_root": str(data_root),
         "feature_events": train["feature_events"], "seg_target_events": train["seg_target_events"],
@@ -239,7 +246,8 @@ def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_f
         "test_multitrack_fraction": split_rows["test"]["multitrack_fraction"],
         "test_passed": split_rows["test"]["passed"],
     }
-    summary["passed"] = train["passed"] and split_rows["test"]["passed"]
+    summary["splits"] = split_rows
+    summary["passed"] = all(row["passed"] for row in split_rows.values())
     if not summary["passed"]:
         raise ValueError(f"Track-finding preflight failed: {summary}")
     return summary

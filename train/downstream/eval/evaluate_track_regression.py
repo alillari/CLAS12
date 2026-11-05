@@ -1996,6 +1996,13 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     params = YParams(str(config["model_yaml"]), config["model_config"])
+    hdf5 = getattr(params, "reader_type", None) == "hdf5"
+    if hdf5:
+        params["validation_split"] = config.get("evaluation_split", "test")
+        # The named HDF5 fields declare their units; legacy analysis templates
+        # carry MeV defaults which do not apply to this product.
+        config["target_momentum_scale_to_gev"] = 1.0
+        config["auxiliary_momentum_scale_to_gev"] = 1.0
     from fm4npp.models.mamba_config import backbone_version
     transformer_only = (getattr(params, "adapter_version", "mamba2") == "transformer"
                         and (not config.get("use_pretrained_backbone")
@@ -2045,8 +2052,8 @@ def main():
 
     dataset = trainer.val_data_loader.dataset
     single_target = regression_task in SINGLE_TARGET_TASKS
-    aux = None if single_target else RaggedMmap(str(Path(params.data_root_test) / "aux_target_test"))
-    aux_layout = None if single_target else load_aux_layout(params.data_root_test)
+    aux = None if single_target or hdf5 else RaggedMmap(str(Path(params.data_root_test) / "aux_target_test"))
+    aux_layout = None if single_target else (list(CVT_ENTRANCE_COLUMNS) if hdf5 else load_aux_layout(params.data_root_test))
     entrance_indices = None if single_target else [aux_layout.index(name) for name in CVT_ENTRANCE_COLUMNS]
     target_scale = float(config["target_momentum_scale_to_gev"])
     aux_scale = float(config["auxiliary_momentum_scale_to_gev"])
@@ -2124,10 +2131,18 @@ def main():
                     native_truth_rows.append(truth_native[local_index].copy())
                     native_adapter_rows.append(prediction_native[local_index].copy())
                     continue
-                aux_row = aux_row_for_sample(
-                    dataset, aux, real_index, segment_label, truth_segment_label,
-                    valid_columns=entrance_indices,
-                ).astype(float)
+                benchmark = None
+                if hdf5:
+                    benchmark = dataset.hdf5_source.benchmark(
+                        real_index, truth_segment_label,
+                        segment_label if dataset.segment_target_source == "coatjava" else None,
+                    )
+                    aux_row = benchmark["values"]
+                else:
+                    aux_row = aux_row_for_sample(
+                        dataset, aux, real_index, segment_label, truth_segment_label,
+                        valid_columns=entrance_indices,
+                    ).astype(float)
                 cvt_vector = cvt_entrance_vector(aux_row, aux_layout, aux_scale)
                 if "pid_target" in batch:
                     pid_values = np.asarray(
@@ -2212,6 +2227,9 @@ def main():
                         "adapter_native_theta_deg": np.degrees(pred_native[3]),
                     })
                 # Retain original vectors only as explicitly labelled diagnostics.
+                if hdf5:
+                    record.update(dataset.hdf5_source.identity(real_index))
+                    record.update({"coatjava_" + key: value for key, value in benchmark.items() if key != "values"})
                 # Angular auxiliary fields are radians and must never be scaled to GeV.
                 for name in AUX_LAYOUT:
                     if name in aux_layout:
@@ -2223,7 +2241,7 @@ def main():
     if not records:
         raise RuntimeError("Evaluation produced no records")
 
-    if config.get("include_sample_metadata", True):
+    if config.get("include_sample_metadata", True) and not hdf5:
         metadata_path = config.get("sample_metadata_jsonl")
         if metadata_path is None:
             metadata_path = Path(params.data_root_test) / "samples_test.jsonl"

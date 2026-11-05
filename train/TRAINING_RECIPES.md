@@ -15,6 +15,46 @@ For one complete pretraining → both-adapters run, follow
 
 ## 1. Choose a task and prepare the run configuration
 
+For the new HDF5 product, the `hdf5_noise_5k`, `hdf5_finding_5k` and
+`hdf5_momentum_5k` profiles in `scripts/configs/clas12_adapter_recipes.yaml`
+provide a bounded AdapterOnly integration benchmark:
+
+```bash
+python -m train.downstream.benchmark_hdf5 \
+  --task noise --data-root /absolute/path/to/cvt-clusters-h5 \
+  --output-dir /absolute/path/to/new/noise-run
+```
+
+Repeat with `--task finding` and `--task momentum`, using separate new output
+directories. Defaults are 5,000 accepted training samples, 3,000 optimizer
+updates, 1,000 validation samples and 2,000 test samples (seed 42). Samples are
+events for noise/finding and truth segments with at least 12 clusters for
+momentum. These are deterministic accepted prefixes, not random subsets.
+For a smoke run use `--train-size 32 --steps 2 --validation-size 16 --test-size 16`.
+
+The runner uses the ordinary trainers, reloads the validation-selected
+checkpoint, checks that source-event identities do not overlap across splits,
+and saves resolved configuration, training-only target statistics, cohort IDs,
+test predictions and `summary.json`. Finding selects by validation signal ARI
+with a loss tie-break; the other heads select by validation loss. Thresholds
+remain the recipes' fixed values (noise argmax; finding option 2 at 0.2).
+Momentum compares both methods on shared matched truth tracks and also reports
+the adapter over the full accepted truth cohort. Its input is a truth cluster
+group, so this is not an end-to-end reconstructed-track comparison.
+
+Noise checkpoint evaluation also supports the ordinary CLI:
+
+```bash
+python train/downstream/eval_point_classification.py \
+  --yaml_config /absolute/path/to/run/resolved_config.yaml \
+  --config hdf5_noise_5k --task nid \
+  --checkpoint /absolute/path/to/run/checkpoints/training_checkpoint.pth \
+  --root_dir /absolute/path/to/evaluation --eventnumber 2000 --eval_batch_size 32
+```
+
+See [HDF5 data and label semantics](downstream/TRAINING_OPTIONS.md#data-representation-and-sample-selection)
+for the explicit background policy, units and COATJAVA association rules.
+
 Run from the repository root with the training environment active:
 
 ```bash

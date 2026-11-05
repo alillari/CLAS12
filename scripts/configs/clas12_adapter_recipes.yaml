@@ -167,3 +167,51 @@ clas12_track_finding_50k_evaluation:
 clas12_momentum_50k_evaluation:
   <<: *momentum
   data_root_test: ${CLAS12_EVAL_DATA_ROOT:-$CLAS12_DATA_ROOT}
+
+# Published HDF5 compatibility pilot. Noise and finding count events; momentum
+# counts accepted truth segments. Checkpoints use validation; reporting uses test.
+hdf5_pilot_defaults: &hdf5
+  reader_type: hdf5
+  train_split: train
+  validation_split: validation
+  test_split: test
+  compute_neighbors: false
+  limit_size: 5000
+  limit_test_size: 1000
+  max_validation_events: 1000
+  max_optimizer_steps: 3000
+  total_steps: 3000
+  first_cycle_steps: 3000
+  scheduler_first_cycle_steps: 3000
+  warmup_steps: 100
+  val_interval_steps: 500
+  target_momentum_scale_to_gev: 1.0
+  physics_checkpoint:
+    momentum_scale_to_gev: 1.0
+
+hdf5_finding_5k:
+  <<: [*hdf5, *finding]
+  model_version: hdf5_finding_5k
+  return_coatjava_seg_pred: true
+
+hdf5_momentum_5k:
+  <<: [*hdf5, *momentum]
+  model_version: hdf5_momentum_5k
+
+hdf5_noise_5k:
+  <<: [*hdf5, *default]
+  model_version: hdf5_noise_5k
+  task: nid
+  num_output_classes: 2
+  adapter_sample_mode: event
+  batch_size: 32
+  local_batch_size: 32
+  valid_batch_size: 32
+  local_valid_batch_size: 32
+  high_thr: 512
+  max_tracks: 150
+  max_gt_classes: 150
+  return_reg: false
+  return_reg_test: false
+  return_coatjava_seg_pred: true
+  use_attention_head: true

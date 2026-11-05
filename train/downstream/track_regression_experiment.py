@@ -188,7 +188,10 @@ def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
     )
     params["checkpoint_selection"] = selection_mode(params.params)
     if params.task in MOMENTUM_TASKS:
-        params["physics_checkpoint"] = resolve_physics_config(params.task, getattr(params, "physics_checkpoint", None))
+        physics = dict(getattr(params, "physics_checkpoint", None) or {})
+        if getattr(params, "reader_type", None) == "hdf5":
+            physics.setdefault("momentum_scale_to_gev", 1.0)
+        params["physics_checkpoint"] = resolve_physics_config(params.task, physics)
     for key, value in configure_validation(dict(params.params)).items():
         params[key] = value
     return params

@@ -274,6 +274,7 @@ def load_regression_target_stats(path, task):
 
     return {
         "path": str(path),
+        "data_contract": stats.get("data_contract"),
         "task": canonical_regression_task(task),
         "columns": selected_columns,
         "mean": selected_mean,

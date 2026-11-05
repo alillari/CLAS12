@@ -58,6 +58,18 @@ CVT_HDF5_PILOT=/path/to/published/pilot-root \
 
 Run the HDF5 profile from the repository root in the [CUDA environment](../../SETUP.md):
 
+The v6 sweep includes a matched within-band ordering experiment. Compare
+`scale_w64_d12_v602` (historical `legacy_v1`) with `scale_w64_d12_v602_unit_v2`
+using the same v6_02 mmap root. The experimental grid maps normalized φ and η
+to 1,024 equal-width cells per axis. The historical grid multiplies each
+coordinate by 10,000 and clips at cell 1,023. Both keep the same radial bands,
+input tokens and outward-neighbor targets. Pretraining checkpoints record the
+grid and reject a resume under another grid. Unmarked checkpoints use
+`legacy_v1`. A downstream comparison using an experimental checkpoint must
+also apply its grid when serializing its inputs.
+
+Set paths from the repository root in the [CUDA environment](../../SETUP.md):
+
 ```bash
 export CLAS12_ARTIFACT_ROOT=/absolute/path/to/result_deep_storage
 python -m train.pretrain --data-root /absolute/path/to/published/cluster_skim

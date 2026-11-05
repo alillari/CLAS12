@@ -160,7 +160,8 @@ def build_backbone(params, default="mamba2"):
         cls = {"mamba1": Mamba1GPT, "mamba2": MambaGPT, "mamba3": Mamba3GPT}[version]
         return cls(**common, d_state=d_state, d_conv=d_conv, expand=expand,
                    pos_dim=value(params, "pos_dim", 3), aux_dim=value(params, "aux_dim", 4),
-                   block_kwargs=options)
+                   block_kwargs=options,
+                   use_sincos_target=value(params, "use_sincos_target", False))
     common["num_heads"] = value(params, "num_heads_backbone", 4)
     common["mlp_ratio"] = value(params, "mlp_ratio", 2.0)
     if version == "longformer":

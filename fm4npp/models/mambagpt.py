@@ -8,7 +8,7 @@ from fm4npp.models.rmsnorm import RMSNorm
 
 
 class MambaGPT(nn.Module):
-    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4, *, block_kwargs=None, block_version="mamba2"):
+    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4, *, block_kwargs=None, block_version="mamba2", use_sincos_target=False):
         super().__init__()
         assert embed_method in ['concat', 'add', 'pos_only', 'pos_plus_aux']
         self.embed_dim = embed_dim
@@ -38,7 +38,10 @@ class MambaGPT(nn.Module):
                            nn.Dropout(dropout)) 
              for _ in range(num_layers)]
         )
-        self.output_layer = nn.Linear(embed_dim, klen * 3)
+        # sin/cos phi target: (eta, sin_phi, cos_phi, r) per neighbor instead of
+        # (eta, phi, r), so the phi = +-pi wraparound is not penalized.
+        self.use_sincos_target = use_sincos_target
+        self.output_layer = nn.Linear(embed_dim, klen * (4 if use_sincos_target else 3))
         self.norm = RMSNorm(embed_dim)
 
     def change_maskval(self, x, init_val = -100, target_val = 0):
@@ -85,7 +88,7 @@ class MambaGPT(nn.Module):
 
 
 class Mamba1GPT(nn.Module):
-    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4, *, block_kwargs=None):
+    def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4, *, block_kwargs=None, use_sincos_target=False):
         super().__init__()
         assert embed_method in ['concat', 'add', 'pos_only', 'pos_plus_aux']
         self.embed_dim = embed_dim
@@ -113,7 +116,10 @@ class Mamba1GPT(nn.Module):
                            nn.Dropout(dropout)) 
              for _ in range(num_layers)]
         )
-        self.output_layer = nn.Linear(embed_dim, klen * 3)
+        # sin/cos phi target: (eta, sin_phi, cos_phi, r) per neighbor instead of
+        # (eta, phi, r), so the phi = +-pi wraparound is not penalized.
+        self.use_sincos_target = use_sincos_target
+        self.output_layer = nn.Linear(embed_dim, klen * (4 if use_sincos_target else 3))
         self.norm = RMSNorm(embed_dim)
  
     def change_maskval(self, x, init_val = -100, target_val = 0):
@@ -161,7 +167,9 @@ class Mamba3GPT(MambaGPT):
 
     def __init__(self, embed_dim=512, num_layers=12, d_state=128, d_conv=4,
                  expand=2, klen=10, dropout=0.2, embed_method="add",
-                 pe_method="nerf", pos_dim=3, aux_dim=4, *, block_kwargs=None):
+                 pe_method="nerf", pos_dim=3, aux_dim=4, *, block_kwargs=None,
+                 use_sincos_target=False):
         super().__init__(embed_dim, num_layers, d_state, d_conv, expand, klen,
                          dropout, embed_method, pe_method, pos_dim, aux_dim,
-                         block_version="mamba3", block_kwargs=block_kwargs)
+                         block_version="mamba3", block_kwargs=block_kwargs,
+                         use_sincos_target=use_sincos_target)

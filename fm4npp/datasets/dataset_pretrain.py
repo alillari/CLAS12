@@ -12,7 +12,7 @@ import torch
 from fm4npp.utils import *
 # NOTE (CLAS12): Voxelizer/HRS removed entirely — replaced by Hilbert band ordering.
 # from .voxelizer import *   # (no longer used)
-from fm4npp.hilbert import clas12_band_hilbert_order, assign_clas12_layer
+from fm4npp.hilbert import LEGACY_HILBERT_GRID, clas12_band_hilbert_order, assign_clas12_layer
 
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
@@ -24,7 +24,7 @@ torch.manual_seed(42)
 # TPC space-filling ordering, hardcoded to 4 columns and equal-axis priority.
 
 
-def knn_later_indices_batch(A, k, r_col=2):
+def knn_later_indices_batch(A, k, r_col=2, aux_A=None):
     """
     A: Tensor (B, N, 3) = (batch, points, [eta, phi, r]). r is column r_col (=2),
        in NORMALIZED units matching apply_norm's r_lim.
@@ -55,15 +55,31 @@ def knn_later_indices_batch(A, k, r_col=2):
     discrete band INDICES (from the calibrated boundaries) is immune to this,
     since band assignment already collapses intra-band spread away.
 
-    Returns: (B, N, 3*k).
+    [NEW, opt-in] If aux_A (B, N, aux_D) is provided -- e.g. each point's own
+    (s_r, s_phi, s_z) direction -- this ALSO gathers aux_A at the exact same
+    selected neighbor indices (slot_idx) used for position, and returns it
+    as a second tensor. This is the target NEIGHBOR's own aux data, not the
+    query point's -- needed so the loss can weight each predicted coordinate
+    by how precisely THAT neighbor's position was actually measured. When
+    aux_A is None (the default, every existing call site), behavior and the
+    return value are 100% unchanged from before -- single tensor, not a tuple.
+
+    Returns: (B, N, 3*k) if aux_A is None, else ((B, N, 3*k), (B, N, aux_D*k)).
     """
     B, N, D = A.shape
     assert D == 3, "A must have shape (B, N, 3)"
+    if aux_A is not None:
+        assert aux_A.shape[:2] == (B, N), "aux_A must match A's (B, N)"
+        aux_D = aux_A.shape[-1]
 
     # 1) pairwise full-3D distances (B, N, N)
     A_expanded = A.unsqueeze(2)  # (B, N, 1, 3)
     A_tiled = A.unsqueeze(1)     # (B, 1, N, 3)
-    pairwise_distances = torch.norm(A_expanded - A_tiled, dim=-1)  # (B, N, N)
+    diff = A_expanded - A_tiled  # (B, N, N, 3)
+    # phi (column 1) is normalized to [0, 1] and periodic: wrap its difference
+    # into [-0.5, 0.5] so points on either side of the +-pi seam are close.
+    diff[..., 1] = diff[..., 1] - torch.round(diff[..., 1])
+    pairwise_distances = torch.norm(diff, dim=-1)  # (B, N, N)
 
     # 2) band index per point (torch.bucketize supports any input shape
     # against the 1D calibrated boundaries, so this runs on the full (B,N)
@@ -94,7 +110,16 @@ def knn_later_indices_batch(A, k, r_col=2):
 
     # 5) reshape to (B, N, 3*k)
     knn_neighbors = knn_neighbors.view(B, N, 3 * k)
-    return knn_neighbors
+
+    if aux_A is None:
+        return knn_neighbors
+
+    # [NEW] gather aux_A at the EXACT SAME slot_idx/valid_mask as position
+    # above -- same target neighbor, just pulling its aux data too.
+    knn_aux_neighbors = torch.full((B, N, k, aux_D), -100, device=A.device, dtype=aux_A.dtype)
+    knn_aux_neighbors[valid_mask] = aux_A[b_idx[valid_mask], safe_idx[valid_mask], :]
+    knn_aux_neighbors = knn_aux_neighbors.view(B, N, aux_D * k)
+    return knn_neighbors, knn_aux_neighbors
 
 
 # NOTE (CLAS12): The following confirmed-dead functions were deleted here
@@ -129,8 +154,11 @@ class TPCBatchDataset(Dataset):
                  band_classification = False,
                  bin_dir = '',
                  use_aux_features = False,
-                 aux_extra_feature = 'length'):
+                 aux_extra_feature = 'length',
+                 hilbert_angular_grid = LEGACY_HILBERT_GRID,
+                 return_knn_aux_target = False):
         
+        self.hilbert_angular_grid = hilbert_angular_grid
         self.band_classification = band_classification
         self.use_aux_features = use_aux_features
         assert aux_extra_feature in ('length', 'pitch', 'both')
@@ -156,6 +184,22 @@ class TPCBatchDataset(Dataset):
             self.memmap_reg_target = reader_cls(reg_path) if os.path.isdir(reg_path) else None
             if use_aux_features:
                 self.memmap_aux_geom = reader_cls(os.path.join(data_root, f'cluster_geometry_context_target_{split}'))
+        # [NEW] When True, the kNNN target ALSO carries each target
+        # neighbor's own (s_r, s_phi, s_z) direction -- not the query
+        # point's, the actual predicted neighbor's -- so the loss can
+        # weight each predicted coordinate by how precisely that specific
+        # neighbor's position was actually measured. Requires
+        # use_aux_features=True (reuses the same aux data already computed
+        # for the input embedding, rather than loading it twice).
+        self.return_knn_aux_target = return_knn_aux_target
+        if self.return_knn_aux_target:
+            assert self.use_aux_features, "return_knn_aux_target=True requires use_aux_features=True"
+            # band_classification's internal reshape hardcodes 3 columns per
+            # neighbor (line ~509) and has an entirely different purpose
+            # (swapping r for a band index) -- not combined/tested with the
+            # wider aux-extended knearest_points. Guard explicitly rather
+            # than silently allow an untested, likely-broken combination.
+            assert not band_classification, "return_knn_aux_target and band_classification are not supported together"
         
 
         self.reco_cols = ['x', 'y', 'z']   # CLAS12: no energy
@@ -431,7 +475,27 @@ class TPCBatchDataset(Dataset):
             aux_features = aux_features[:, ind]
         # CLAS12: norm_features is already 3 columns [eta,phi,r] — pass directly,
         # no [..., 1:] slice (that would drop eta and leave only 2 columns).
-        knearest_points = knn_later_indices_batch(norm_features, k=self.num_pred_points)
+        if self.return_knn_aux_target:
+            # [NEW] aux_features is already r_sort-reordered above, matching
+            # norm_features -- safe to pass directly as the aux array to
+            # gather at the same selected neighbor indices.
+            knearest_points, knearest_aux = knn_later_indices_batch(
+                norm_features, k=self.num_pred_points, aux_A=aux_features)
+            # Extend knearest_points' own column count (klen*3 -> klen*(3+aux_D))
+            # rather than changing __getitem__'s return tuple shape -- same
+            # pattern already used for the input side (position -> position+aux).
+            # [FIX] Interleave PER NEIGHBOR: [n1 pos, n1 aux, n2 pos, n2 aux, ...].
+            # A plain cat along the last dim gives a block layout
+            # [n1..nk pos | n1..nk aux], which matches the trainer's
+            # reshape(b, N, k, 3 + aux_dim) only when k == 1. At k > 1 the loss
+            # would read the wrong columns as targets and weights, silently.
+            B_, N_ = knearest_points.shape[0], knearest_points.shape[1]
+            k_ = self.num_pred_points
+            pos_k = knearest_points.view(B_, N_, k_, 3)
+            aux_k = knearest_aux.view(B_, N_, k_, -1)
+            knearest_points = torch.cat([pos_k, aux_k], dim=-1).reshape(B_, N_, -1)
+        else:
+            knearest_points = knn_later_indices_batch(norm_features, k=self.num_pred_points)
         norm_target = target[:, ind]
         
         # CLAS12 ordering: exact-layer-band radius grouping + 2D Hilbert over (phi, eta)
@@ -442,6 +506,7 @@ class TPCBatchDataset(Dataset):
             phi=nf[:, 1],
             eta=nf[:, 0],
             r=nf[:, 2],
+            angular_grid=self.hilbert_angular_grid,
         )
         serialized_points = norm_features[:, zsorter].squeeze(0)
         knearest_points = knearest_points[:, zsorter].squeeze(0)
@@ -538,6 +603,8 @@ def _split_loader(params, distributed, *, train):
         band_classification=getattr(params, 'band_classification', False),
         use_aux_features=getattr(params, 'use_aux_features', False),
         aux_extra_feature=getattr(params, 'aux_extra_feature', 'length'),
+        hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', LEGACY_HILBERT_GRID),
+        return_knn_aux_target=getattr(params, 'return_knn_aux_target', False),
     )
     sampler = DistributedSampler(dataset, shuffle=train) if distributed else None
     workers = params.num_data_workers

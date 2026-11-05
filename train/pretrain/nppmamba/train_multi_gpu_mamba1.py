@@ -19,6 +19,7 @@ from torch.nn.parallel import DistributedDataParallel
 import torch.distributed as dist
 
 from fm4npp.artifact_paths import artifact_path
+from fm4npp.hilbert import LEGACY_HILBERT_GRID
 from fm4npp.models.mamba_config import (
     backbone_version, build_backbone, architecture_metadata,
     optimizer_parameters, validate_checkpoint_architecture,
@@ -63,6 +64,7 @@ def apply_bin_weights_torch(bin_list, weight_list, target):
 class Trainer():
     def __init__(self, params, args):
         self.params = params
+        self.hilbert_angular_grid = getattr(params, 'hilbert_angular_grid', LEGACY_HILBERT_GRID)
         # The shared adapter/backbone contract uses continuous coordinate targets.
         # Mike's retired band-classification head is not part of this integration.
         if getattr(params, 'band_classification', False):
@@ -128,6 +130,13 @@ class Trainer():
 
         # Keep the historical Mamba1 default for existing launchers/configs.
         self.klen = self.params.klen
+        # sin/cos sets the output width (klen*4 vs klen*3). Strip-direction weighting is
+        # independent: it applies only when the dataset returns each target's aux.
+        self.use_sincos = getattr(self.params, 'use_sincos_target', False)
+        self.target_aux_dim = (getattr(self.params, 'aux_dim', 4)
+                               if getattr(self.params, 'return_knn_aux_target', False) else 0)
+        if self.target_aux_dim and not self.use_sincos:
+            raise ValueError('return_knn_aux_target requires use_sincos_target')
         version = backbone_version(self.params, default='mamba1')
         if version not in {'mamba1', 'mamba2', 'mamba3', 'transformer'}:
             raise ValueError('This pretraining entrypoint supports Mamba1, Mamba2, Mamba3 SISO, and causal transformers')
@@ -265,6 +274,9 @@ class Trainer():
                 print(f"Loading checkpoint from {self.checkpoint_path}")
 
             checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
+            saved_grid = checkpoint.get('hilbert_angular_grid', LEGACY_HILBERT_GRID)
+            if saved_grid != self.hilbert_angular_grid:
+                raise ValueError(f"Checkpoint Hilbert grid {saved_grid!r} differs from requested {self.hilbert_angular_grid!r}")
             validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
 
             try:
@@ -307,6 +319,7 @@ class Trainer():
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
             'validation_metric': VALIDATION_METRIC,
+            'hilbert_angular_grid': self.hilbert_angular_grid,
             'backbone_architecture': architecture_metadata(self.model),
         }
         torch.save(payload, checkpoint_path)
@@ -321,14 +334,51 @@ class Trainer():
                 print(f"Saved checkpoint to {checkpoint_path}")
 
     def _batch_targets(self, grouped, knearest):
+        """Mask is per coordinate for the plain target, per neighbor slot for sin/cos."""
         inputs = grouped.to(self.device)
         offset = (2 if self.params.nexttoken else 1) if self.params.rep_aaai else 0
         targets = knearest.to(self.device)[:, offset:]
+        if self.use_sincos:
+            b, n = targets.shape[:2]
+            targets = targets.reshape(b, n, self.klen, 3 + self.target_aux_dim)
+            return inputs, targets, targets[..., 0] != -100, offset
         return inputs, targets, targets != -100, offset
 
     def _squared_errors(self, inputs, targets, mask):
+        """Per-event sum of squared errors over the supervised entries of `mask`."""
         predictions = self.model(inputs)[:, :targets.size(1)]
-        return (predictions - targets).masked_fill(~mask, 0.).square().sum(dim=(1, 2))
+        if not self.use_sincos:
+            return (predictions - targets).masked_fill(~mask, 0.).square().sum(dim=(1, 2))
+        return self._sincos_errors(predictions, targets, mask)
+
+    def _sincos_errors(self, predictions, targets, mask):
+        """
+        Predict (eta, sin phi, cos phi, r) per neighbor instead of (eta, phi, r), so
+        the phi = +-pi seam is not penalized (Beyer et al., "Biternion Nets", GCPR 2015).
+
+        targets: (b, N, k, 3 + aux) = [eta, phi, r, s_r, s_phi, s_z, ...] per neighbor,
+        phi normalized to [0, 1] by the dataset's (phi + pi) / (2 pi).
+        With the target neighbor's strip direction (aux >= 3), each coordinate's error
+        is weighted by its squared component (s_r^2 + s_phi^2 + s_z^2 = 1); without it
+        the three errors are averaged. Returns the per-event sum over valid slots.
+        """
+        b, n = targets.shape[:2]
+        pred = predictions.reshape(b, n, self.klen, 4)
+        eta_t, phi_t, r_t = targets[..., 0], targets[..., 1], targets[..., 2]
+        # Back to the physical angle, so sin/cos are actually periodic at the seam.
+        phi_phys = phi_t * (2 * torch.pi) - torch.pi
+        err_eta = (pred[..., 0] - eta_t) ** 2
+        # (dsin)^2 + (dcos)^2 ~ dphi^2 in radians; / (2 pi)^2 puts it on the same
+        # normalized [0, 1] scale as eta and r.
+        err_phi = ((pred[..., 1] - torch.sin(phi_phys)) ** 2
+                   + (pred[..., 2] - torch.cos(phi_phys)) ** 2) / (2 * torch.pi) ** 2
+        err_r = (pred[..., 3] - r_t) ** 2
+        if self.target_aux_dim >= 3:
+            s_r, s_phi, s_z = targets[..., 3], targets[..., 4], targets[..., 5]
+            combined = s_r ** 2 * err_r + s_phi ** 2 * err_phi + s_z ** 2 * err_eta
+        else:
+            combined = (err_r + err_phi + err_eta) / 3.0
+        return combined.masked_fill(~mask, 0.).sum(dim=(1, 2))
 
     def train_one_epoch(self):
         self.model.train()

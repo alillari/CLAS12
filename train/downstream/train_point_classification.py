@@ -6,11 +6,12 @@ import os
 import sys
 import argparse
 import gc
+from pathlib import Path
 
 import torch
 
 # ensure your fm4npp modules can be found
-sys.path.append('../..')
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fm4npp.utils import YParams
 from fm4npp.artifact_paths import artifact_path

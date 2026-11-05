@@ -98,6 +98,10 @@ class DownstreamTrainer():
         self.params["require_pid_target"] = self.params.task == "pid"
         self.params["require_noise_target"] = self.params.task == "nid"
         self.params["require_reg_target"] = False
+        if self.params.task == "nid":
+            # Noise is an event-level task: selecting a truth segment removes
+            # precisely the negative examples this head needs to learn from.
+            self.params["adapter_sample_mode"] = "event"
         print("running on rank {} with world size {}".format(self.world_rank, self.world_size))
 
 
@@ -394,6 +398,7 @@ class DownstreamTrainer():
 
         if self.params.use_attention_head and getattr(self.params, "adapter_version", "mamba2") != "transformer":
             self.down_model = AttentionHead(**adapter_options(self.params), input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
+                          embed_method=self.params.embed_method, pe_method=self.params.pe_method,
                           num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
                           num_embedder_layers= self.params.num_embedder_layers, 
                           ).to(self.device)
@@ -427,11 +432,7 @@ class DownstreamTrainer():
         from ruamel.yaml.scalarfloat import ScalarFloat
         torch.serialization.add_safe_globals([ScalarFloat])
     
-        try:
-            self.load_checkpoint(checkpoint_path, inference=True)
-        except Exception as e:
-            print(f"❌ Checkpoint loading failed: {str(e)}")
-            return None
+        self.load_checkpoint(checkpoint_path, inference=True)
         
         self.down_model.eval()
         self.model.eval()
@@ -474,14 +475,17 @@ class DownstreamTrainer():
                     targets=targets,
                     mask=mask,
                 )
-                target_list.append(targets['labels'].cpu())
-                output_list.append(outputs['pred_logits'].cpu())
+                target_list.append(targets['labels'][mask].cpu())
+                output_list.append(outputs['pred_logits'][mask].cpu())
                
                 loss = losses['loss']
                 loss_list.append(loss.cpu().numpy())
 
-        all_logits = torch.cat(output_list, dim=1)   # shape: (total_batches * batch_size, N, C)
-        all_labels = torch.cat(target_list, dim=1)   # shape: (total_batches * batch_size, N)
+        if not output_list:
+            raise ValueError("Evaluation loader is empty")
+        # Ragged events and a final partial batch have different padded shapes.
+        all_logits = torch.cat(output_list, dim=0).unsqueeze(0)
+        all_labels = torch.cat(target_list, dim=0).unsqueeze(0)
 
         big_outputs = {"pred_logits": all_logits}
         big_targets = {"labels":      all_labels}
@@ -566,6 +570,7 @@ class DownstreamTrainer():
 
         if self.params.use_attention_head and getattr(self.params, "adapter_version", "mamba2") != "transformer":
             self.down_model = AttentionHead(**adapter_options(self.params), input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
+                          embed_method=self.params.embed_method, pe_method=self.params.pe_method,
                           num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
                           num_embedder_layers= self.params.num_embedder_layers, 
                           ).to(self.device)
@@ -592,11 +597,12 @@ class DownstreamTrainer():
         torch.nn.utils.clip_grad_norm_(self.down_model.parameters(), max_norm=1.0)
 
 
+        step_budget = getattr(self.params, "max_optimizer_steps", None)
         self.down_scheduler = CosineAnnealingWarmupRestarts(self.down_optimizer,
-                                          first_cycle_steps=200,
+                                          first_cycle_steps=int(step_budget or 200),
                                           max_lr=self.params.max_lr,
                                           min_lr=self.params.min_lr,
-                                          warmup_steps=20)
+                                          warmup_steps=int(getattr(self.params, "warmup_steps", 20)) if step_budget else 20)
 
 
         # Add safe global class
@@ -645,6 +651,10 @@ class DownstreamTrainer():
         else:
             self.loss_bin = None
             self.loss_weight = None
+
+        if step_budget is not None:
+            self._train_by_optimizer_step(pretrain, checkpoint_file_name, log_file_path)
+            return
         
         for epoch in range(self.startEpoch, self.params.max_epochs):
             self.down_results['epoch'] = epoch
@@ -707,50 +717,88 @@ class DownstreamTrainer():
             if i> 1000:
                 break
             self.iters += 1
-            grouped = inputdict['points'].to(self.device)  # B X N X C
-            b, c = grouped.size(0), grouped.size(-1)
-            grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
-            mask = grouped[..., 0] != -100 # B X N
-            targets = self.build_point_targets(inputdict, mask)
+            self.down_results['train'].append(self._train_one_batch(inputdict, pretrain))
 
-            self.down_optimizer.zero_grad()
-            if pretrain:
-                #print(grouped.size())
-                #print("passing to pretrained model")
-                with torch.no_grad():
-                    _, pre_embed, _ = self.model(grouped, return_z = True)
-                #feature = torch.stack(pre_embed).mean(0)
-                feature = torch.stack(pre_embed)
-                #print('feature: ', feature.size())
-                pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
-                
-            else:
-                pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+    def _train_one_batch(self, inputdict, pretrain=False):
+        grouped = inputdict['points'].to(self.device)  # B X N X C
+        b, c = grouped.size(0), grouped.size(-1)
+        grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
+        mask = grouped[..., 0] != -100 # B X N
+        targets = self.build_point_targets(inputdict, mask)
 
-            pred_logits = pred_dict['pred_logits'] # (B, N, C_classes)
-            outputs = {
-                "pred_logits": pred_logits,  # B X N X C_classes
-            }
-            
-            losses = simple_point_loss(
-                outputs=outputs,
-                targets=targets,
-                mask=mask,
-            )
+        self.down_optimizer.zero_grad()
+        if pretrain:
+            #print(grouped.size())
+            #print("passing to pretrained model")
+            with torch.no_grad():
+                _, pre_embed, _ = self.model(grouped, return_z = True)
+            #feature = torch.stack(pre_embed).mean(0)
+            feature = torch.stack(pre_embed)
+            #print('feature: ', feature.size())
+            pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
 
-            loss = losses['loss']
-            # Compute loss and get matching indices
-            #loss = sum(losses.values())
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.down_model.parameters(),  # Or specific parameters
-                max_norm=1.0,  
-                norm_type=2.0   
-            )
-            
-            self.down_optimizer.step()
-                
-            self.down_results['train'].append(loss.item())
+        else:
+            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+
+        pred_logits = pred_dict['pred_logits'] # (B, N, C_classes)
+        outputs = {
+            "pred_logits": pred_logits,  # B X N X C_classes
+        }
+
+        losses = simple_point_loss(
+            outputs=outputs,
+            targets=targets,
+            mask=mask,
+        )
+
+        loss = losses['loss']
+        # Compute loss and get matching indices
+        #loss = sum(losses.values())
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            self.down_model.parameters(),  # Or specific parameters
+            max_norm=1.0,
+            norm_type=2.0
+        )
+
+        self.down_optimizer.step()
+
+        return float(loss.item())
+
+    def _train_by_optimizer_step(self, pretrain, filename, log_path):
+        budget = int(self.params.max_optimizer_steps)
+        interval = int(getattr(self.params, "val_interval_steps", budget))
+        if budget < 1 or interval < 1 or not len(self.train_data_loader):
+            raise ValueError("Positive update/validation budgets and a nonempty loader are required")
+        self.global_step = int(getattr(self, "global_step", 0))
+        losses = []
+        for epoch in range(self.startEpoch, self.params.max_epochs):
+            self.epoch = epoch
+            if dist.is_initialized():
+                self.train_sampler.set_epoch(epoch)
+            for batch in self.train_data_loader:
+                self.model.eval()
+                self.down_model.train()
+                losses.append(self._train_one_batch(batch, pretrain))
+                self.global_step += 1
+                self.iters = self.global_step
+                self.down_scheduler.step()
+                if self.global_step % interval == 0 or self.global_step == budget:
+                    for key in ("val", "precision", "recall", "accuracy"):
+                        self.down_results[key] = []
+                    val_loss = self.validate_end_to_end_one_epoch(pretrain)
+                    if not np.isfinite(val_loss):
+                        raise RuntimeError("Nonfinite validation loss")
+                    if val_loss < self.best_loss:
+                        self.best_loss = val_loss
+                        self._save_checkpoint(filename, epoch, True, val_loss)
+                    with open(log_path, "a") as stream:
+                        stream.write(f"step={self.global_step}\ttrain={np.mean(losses):.8f}\tvalidation={val_loss:.8f}\n")
+                    print(f"step={self.global_step} train={np.mean(losses):.6f} validation={val_loss:.6f}", flush=True)
+                    losses = []
+                if self.global_step >= budget:
+                    return
+        raise RuntimeError("max_epochs exhausted before max_optimizer_steps")
 
     def validate_end_to_end_one_epoch(self, pretrain=False):
         self.model.eval()  # Set backbone model to eval mode
@@ -760,9 +808,9 @@ class DownstreamTrainer():
 
         with torch.no_grad():  # Disable gradient calculation
             for i, inputdict in enumerate(tqdm(self.val_data_loader)):
-                if i> 2000:
+                max_batches = getattr(self.params, "max_val_batches", 2001)
+                if max_batches is not None and i >= max_batches:
                     break
-                self.iters += 1
                 grouped = inputdict['points'].to(self.device)  # B X N X C
                 b, c = grouped.size(0), grouped.size(-1)
                 grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
@@ -817,6 +865,7 @@ class DownstreamTrainer():
     def _save_checkpoint(self, filename, epoch, is_best, loss):
         checkpoint = {
             'epoch': epoch,
+            'global_step': getattr(self, 'global_step', self.iters),
             'model_state_dict': self.down_model.state_dict(),
             'backbone_architecture': architecture_metadata(self.model),
             'adapter_architecture': architecture_metadata(self.down_model),

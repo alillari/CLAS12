@@ -24,6 +24,9 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
+from fm4npp.hilbert import (
+    DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
+)
 from fm4npp.models.mamba_config import (
     adapter_options, adapter_dimensions, backbone_version, build_backbone, architecture_metadata,
     legacy_initialization_parameters, optimizer_parameters,
@@ -97,6 +100,9 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
         
         self.params = params
+        params['hilbert_angular_grid'] = validate_hilbert_grid(
+            getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
+        )
         if self.params.task not in {"pid", "nid"}:
             raise ValueError(
                 "Point classification task must be 'pid' or 'nid'; "
@@ -941,6 +947,7 @@ class DownstreamTrainer():
             'class_counts': self.params.params.get('noise_class_counts'),
             'best_loss': self.best_loss,
             'current_loss': loss,
+            'hilbert_angular_grid': getattr(self.params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
             'params': vars(self.params)  # Save all hyperparameters
         }
 
@@ -970,6 +977,7 @@ class DownstreamTrainer():
     
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
         if self.params.task == 'nid':
             validate_noise_checkpoint(checkpoint, self.noise_training_contract)
             if getattr(self.params, 'reader_type', None) == 'hdf5':
@@ -1047,6 +1055,7 @@ class DownstreamTrainer():
                                  If False, only load model weights (for pretrained initialization).
         """
         checkpoint = torch.load(checkpoint_path, map_location=(f'cuda:{self.device}' if isinstance(self.device, int) else self.device), weights_only=False)
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
         validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}
         try:

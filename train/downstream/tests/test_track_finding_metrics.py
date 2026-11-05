@@ -68,6 +68,33 @@ class TrackFindingMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(row["ari_signal"], 1.0)
         self.assertLess(row["background_rejection"], 1.0)
 
+    def test_matching_prioritizes_eligible_pairs_and_breaks_ties_by_iou(self):
+        # The two ineligible edges (1/3 each) would win an unconstrained
+        # total-IoU assignment over the single eligible edge (1/2).
+        truth = np.array([0] * 4 + [1] * 2 + [0] * 2)
+        pred = np.array([10] * 6 + [11] * 2)
+        result = event_track_metrics(truth, pred)
+        matches = [(m["pred_id"], m["true_id"], m["iou"]) for m in result["matches"]]
+        self.assertEqual(matches, [(10, 0, .5)])
+        cfg = MatchConfig(iou_threshold=.1, min_purity=.1, min_efficiency=.1)
+        truth = np.array([0] * 4 + [1] + [0] + [1] * 4)
+        pred = np.array([10] * 5 + [11] * 5)
+        matches = event_track_metrics(truth, pred, config=cfg)["matches"]
+        self.assertEqual([(m["pred_id"], m["true_id"]) for m in matches], [(10, 0), (11, 1)])
+
+    def test_momentum_rows_follow_valid_truth_even_without_measurements(self):
+        truth = np.array([4, 4, 9, 17, -100])
+        valid = np.array([True, True, True, True, False])
+        reg = np.array([[1000., 0., 0.], [1000., 0., 0.], [np.nan] * 3, [100.] * 3, [-100.] * 3])
+        for values in (reg, None):
+            output = evaluate_event_method('adapter', 0, 0, 0, truth, truth.copy(), valid, valid,
+                                           values, MatchConfig(background_label=17), .001)
+            event, _, tracks = output["rows"]
+            self.assertEqual(event["n_true_tracks"], 2)
+            self.assertEqual([t["true_id"] for t in tracks], [4, 9])
+            self.assertEqual(tracks[0]["p_gev"], None if values is None else 1.)
+            self.assertIsNone(tracks[1]["p_gev"])
+
     def test_retired_modes_are_rejected_in_configs_and_checkpoint_metadata(self):
         for key, value in (("track_target_mode", "unified_noise_instance"),
                            ("noise_attribution_mode", "truth_joint_hungarian_qualified")):
@@ -87,11 +114,13 @@ class TrackFindingMetricsTest(unittest.TestCase):
         trainer.device = "cpu"
         for checkpoint in ({"track_target_mode": "unified_noise_instance"},
                            {"params": {"params": {"track_target_mode": "unified_noise_instance"}}}):
-            with patch("torch.load", return_value=checkpoint):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "retired.pth"
+                torch.save(checkpoint, path)
                 with self.assertRaisesRegex(ValueError, "checkpoint.*removed"):
-                    trainer.load_checkpoint("retired.pth", inference=True)
+                    trainer.load_checkpoint(path, inference=True)
                 with self.assertRaisesRegex(ValueError, "checkpoint.*removed"):
-                    trainer.restore_checkpoint("retired.pth")
+                    trainer.restore_checkpoint(path)
 
     def test_retired_training_and_analysis_yaml_fail_early(self):
         with tempfile.TemporaryDirectory() as directory:

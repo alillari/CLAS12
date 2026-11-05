@@ -65,6 +65,19 @@ class NoiseCampaignTest(unittest.TestCase):
         report = collate(manifest(self.root, runs))
         self.assertEqual(len({row['comparison_id'] for row in report['rows']}), 3)
 
+    def test_hilbert_grids_are_separate_series_and_unmarked_runs_are_legacy(self):
+        runs = [write_run(self.root, 'historical'), write_run(self.root, 'legacy', labels=4),
+                write_run(self.root, 'current')]
+        for name, grid in [('legacy', 'legacy_v1'), ('current', 'unit_v2')]:
+            path = self.root / name / 'resolved_config.json'
+            config = json.loads(path.read_text())
+            config['hilbert_angular_grid'] = grid
+            path.write_text(json.dumps(config))
+        report = collate(manifest(self.root, runs))
+        ids = {row['run_id']: row['series_id'] for row in report['rows']}
+        self.assertEqual(ids['historical'], ids['legacy'])
+        self.assertNotEqual(ids['historical'], ids['current'])
+
     def test_inconsistent_coatjava_baseline_is_rejected(self):
         runs = [write_run(self.root, 'small'), write_run(self.root, 'large', labels=4)]
         path = self.root / 'large/summary.json'

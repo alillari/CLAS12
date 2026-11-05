@@ -12,6 +12,7 @@ from ruamel.yaml import YAML
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from train.downstream.noise_metrics import METRIC_DEFINITIONS, confusion_metrics
+from fm4npp.hilbert import LEGACY_HILBERT_GRID, validate_hilbert_grid
 
 METRICS = ("accuracy", "signal_precision", "signal_recall", "noise_precision",
            "noise_recall", "balanced_accuracy", "macro_precision", "macro_recall")
@@ -21,7 +22,7 @@ SCHEDULE_FIELDS = ("local_batch_size", "max_lr", "min_lr", "warmup_steps",
                    "adapter_weight_decay", "grad_clip_value")
 MODEL_FIELDS = ("embed_dim", "num_layers_backbone", "backbone_version", "adapter_version",
                 "num_embedder_layers", "num_adapter_layers", "use_attention_head",
-                "input_layout", "input_representation", "serialization", "clas12_band_config",
+                "input_layout", "input_representation", "serialization", "clas12_band_config", "hilbert_angular_grid",
                 "embed_method", "pe_method", "dropout", "downstream_dropout")
 
 
@@ -44,6 +45,7 @@ def load_run(run, manifest_dir):
     directory = (manifest_dir / run['results_dir']).resolve()
     summary = read_json(directory / 'summary.json')
     config = read_json(directory / 'resolved_config.json')
+    config['hilbert_angular_grid'] = validate_hilbert_grid(config.get('hilbert_angular_grid', LEGACY_HILBERT_GRID))
     cohorts = read_json(directory / 'cohorts.json')
     if summary.get('task') != 'noise' or summary.get('sample_unit') != 'event':
         raise ValueError(f"{run['run_id']}: expected a whole-event noise benchmark")

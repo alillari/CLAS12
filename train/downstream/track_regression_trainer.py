@@ -25,6 +25,9 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.datasets.dataset import *
+from fm4npp.hilbert import (
+    DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
+)
 from fm4npp.models.mamba_config import (
     adapter_options, adapter_dimensions, backbone_version, build_backbone, architecture_metadata,
     legacy_initialization_parameters, optimizer_parameters,
@@ -56,16 +59,6 @@ from physics_checkpoints import (
 VALIDATION_LOSS_REDUCTION = "mean_over_valid_terms"
 
 
-def require_single_process():
-    """The regression head and checkpoint writer are single-process only."""
-    if (int(os.environ.get("WORLD_SIZE", 1)) != 1
-            or (dist.is_initialized() and dist.get_world_size() != 1)):
-        raise RuntimeError(
-            "Momentum regression supports one process. Launch with WORLD_SIZE=1 "
-            "or torchrun --nproc-per-node=1."
-        )
-
-
 class DownstreamTrainer():
 
     def __init__(self, params, args):
@@ -87,6 +80,9 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
 
         self.params = params
+        params.hilbert_angular_grid = validate_hilbert_grid(
+            getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
+        )
         input_representation = getattr(params, "input_representation", "center_only")
         if input_representation == "clas12_pos_plus_aux_v1":
             if getattr(params, "embed_method", None) != "pos_plus_aux":
@@ -1241,6 +1237,7 @@ class DownstreamTrainer():
             'regression_target_columns': self.regression_target_stats["columns"],
             'regression_target_stats': self.regression_target_stats["path"],
             'input_representation': getattr(self.params, 'input_representation', 'center_only'),
+            'hilbert_angular_grid': getattr(self.params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
             'params': vars(self.params)  # Save all hyperparameters
         }
 
@@ -1265,6 +1262,7 @@ class DownstreamTrainer():
 
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
         if "model_state_dict" not in checkpoint:
             raise KeyError(
                 f"Adapter checkpoint {checkpoint_path} is missing 'model_state_dict'. "
@@ -1383,6 +1381,7 @@ class DownstreamTrainer():
         else:
             device_str = str(self.device)
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
         if "model_state" not in checkpoint:
             raise KeyError(
                 f"Pretrained checkpoint {checkpoint_path} is missing 'model_state'. "

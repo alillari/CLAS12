@@ -6,6 +6,7 @@ import random
 
 import numpy as np
 import torch
+from fm4npp.hilbert import LEGACY_HILBERT_GRID, validate_hilbert_grid
 
 
 def require_single_process(task):
@@ -33,11 +34,19 @@ def file_sha256(path):
 
 def checkpoint_config(checkpoint):
     if 'training_config' in checkpoint:
-        return dict(checkpoint['training_config'])
-    raw = checkpoint.get('params', {})
-    # Historical checkpoints saved vars(YParams), including a stale nested copy.
-    return {**raw.get('params', {}), **{key: value for key, value in raw.items()
-                                      if key != 'params' and not key.startswith('_')}}
+        config = dict(checkpoint['training_config'])
+    else:
+        raw = checkpoint.get('params', {})
+        # Historical checkpoints saved vars(YParams), including a stale nested copy.
+        config = {**raw.get('params', {}), **{key: value for key, value in raw.items()
+                                           if key != 'params' and not key.startswith('_')}}
+    if config.get('task') == 'nid':
+        # Match main's checkpoint contract: unmarked historical weights use legacy_v1.
+        grid = validate_hilbert_grid(checkpoint.get('hilbert_angular_grid', LEGACY_HILBERT_GRID))
+        if config.get('hilbert_angular_grid', grid) != grid:
+            raise ValueError('Inconsistent noise checkpoint Hilbert grid metadata')
+        config['hilbert_angular_grid'] = grid
+    return config
 
 
 def restore_evaluation_config(params, checkpoint, validation_size=None):

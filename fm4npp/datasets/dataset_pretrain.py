@@ -12,7 +12,7 @@ import torch
 from fm4npp.utils import *
 # NOTE (CLAS12): Voxelizer/HRS removed entirely — replaced by Hilbert band ordering.
 # from .voxelizer import *   # (no longer used)
-from fm4npp.hilbert import clas12_band_hilbert_order, assign_clas12_layer
+from fm4npp.hilbert import DEFAULT_HILBERT_GRID, validate_hilbert_grid, clas12_band_hilbert_order, assign_clas12_layer
 
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
@@ -129,8 +129,10 @@ class TPCBatchDataset(Dataset):
                  band_classification = False,
                  bin_dir = '',
                  use_aux_features = False,
-                 aux_extra_feature = 'length'):
+                 aux_extra_feature = 'length',
+                 hilbert_angular_grid = DEFAULT_HILBERT_GRID):
         
+        self.hilbert_angular_grid = validate_hilbert_grid(hilbert_angular_grid)
         self.band_classification = band_classification
         self.use_aux_features = use_aux_features
         assert aux_extra_feature in ('length', 'pitch', 'both')
@@ -442,6 +444,7 @@ class TPCBatchDataset(Dataset):
             phi=nf[:, 1],
             eta=nf[:, 0],
             r=nf[:, 2],
+            angular_grid=self.hilbert_angular_grid,
         )
         serialized_points = norm_features[:, zsorter].squeeze(0)
         knearest_points = knearest_points[:, zsorter].squeeze(0)
@@ -538,6 +541,7 @@ def _split_loader(params, distributed, *, train):
         band_classification=getattr(params, 'band_classification', False),
         use_aux_features=getattr(params, 'use_aux_features', False),
         aux_extra_feature=getattr(params, 'aux_extra_feature', 'length'),
+        hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
     )
     sampler = DistributedSampler(dataset, shuffle=train) if distributed else None
     workers = params.num_data_workers

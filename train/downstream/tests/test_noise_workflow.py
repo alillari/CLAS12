@@ -43,6 +43,21 @@ class NoiseWorkflowTest(unittest.TestCase):
         self.assertTrue(torch.equal(first[0], second[0]))
         self.assertEqual(first[1:], second[1:])
 
+    def test_checkpoint_grid_is_restored_and_metadata_must_agree(self):
+        params = YParams(str(ROOT / 'scripts/configs/clas12_adapter_recipes.yaml'), 'hdf5_noise_50k_balanced')
+        historical = dict(training_config=dict(params.params))
+        params['hilbert_angular_grid'] = 'unit_v2'
+        restore_evaluation_config(params, historical)
+        self.assertEqual(params.hilbert_angular_grid, 'legacy_v1')
+        self.assertEqual(params.params['hilbert_angular_grid'], 'legacy_v1')
+        current = dict(hilbert_angular_grid='unit_v2',
+                       training_config=dict(historical['training_config'], hilbert_angular_grid='unit_v2'))
+        restore_evaluation_config(params, current)
+        self.assertEqual(params.hilbert_angular_grid, 'unit_v2')
+        current['training_config']['hilbert_angular_grid'] = 'legacy_v1'
+        with self.assertRaisesRegex(ValueError, 'Inconsistent.*Hilbert grid'):
+            checkpoint_config(current)
+
     def test_multirank_fails_before_cuda_or_distributed_initialization(self):
         from train.downstream.point_classification_trainer import DownstreamTrainer
         with patch.dict(os.environ, WORLD_SIZE='2'), patch('torch.distributed.init_process_group') as init, \

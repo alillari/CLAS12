@@ -1,5 +1,6 @@
 """A single-run profile remains the recipe used by campaign rendering/preflight."""
 
+import json
 import os
 from pathlib import Path
 import sys
@@ -43,6 +44,32 @@ class TrackFindingCampaignRecipeTest(unittest.TestCase):
                      patch.object(runner, "preflight_dataset", return_value={"passed": True}) as preflight:
                     runner.main()
                 self.assertEqual(preflight.call_args.args[0], root / "events")
+
+    def test_campaign_requires_a_selected_checkpoint_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkpoint = root / "adapter.pth"
+            checkpoint.touch()
+            receipt = root / "artifacts.json"
+            run = {"adapter_checkpoint": str(checkpoint), "artifact_summary": str(receipt)}
+            self.assertFalse(runner.has_selected_checkpoint(run))
+            receipt.write_text(json.dumps({"checkpoint": str(checkpoint), "best_step": None}))
+            self.assertFalse(runner.has_selected_checkpoint(run))
+            receipt.write_text(json.dumps({"checkpoint": str(root / "other" / checkpoint.name), "best_step": 1}))
+            self.assertFalse(runner.has_selected_checkpoint(run))
+            receipt.write_text(json.dumps({"checkpoint": str(checkpoint), "best_step": 1}))
+            self.assertTrue(runner.has_selected_checkpoint(run))
+
+    def test_collation_rejects_historical_metrics_before_writing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evaluation = root / "evaluation"
+            evaluation.mkdir()
+            (evaluation / "summary.json").write_text(json.dumps({"metric_view": "native"}))
+            manifest = {"campaign_dir": temporary, "runs": [{"run_id": "one", "evaluation_dir": str(evaluation)}]}
+            with self.assertRaisesRegex(ValueError, "Reevaluate"):
+                runner.collate_summary(manifest)
+            self.assertFalse((root / "summary").exists())
 
     def test_explicit_unknown_profile_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

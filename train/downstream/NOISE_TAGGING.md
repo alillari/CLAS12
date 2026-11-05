@@ -58,6 +58,11 @@ to compare training and validation score separation.
 
 ## 2026-11-05 benchmark
 
+These recorded runs used `hilbert_angular_grid: legacy_v1`. New fits inherit
+main's `unit_v2` default; set `legacy_v1` explicitly in a copied recipe to
+reproduce the historical setup. Campaign collation keeps the grids in separate
+model series.
+
 The matched 5k-event/3k-update control (same cohort, model, seed, and schedule)
 increased test signal retention at threshold 0.5 from 33.70% to 87.82% after
 balancing. At validation-selected 95% retention thresholds, test noise rejection
@@ -171,10 +176,12 @@ For frozen features, pass `--pretrained_ckpt /absolute/path/to/backbone.tar` to
 **both** commands and use a YAML architecture matching that backbone. The training
 flag implies frozen mode; `--usepretrain` is an optional assertion that a backbone
 was supplied. Evaluation requires the explicit path even if training saved one.
-The backbone has gradients disabled and stays in evaluation mode.
+The backbone has gradients disabled and stays in evaluation mode. For historical
+backbone checkpoints without a grid marker, set `hilbert_angular_grid: legacy_v1`
+in the training YAML; the trainer rejects a mismatched grid.
 
 New checkpoints store the input mode, SHA256 of the frozen backbone, resolved
-training configuration, data contract, and training-cohort digest. Loading rejects
+training configuration, Hilbert grid, data contract, and training-cohort digest. Loading rejects
 mode changes, different backbone bytes, incompatible head state, a changed training
 product, or a different reconstructed cohort. Relocating identical backbone bytes
 is supported. Historical AdapterOnly checkpoints with explicit saved mode are
@@ -183,7 +190,8 @@ required backbone cannot be verified. Older HDF5 checkpoints lack a cohort diges
 the report marks that provenance limitation.
 
 HDF5 evaluation restores architecture, preprocessing, training seed and cohort
-selection from the adapter checkpoint. YAML supplies current data paths and worker
+selection from the adapter checkpoint, including `legacy_v1` for historical
+checkpoints without a grid marker. YAML supplies current data paths and worker
 count; `--eval_batch_size`, `--eventnumber` (test events) and optional
 `--validation_events` control evaluation only. `resolved_config.json/.yaml` retain
 training settings; `evaluation_config.json` records evaluation overrides.
@@ -212,21 +220,29 @@ python -m train.downstream.tests.smoke_noise_workflow \
 
 This runs both ordinary CLI workflows on 32 training, 16 validation and 18 test
 events, for two updates each. It checks frozen weights/gradients, reloads, partial
-batches, provenance and campaign collation. It makes no performance claim and does
+batches, provenance and campaign collation. AdapterOnly uses the current default
+grid; frozen mode follows the supplied backbone's grid metadata (historical
+unmarked backbones use `legacy_v1`). It makes no performance claim and does
 not generate a learning curve.
 
 ## Workflow validation (2026-11-05)
 
-- `hdf5-noise-cli-smoke-20261105-v2`: both ordinary CLI modes passed training,
-  reload, validation calibration, COATJAVA export and campaign collation; frozen
-  backbone tensors were unchanged and had no gradients.
-- `hdf5-noise-legacy-regression-20261105-v2`: the existing balanced 50k/30k
-  checkpoint reproduced the original scores exactly on 32 events / 4,411 clusters
-  with matched batch size 32. Its saved label/update budgets were retained.
-- `hdf5-noise-readiness-suite-20261105-v2`: 236 downstream tests, 230 passed,
-  five skipped, one existing error. The pretraining fixture
-  `test_mamba3_pretraining_trainer_preserves_ssm_initialization` lacks
-  `loss_reweight`; that test and pretraining source are unchanged from `main`.
+After integrating current `main`, including its versioned Hilbert grid:
+
+- `hdf5-noise-merge-review-suite-20261105-v1`: downstream tests plus the HDF5
+  pretraining and Hilbert-grid suites ran 261 tests: 255 passed, six skipped,
+  no failures or errors. Five skips require CUDA and one requires an optional
+  real-data pretraining fixture. The earlier pretraining-fixture error is fixed
+  on current `main`.
+- `hdf5-noise-merge-cli-smoke-20261105-v1`: both ordinary CLI modes passed GPU
+  training, reload, validation calibration, COATJAVA export and campaign
+  collation. AdapterOnly used `unit_v2`; frozen features used the historical
+  backbone's `legacy_v1`. Frozen backbone tensors were unchanged and had no
+  gradients. Both runs retained the final partial test batch and training config.
+- `hdf5-noise-merge-legacy-regression-20261105-v1`: both evaluation entrypoints
+  restored the existing balanced 50k/30k checkpoint's `legacy_v1` grid and
+  reproduced its original scores exactly on 32 events / 4,411 clusters with
+  matched batch size 32. Its saved label/update budgets were retained.
 
 These are integration checks. The performance evidence remains the earlier
 balanced AdapterOnly benchmark above.

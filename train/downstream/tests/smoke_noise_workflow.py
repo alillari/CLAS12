@@ -14,6 +14,7 @@ import torch
 from ruamel.yaml import YAML
 
 from fm4npp.utils import YParams
+from fm4npp.hilbert import DEFAULT_HILBERT_GRID, LEGACY_HILBERT_GRID
 from train.downstream.hdf5_benchmark_utils import clean, write_json
 from train.downstream.noise_checkpoint import file_sha256
 from train.downstream.point_classification_trainer import DownstreamTrainer
@@ -35,6 +36,8 @@ def main():
     recipe = Path(__file__).resolve().parents[3] / 'scripts/configs/clas12_adapter_recipes.yaml'
     original_train = DownstreamTrainer.train
     audit = {}
+    backbone_grid = torch.load(args.backbone, map_location='cpu', weights_only=False).get(
+        'hilbert_angular_grid', LEGACY_HILBERT_GRID)
 
     def checked_train(trainer, **kwargs):
         before = {key: value.detach().cpu().clone() for key, value in trainer.model.state_dict().items()}
@@ -55,6 +58,7 @@ def main():
                          scheduler_first_cycle_steps=2, warmup_steps=0, val_interval_steps=1,
                          checkpoint_dir=str(output / mode / 'checkpoints'), log_file_name='training.log', seed=71)
         params.update_params(overrides)
+        params['hilbert_angular_grid'] = backbone_grid if mode == 'frozen' else DEFAULT_HILBERT_GRID
         config_path = output / f'{mode}.yaml'
         with config_path.open('w') as stream:
             YAML().dump({'smoke': clean(params.params)}, stream)
@@ -66,6 +70,8 @@ def main():
         saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
         assert saved['training_config']['task'] == 'nid'
         assert saved['training_config']['seed'] == 71
+        assert saved['training_config']['hilbert_angular_grid'] == params.hilbert_angular_grid
+        assert saved['hilbert_angular_grid'] == params.hilbert_angular_grid
         assert saved['noise_training_contract']['mode'] == mode
         assert saved['training_cohort_digest']
         evaluation = output / mode / 'evaluation'
@@ -81,6 +87,7 @@ def main():
         assert summary['optimizer_steps'] == 2
         assert config['batch_size'] == 8 and config['seed'] == 71  # Inference uses batch 7.
         assert summary['training_mode'] == mode
+        assert config['hilbert_angular_grid'] == params.hilbert_angular_grid
         if mode == 'frozen':
             assert summary['backbone_checkpoint_sha256'] == file_sha256(args.backbone)
         audit[mode].update(export_valid=True, partial_test_batch=True, training_config_preserved=True)

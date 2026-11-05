@@ -46,6 +46,21 @@ def make_trainer(directory, version="mamba2", **overrides):
 
 
 class PretrainingIntegrationTest(unittest.TestCase):
+    def test_checkpoint_records_default_and_requires_legacy_for_unmarked_weights(self):
+        with tempfile.TemporaryDirectory() as root:
+            trainer = make_trainer(root, "transformer")
+            trainer.save_checkpoint(trainer.checkpoint_path)
+            saved = torch.load(trainer.checkpoint_path, map_location="cpu", weights_only=False)
+            self.assertEqual(saved["hilbert_angular_grid"], "unit_v2")
+            make_trainer(root, "transformer")
+            with self.assertRaisesRegex(ValueError, "Checkpoint Hilbert grid"):
+                make_trainer(root, "transformer", hilbert_angular_grid="legacy_v1")
+            del saved["hilbert_angular_grid"]
+            torch.save(saved, trainer.checkpoint_path)
+            with self.assertRaisesRegex(ValueError, "Unmarked historical checkpoints"):
+                make_trainer(root, "transformer")
+            make_trainer(root, "transformer", hilbert_angular_grid="legacy_v1")
+
     def test_short_cli_uses_the_hdf5_recipe(self):
         with patch("sys.argv", ["train.pretrain", "--data-root", "/sample/skim"]), \
              patch.dict(os.environ, {"CLAS12_ARTIFACT_ROOT": "/sample/results"}), \

@@ -37,7 +37,7 @@ from track_finding_metrics import (  # noqa: E402
     summarize_event_metrics,
     track_momentum_by_label,
 )
-from train.downstream.track_finding_contract import validate_track_finding_modes
+from train.downstream.track_finding_contract import FINDING_METRICS_VERSION, validate_track_finding_modes
 from track_finding_trainer import DownstreamTrainer  # noqa: E402
 
 
@@ -196,19 +196,13 @@ def init_down_model(params, device):
     ).to(device)
 
 
-def load_checkpoint(trainer: DownstreamTrainer, checkpoint_path: Path) -> None:
+def load_checkpoint(trainer: DownstreamTrainer, checkpoint_path: Path, use_pretrained: bool) -> None:
     trainer.down_model = init_down_model(trainer.params, trainer.device)
     trainer.down_optimizer = torch.optim.AdamW(trainer.down_model.parameters(), lr=trainer.params.max_lr)
     trainer.down_scheduler = None
-    trainer.load_checkpoint(str(checkpoint_path), inference=True)
+    trainer.load_checkpoint(str(checkpoint_path), inference=True, use_pretrained_backbone=use_pretrained)
     trainer.down_model.eval()
     trainer.model.eval()
-
-
-def event_momentum_summary(labels: np.ndarray, reg: np.ndarray | None, scale: float) -> dict[int, dict[str, float]]:
-    if reg is None:
-        return {}
-    return track_momentum_by_label(labels, reg, momentum_scale=scale)
 
 
 def bin_track_rows(
@@ -278,10 +272,14 @@ def _event_rows_for_result(
         for match in result["matches"]
     ]
 
-    momentum = event_momentum_summary(truth, reg, momentum_scale)
+    valid_truth = truth[valid]
+    momentum = (track_momentum_by_label(valid_truth, reg[valid], match_config.background_label, momentum_scale)
+                if reg is not None else {})
+    true_ids = np.unique(valid_truth[valid_truth != match_config.background_label])
     matches_by_truth = {int(match["true_id"]): match for match in result["matches"]}
     truth_track_rows = []
-    for true_id, true_info in momentum.items():
+    for true_id in true_ids:
+        true_info = momentum.get(true_id, {})
         match = matches_by_truth.get(int(true_id))
         truth_track_rows.append({
             "method": method,
@@ -535,6 +533,7 @@ def run_threshold_sweep(
         if selected_coatjava is not None else {}
     )
     provenance = {
+        "finding_metrics_version": FINDING_METRICS_VERSION,
         "run_name": analysis.get("run_name"),
         "analysis_tag": analysis.get("analysis_tag"),
         "checkpoint": str(Path(analysis["checkpoint"]).resolve()),
@@ -613,11 +612,14 @@ def main() -> None:
     params.adapter_sample_mode = "track_legacy"
     params.return_coatjava_seg_pred_test = evaluate_coatjava
     params.require_coatjava_seg_pred_test = evaluate_coatjava
-    params.pretrained_ckpt = (
-        analysis.get("pretrained_checkpoint")
-        if bool(analysis.get("use_pretrained_backbone", False))
-        else None
-    )
+    use_pretrained = analysis.get("use_pretrained_backbone", False)
+    if not isinstance(use_pretrained, bool):
+        raise ValueError("use_pretrained_backbone must be a boolean")
+    params.pretrained_ckpt = analysis.get("pretrained_checkpoint") if use_pretrained else None
+    if use_pretrained and not params.pretrained_ckpt:
+        raise ValueError("Frozen track finding requires pretrained_checkpoint")
+    if use_pretrained and not Path(params.pretrained_ckpt).is_file():
+        raise FileNotFoundError(f"Missing pretrained backbone checkpoint: {params.pretrained_ckpt}")
 
     trainer_args = SimpleNamespace(
         root_dir=str(Path(analysis.get("output_dir", ".")).resolve() / "runtime"),
@@ -634,7 +636,7 @@ def main() -> None:
     per_track_metric_rows: list[dict[str, Any]] = []
     try:
         trainer.launch()
-        load_checkpoint(trainer, checkpoint)
+        load_checkpoint(trainer, checkpoint, use_pretrained)
         match_config = MatchConfig(
             background_label=int(analysis.get("background_label", getattr(params, "background_label", -1))),
             iou_threshold=float(analysis.get("match_iou_threshold", getattr(params, "match_iou_threshold", 0.5))),
@@ -701,7 +703,7 @@ def main() -> None:
                     pred = inferred["assignments"][sample_index].detach().cpu().numpy()
                     pred_signal = (inferred["classes"][sample_index] != 0).detach().cpu().numpy()
                     reg_np = None
-                    if reg is not None:
+                    if reg is not None and trainer.val_data_loader.dataset.has_reg_target:
                         reg_np = reg[sample_index].detach().cpu().numpy()
                     event_id = event_offset + sample_index
                     method_predictions = {
@@ -785,6 +787,7 @@ def main() -> None:
             binned_rows.extend(method_bins)
 
         summary = {
+            "finding_metrics_version": FINDING_METRICS_VERSION,
             "run_name": analysis.get("run_name"),
             "analysis_tag": analysis.get("analysis_tag"),
             "model_yaml": os.path.abspath(analysis["model_yaml"]),
@@ -812,7 +815,7 @@ def main() -> None:
             "native_comparisons": ({"adapter_minus_coatjava": metric_deltas} if metric_deltas else {}),
             "evaluate_coatjava": evaluate_coatjava,
             "coatjava_background_label": int(analysis.get("coatjava_background_label", -1)),
-            "momentum_binned_metrics_available": bool(per_track_metric_rows),
+            "momentum_binned_metrics_available": any(row["p_gev"] is not None for row in per_track_metric_rows),
         }
         write_json(output_dir / "summary.json", summary)
         write_csv(output_dir / "per_event_metrics.csv", event_rows)
@@ -854,6 +857,7 @@ def main() -> None:
                         if isinstance(value, (int, float)) or value is None:
                             stream.write(json.dumps(json_safe({
                                 "run_name": analysis.get("run_name"),
+                                "finding_metrics_version": FINDING_METRICS_VERSION,
                                 "record_type": "track_finding_metric",
                                 "metric_view": metric_view,
                                 "method": method,
@@ -864,6 +868,7 @@ def main() -> None:
                 for key, value in deltas.items():
                     stream.write(json.dumps(json_safe({
                         "run_name": analysis.get("run_name"),
+                        "finding_metrics_version": FINDING_METRICS_VERSION,
                         "record_type": "track_finding_comparison",
                         "metric_view": metric_view,
                         "method": "adapter_minus_coatjava",

@@ -7,6 +7,7 @@ execution; Mamba3 blocks manage BF16 locally. See train/MAMBA_SUPPORT.md.
 """
 
 import os
+import shutil
 import time
 import numpy as np
 import argparse
@@ -471,6 +472,11 @@ class Trainer():
         # Save checkpoint
         if self.params.save_checkpoint:
             self.save_checkpoint(self.checkpoint_path, is_best=is_best_loss)
+            # Optional kept snapshots (ckpt_step<N>.tar) for diagnostics over training.
+            every = getattr(self.params, 'snapshot_every', 0)
+            if every and self.iters % every == 0 and self.world_rank == 0:
+                shutil.copyfile(self.checkpoint_path,
+                                self.checkpoint_path.replace('.tar', f'_step{self.iters}.tar'))
 
         # Print and log results
         tolog = 'Time taken {:.2f} sec; with {:.2f} / {:.2f} in tr/val\n'.format(

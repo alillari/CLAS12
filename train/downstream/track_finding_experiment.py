@@ -25,6 +25,7 @@ from fm4npp.models.mamba_config import backbone_version, adapter_options
 from fm4npp.utils import YParams
 from fm4npp.artifact_paths import artifact_path
 from train.downstream.track_finding_contract import validate_track_finding_modes
+from train.downstream.downstream_util import require_single_process
 
 try:
     from .track_finding_trainer import DownstreamTrainer
@@ -155,6 +156,7 @@ def train_experiment(
     optuna_trial: Any | None = None,
     metrics_callback: Any | None = None,
 ) -> dict[str, Any]:
+    require_single_process("Track finding")
     params = resolve_params(config)
     set_global_seed(
         getattr(params, "seed", None),

@@ -1,0 +1,287 @@
+hdf5_chinchilla_m1_w64:
+  data_root: /workspace/PP_collision/data/cvt_cluster_hdf5_20261103_002
+  stat_dir: /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  reader_type: hdf5
+  data_version: cvt-clusters-h5-v1
+  limit_data: false
+  limit_size: 10000000
+  n_data_idx: 10000000
+  data_fraction: 1.0
+
+  backbone_version: mamba3
+  embed_dim: 64
+  num_layers_backbone: 12
+  d_state: 128
+  expand: 2
+  headdim: 64
+  ngroups: 1
+  chunk_size: 64
+  is_mimo: false
+  base_dim: 256
+  init_std: 0.025
+  dropout: 0.0
+
+  embed_method: pos_only
+  pe_method: nerf
+  use_aux_features: false
+  return_knn_aux_target: false
+  use_sincos_target: true
+  klen: 5
+  hilbert_angular_grid: unit_v2
+
+  group_size: 8
+  nleave: 1e10
+  order: EPR
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  return_reg_test: false
+  return_dict: false
+  max_gt_classes: 150
+  voxelize: false
+  space_filling_order: true
+  space_filling_curve: z
+  rep_aaai: false
+  nexttoken: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+  snapshot_every: 484
+
+  use_mup: true
+  mup_base_width: 256
+  batch_size: 64
+  local_batch_size: 64
+  valid_batch_size: 16
+  local_valid_batch_size: 16
+  max_val_batches: 100
+  max_epochs: 10000
+  total_steps: 2424
+  warmup_steps: 137
+  n_eval_steps: 121
+  max_lr: 0.00109418308196948
+  min_lr: 0.00010941830819694799
+  weight_decay: 0.0003621987805395929
+  grad_clip_value: 0.3649169792089614
+
+  num_data_workers: 8
+  log_to_screen: true
+  use_wandb: false
+  save_version: hdf5_chinchilla_m1_w64
+
+hdf5_chinchilla_m2_w128:
+  data_root: /workspace/PP_collision/data/cvt_cluster_hdf5_20261103_002
+  stat_dir: /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  reader_type: hdf5
+  data_version: cvt-clusters-h5-v1
+  limit_data: false
+  limit_size: 10000000
+  n_data_idx: 10000000
+  data_fraction: 1.0
+
+  backbone_version: mamba3
+  embed_dim: 128
+  num_layers_backbone: 12
+  d_state: 128
+  expand: 2
+  headdim: 64
+  ngroups: 1
+  chunk_size: 64
+  is_mimo: false
+  base_dim: 256
+  init_std: 0.025
+  dropout: 0.0
+
+  embed_method: pos_only
+  pe_method: nerf
+  use_aux_features: false
+  return_knn_aux_target: false
+  use_sincos_target: true
+  klen: 5
+  hilbert_angular_grid: unit_v2
+
+  group_size: 8
+  nleave: 1e10
+  order: EPR
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  return_reg_test: false
+  return_dict: false
+  max_gt_classes: 150
+  voxelize: false
+  space_filling_order: true
+  space_filling_curve: z
+  rep_aaai: false
+  nexttoken: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+  snapshot_every: 1508
+
+  use_mup: true
+  mup_base_width: 256
+  batch_size: 64
+  local_batch_size: 64
+  valid_batch_size: 16
+  local_valid_batch_size: 16
+  max_val_batches: 100
+  max_epochs: 10000
+  total_steps: 7540
+  warmup_steps: 427
+  n_eval_steps: 377
+  max_lr: 0.00109418308196948
+  min_lr: 0.00010941830819694799
+  weight_decay: 0.0003621987805395929
+  grad_clip_value: 0.3649169792089614
+
+  num_data_workers: 8
+  log_to_screen: true
+  use_wandb: false
+  save_version: hdf5_chinchilla_m2_w128
+
+hdf5_chinchilla_m3_w256:
+  data_root: /workspace/PP_collision/data/cvt_cluster_hdf5_20261103_002
+  stat_dir: /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  reader_type: hdf5
+  data_version: cvt-clusters-h5-v1
+  limit_data: false
+  limit_size: 10000000
+  n_data_idx: 10000000
+  data_fraction: 1.0
+
+  backbone_version: mamba3
+  embed_dim: 256
+  num_layers_backbone: 12
+  d_state: 128
+  expand: 2
+  headdim: 64
+  ngroups: 1
+  chunk_size: 64
+  is_mimo: false
+  base_dim: 256
+  init_std: 0.025
+  dropout: 0.0
+
+  embed_method: pos_only
+  pe_method: nerf
+  use_aux_features: false
+  return_knn_aux_target: false
+  use_sincos_target: true
+  klen: 5
+  hilbert_angular_grid: unit_v2
+
+  group_size: 8
+  nleave: 1e10
+  order: EPR
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  return_reg_test: false
+  return_dict: false
+  max_gt_classes: 150
+  voxelize: false
+  space_filling_order: true
+  space_filling_curve: z
+  rep_aaai: false
+  nexttoken: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+  snapshot_every: 5176
+
+  use_mup: true
+  mup_base_width: 256
+  batch_size: 64
+  local_batch_size: 64
+  valid_batch_size: 16
+  local_valid_batch_size: 16
+  max_val_batches: 100
+  max_epochs: 10000
+  total_steps: 25896
+  warmup_steps: 1466
+  n_eval_steps: 1294
+  max_lr: 0.00109418308196948
+  min_lr: 0.00010941830819694799
+  weight_decay: 0.0003621987805395929
+  grad_clip_value: 0.3649169792089614
+
+  num_data_workers: 8
+  log_to_screen: true
+  use_wandb: false
+  save_version: hdf5_chinchilla_m3_w256
+
+hdf5_chinchilla_m4_w512:
+  data_root: /workspace/PP_collision/data/cvt_cluster_hdf5_20261103_002
+  stat_dir: /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  reader_type: hdf5
+  data_version: cvt-clusters-h5-v1
+  limit_data: false
+  limit_size: 10000000
+  n_data_idx: 10000000
+  data_fraction: 1.0
+
+  backbone_version: mamba3
+  embed_dim: 512
+  num_layers_backbone: 12
+  d_state: 128
+  expand: 2
+  headdim: 64
+  ngroups: 1
+  chunk_size: 64
+  is_mimo: false
+  base_dim: 256
+  init_std: 0.025
+  dropout: 0.0
+
+  embed_method: pos_only
+  pe_method: nerf
+  use_aux_features: false
+  return_knn_aux_target: false
+  use_sincos_target: true
+  klen: 5
+  hilbert_angular_grid: unit_v2
+
+  group_size: 8
+  nleave: 1e10
+  order: EPR
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  return_reg_test: false
+  return_dict: false
+  max_gt_classes: 150
+  voxelize: false
+  space_filling_order: true
+  space_filling_curve: z
+  rep_aaai: false
+  nexttoken: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+  snapshot_every: 19016
+
+  use_mup: true
+  mup_base_width: 256
+  batch_size: 64
+  local_batch_size: 64
+  valid_batch_size: 16
+  local_valid_batch_size: 16
+  max_val_batches: 100
+  max_epochs: 10000
+  total_steps: 95097
+  warmup_steps: 5382
+  n_eval_steps: 4754
+  max_lr: 0.00109418308196948
+  min_lr: 0.00010941830819694799
+  weight_decay: 0.0003621987805395929
+  grad_clip_value: 0.3649169792089614
+
+  num_data_workers: 8
+  log_to_screen: true
+  use_wandb: false
+  save_version: hdf5_chinchilla_m4_w512

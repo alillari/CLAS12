@@ -1,0 +1,403 @@
+# CLAS12 CVT downstream track-finding / Pretrained-backbone configuration.
+# Built to compare 4 backbone variants: OLD (off-target contaminated),
+# V6_02 (target-restricted), V7_01+length, V7_01+pitch -- all evaluated on
+# the same v7_01 dataset for a fair, apples-to-apples comparison. Only
+# embed_method/use_aux_features/aux_extra_feature differ per backbone;
+# everything else mirrors the proven mamba_clas12_track_finding_adapteronly.yaml.
+# Intended for train_track_finding.py --usepretrain.
+
+default: &default
+  data_root: /workspace/PP_collision/data/mmap_canonical_loose_truthseg_event_v7_01
+  data_root_train: /workspace/PP_collision/data/mmap_canonical_loose_truthseg_event_v7_01
+  data_root_test: /workspace/PP_collision/data/mmap_canonical_loose_truthseg_event_v7_01
+  stat_dir: /workspace/PP_collision/data/stats
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained/checkpoints
+
+  data_version: clas12_cvt
+  input_layout: xyz
+  serialization: clas12_band_hilbert
+  batch_size: 64
+  local_batch_size: 64
+  valid_batch_size: 1
+  local_valid_batch_size: 1
+  limit_data: true
+  limit_size: 50000
+  n_data_idx: 1000000
+  n_eval_steps: 200
+  num_data_workers: 4
+  log_to_screen: true
+
+  nleave: 10000000000.0
+  order: REP
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  low_thr: 1
+  high_thr: 100
+  max_gt_classes: 150
+  max_tracks: 150
+
+  pe_method: nerf
+  voxelize: false
+  space_filling_order: false
+  space_filling_curve: z
+  return_dict: false
+  return_reg: false
+  return_reg_test: false
+  return_knn_target: false
+
+  rep_aaai: false
+  nexttoken: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+
+  max_epochs: 60
+  max_lr: 0.0003
+  min_lr: 0.00001
+  first_cycle_steps: 3000
+  warmup_steps: 6
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0.0001
+  early_stopping_warmup_steps: 60
+  grad_clip_value: 0.1
+  total_steps: 30000
+
+  group_size: 8
+  init_std: 0.025
+  num_layers_backbone: 12
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  klen: 1
+  dropout: 0.1
+  downstream_dropout: 0.1
+  mambaversion: mamba1
+
+  num_heads_backbone: 4
+  num_heads_decoder: 2
+  num_heads_encoder: 2
+  num_embedder_layers: 0
+  use_attention_head: true
+  continue_from_best: true
+
+  loss_matched_ce_weight: 0.5
+  loss_unmatched_ce_weight: 0.1
+  loss_dice_weight: 1
+  loss_focal_weight: 30
+
+clas12_track_finding_pretrained_old_w64:
+  <<: *default
+  embed_dim: 64
+  base_dim: 64
+  model_version: clas12_track_finding_pretrained_old_w64
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_old_w64
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_old_w64/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Unbiased_Cluster_Full_Sweep_2026-08-13/scale_w64_d12_n39553933/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_old_w128:
+  <<: *default
+  embed_dim: 128
+  base_dim: 128
+  model_version: clas12_track_finding_pretrained_old_w128
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_old_w128
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_old_w128/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Unbiased_Cluster_Full_Sweep_2026-08-13/scale_w128_d12_n39553933/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_old_w256:
+  <<: *default
+  embed_dim: 256
+  base_dim: 256
+  model_version: clas12_track_finding_pretrained_old_w256
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_old_w256
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_old_w256/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Unbiased_Cluster_Full_Sweep_2026-08-13/scale_w256_d12_n39553933/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_old_w512:
+  <<: *default
+  embed_dim: 512
+  base_dim: 512
+  model_version: clas12_track_finding_pretrained_old_w512
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_old_w512
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_old_w512/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Unbiased_Cluster_Full_Sweep_2026-08-13/scale_w512_d12_n39553933/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_old_w1024:
+  <<: *default
+  embed_dim: 1024
+  base_dim: 1024
+  model_version: clas12_track_finding_pretrained_old_w1024
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_old_w1024
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_old_w1024/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Unbiased_Cluster_Full_Sweep_2026-08-13/scale_w1024_d12_n39553933/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_old_w1536:
+  <<: *default
+  embed_dim: 1536
+  base_dim: 1536
+  model_version: clas12_track_finding_pretrained_old_w1536
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_old_w1536
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_old_w1536/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Unbiased_Cluster_Full_Sweep_2026-08-13/scale_w1536_d12_n39553933/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_v602_w64:
+  <<: *default
+  embed_dim: 64
+  base_dim: 64
+  model_version: clas12_track_finding_pretrained_v602_w64
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w64
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w64/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Canonical_Loose_v6_02_Full_Sweep_2026-09-08/scale_w64_d12_v602/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_v602_w128:
+  <<: *default
+  embed_dim: 128
+  base_dim: 128
+  model_version: clas12_track_finding_pretrained_v602_w128
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w128
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w128/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Canonical_Loose_v6_02_Full_Sweep_2026-09-08/scale_w128_d12_v602/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_v602_w256:
+  <<: *default
+  embed_dim: 256
+  base_dim: 256
+  model_version: clas12_track_finding_pretrained_v602_w256
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w256
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w256/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Canonical_Loose_v6_02_Full_Sweep_2026-09-08/scale_w256_d12_v602/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_v602_w512:
+  <<: *default
+  embed_dim: 512
+  base_dim: 512
+  model_version: clas12_track_finding_pretrained_v602_w512
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w512
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w512/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Canonical_Loose_v6_02_Full_Sweep_2026-09-08/scale_w512_d12_v602/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_v602_w1024:
+  <<: *default
+  embed_dim: 1024
+  base_dim: 1024
+  model_version: clas12_track_finding_pretrained_v602_w1024
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w1024
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w1024/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Canonical_Loose_v6_02_Full_Sweep_2026-09-08/scale_w1024_d12_v602/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_v602_w1536:
+  <<: *default
+  embed_dim: 1536
+  base_dim: 1536
+  model_version: clas12_track_finding_pretrained_v602_w1536
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w1536
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v602_w1536/checkpoints
+  embed_method: pos_only
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/Canonical_Loose_v6_02_Full_Sweep_2026-09-08/scale_w1536_d12_v602/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: false
+
+clas12_track_finding_pretrained_v701length_w64:
+  <<: *default
+  embed_dim: 64
+  base_dim: 64
+  model_version: clas12_track_finding_pretrained_v701length_w64
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w64
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w64/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Aux_Full_Sweep_2026-09-16/scale_w64_d12_v701aux/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: length
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701length_w128:
+  <<: *default
+  embed_dim: 128
+  base_dim: 128
+  model_version: clas12_track_finding_pretrained_v701length_w128
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w128
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w128/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Aux_Full_Sweep_2026-09-16/scale_w128_d12_v701aux/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: length
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701length_w256:
+  <<: *default
+  embed_dim: 256
+  base_dim: 256
+  model_version: clas12_track_finding_pretrained_v701length_w256
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w256
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w256/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Aux_Full_Sweep_2026-09-16/scale_w256_d12_v701aux/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: length
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701length_w512:
+  <<: *default
+  embed_dim: 512
+  base_dim: 512
+  model_version: clas12_track_finding_pretrained_v701length_w512
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w512
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w512/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Aux_Full_Sweep_2026-09-16/scale_w512_d12_v701aux/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: length
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701length_w1024:
+  <<: *default
+  embed_dim: 1024
+  base_dim: 1024
+  model_version: clas12_track_finding_pretrained_v701length_w1024
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w1024
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w1024/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Aux_Full_Sweep_2026-09-16/scale_w1024_d12_v701aux/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: length
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701length_w1536:
+  <<: *default
+  embed_dim: 1536
+  base_dim: 1536
+  model_version: clas12_track_finding_pretrained_v701length_w1536
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w1536
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701length_w1536/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Aux_Full_Sweep_2026-09-16/scale_w1536_d12_v701aux/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: length
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701pitch_w64:
+  <<: *default
+  embed_dim: 64
+  base_dim: 64
+  model_version: clas12_track_finding_pretrained_v701pitch_w64
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w64
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w64/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Pitch_Full_Sweep_2026-09-17/scale_w64_d12_v701pitch/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: pitch
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701pitch_w128:
+  <<: *default
+  embed_dim: 128
+  base_dim: 128
+  model_version: clas12_track_finding_pretrained_v701pitch_w128
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w128
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w128/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Pitch_Full_Sweep_2026-09-17/scale_w128_d12_v701pitch/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: pitch
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701pitch_w256:
+  <<: *default
+  embed_dim: 256
+  base_dim: 256
+  model_version: clas12_track_finding_pretrained_v701pitch_w256
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w256
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w256/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Pitch_Full_Sweep_2026-09-17/scale_w256_d12_v701pitch/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: pitch
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701pitch_w512:
+  <<: *default
+  embed_dim: 512
+  base_dim: 512
+  model_version: clas12_track_finding_pretrained_v701pitch_w512
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w512
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w512/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Pitch_Full_Sweep_2026-09-17/scale_w512_d12_v701pitch/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: pitch
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701pitch_w1024:
+  <<: *default
+  embed_dim: 1024
+  base_dim: 1024
+  model_version: clas12_track_finding_pretrained_v701pitch_w1024
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w1024
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w1024/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Pitch_Full_Sweep_2026-09-17/scale_w1024_d12_v701pitch/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: pitch
+  pos_dim: 3
+  aux_dim: 4
+
+clas12_track_finding_pretrained_v701pitch_w1536:
+  <<: *default
+  embed_dim: 1536
+  base_dim: 1536
+  model_version: clas12_track_finding_pretrained_v701pitch_w1536
+  downstream_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w1536
+  checkpoint_dir: ./downstream_log/clas12_track_finding_pretrained_v701pitch_w1536/checkpoints
+  embed_method: pos_plus_aux
+  pretrained_ckpt: /workspace/PP_collision/checkpoints/v7_01_Pitch_Full_Sweep_2026-09-17/scale_w1536_d12_v701pitch/sweep/training_checkpoints/ckpt_best.tar
+  use_aux_features: true
+  aux_extra_feature: pitch
+  pos_dim: 3
+  aux_dim: 4
+
+
+# === AdapterOnly (no pretraining) -- ONE fixed width, matching the
+# original adapteronly config's own default. Confirmed from run_table.csv:
+# 28 total rows = 4 adapteronly (one per label count) + 24 pretrained
+# (6 widths x 4 label counts) -- adapter-only never varied by width.
+clas12_track_finding_adapteronly:
+  <<: *default
+  embed_dim: 128
+  base_dim: 128
+  model_version: clas12_track_finding_adapteronly
+  embed_method: add
+  use_aux_features: false
+  downstream_dir: ./downstream_log/clas12_track_finding_adapteronly
+  checkpoint_dir: ./downstream_log/clas12_track_finding_adapteronly/checkpoints

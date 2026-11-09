@@ -1,0 +1,74 @@
+hdf5_m3_trial_28:
+  data_root: /workspace/PP_collision/data/cvt_cluster_hdf5_20261103_002
+  stat_dir: /workspace/PP_collision/data/stats
+  checkpoint_dir: /workspace/PP_collision/checkpoints
+  reader_type: hdf5
+  data_version: cvt-clusters-h5-v1
+  limit_data: false
+  limit_size: 10000000
+  n_data_idx: 10000000
+  data_fraction: 1.0
+
+  # model: Mamba-3 SISO, bf16 inside the blocks
+  backbone_version: mamba3
+  embed_dim: 256
+  num_layers_backbone: 12
+  d_state: 128
+  expand: 2
+  headdim: 64
+  ngroups: 1
+  chunk_size: 64
+  is_mimo: false
+  base_dim: 256
+  init_std: 0.025
+  dropout: 0.0
+
+  # input and target: positions only, sin/cos phi, kNNN = 5
+  embed_method: pos_only
+  pe_method: nerf
+  use_aux_features: false
+  return_knn_aux_target: false
+  use_sincos_target: true
+  klen: 5
+  hilbert_angular_grid: unit_v2
+
+  # legacy loader settings (unchanged from every earlier sweep)
+  group_size: 8
+  nleave: 1e10
+  order: EPR
+  len_chunk: 512
+  portion: 0.2
+  chunk_training: false
+  return_reg_test: false
+  return_dict: false
+  max_gt_classes: 150
+  voxelize: false
+  space_filling_order: true
+  space_filling_curve: z
+  rep_aaai: false
+  nexttoken: false
+  loss_reweight: false
+  ablate_loss_scale: false
+  save_checkpoint: true
+
+  # optimization
+  use_mup: true
+  mup_base_width: 256
+  batch_size: 64
+  local_batch_size: 64
+  valid_batch_size: 16
+  local_valid_batch_size: 16
+  max_val_batches: 100
+  max_epochs: 10000
+  total_steps: 5000
+  warmup_steps: 211
+  n_eval_steps: 1000
+  max_lr: 0.0006657670478385537
+  min_lr: 6.657670478385538e-05
+  weight_decay: 0.0008542292052664129
+  grad_clip_value: 0.31415497946394444
+
+  num_data_workers: 8
+  log_to_screen: true
+  use_wandb: false
+  save_version: hdf5_m3_trial_28

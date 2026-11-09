@@ -87,7 +87,15 @@ The runner is intentionally local-first. It does not submit SLURM jobs. It runs
 one training/evaluation job at a time and sets `CUDA_VISIBLE_DEVICES` for each
 subprocess.
 
-## Expected Backbone Layout
+## Backbone selection
+
+Both manifest builders accept `--backbone-catalog`, `--backbone-root`, and
+repeatable `--backbone ID` filters. The catalog can point at arbitrary nested
+checkpoint files. Family, width, depth, and block settings come from checkpoint
+metadata; the catalog supplies missing historical input/target settings.
+See [Pretrained backbones](../../PRETRAINED_BACKBONES.md) for campaign 5 commands.
+
+### Legacy directory discovery
 
 The default pretrained root is:
 
@@ -95,7 +103,7 @@ The default pretrained root is:
 /home/alessio/ML-work/pretrained-FMs/campaign_1/
 ```
 
-The manifest builder expects one subdirectory per pretrained run:
+Without a catalog, the manifest builder inspects one subdirectory per pretrained run:
 
 ```text
 campaign_1/
@@ -113,8 +121,14 @@ For the current campaign, metadata is parsed from the directory name:
 - `d12` -> `num_layers_backbone: 12`
 - `n5483352` -> `pretrain_events: 5483352`
 
-If a backbone directory later contains `metadata.yaml` or `metadata.json`, that
-sidecar is preferred over filename-derived metadata.
+`metadata.yaml` or `metadata.json` can provide metadata without width/depth name
+tokens. A `checkpoint` field selects a relative path; a `backbone_config` mapping
+provides missing historical settings and enables checkpoint-metadata resolution.
+Discovery prefers a unique `ckpt_best.tar`, including nested directories, and
+rejects ambiguous choices. Existing single-file directories remain supported.
+An explicit `--checkpoint-name` takes precedence over a sidecar checkpoint.
+Catalog selections use their catalog IDs/settings and do not inherit legacy
+sidecars from neighboring checkpoint files.
 
 ## Build A Manifest
 

@@ -12,6 +12,7 @@ import torch
 import yaml
 
 from fm4npp.models.mamba_config import build_backbone, optimizer_parameters
+from fm4npp.pretrained import resolve_backbone
 from fm4npp.models.mambagpt import Mamba1GPT
 from train.pretrain.nppmamba import train_multi_gpu_mamba1 as pretrain
 from train.pretrain.nppmamba.optimizer_state import parameter_names, restore_optimizer
@@ -52,6 +53,9 @@ class PretrainingIntegrationTest(unittest.TestCase):
             trainer.save_checkpoint(trainer.checkpoint_path)
             saved = torch.load(trainer.checkpoint_path, map_location="cpu", weights_only=False)
             self.assertEqual(saved["hilbert_angular_grid"], "unit_v2")
+            self.assertEqual(saved["backbone_config"]["backbone_version"], "transformer")
+            resolved = resolve_backbone({"checkpoint": trainer.checkpoint_path})
+            build_backbone(resolved["config"]).load_state_dict(saved["model_state"], strict=True)
             make_trainer(root, "transformer")
             with self.assertRaisesRegex(ValueError, "Checkpoint Hilbert grid"):
                 make_trainer(root, "transformer", hilbert_angular_grid="legacy_v1")

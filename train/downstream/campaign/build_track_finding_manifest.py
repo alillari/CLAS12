@@ -10,15 +10,17 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from train.downstream.track_finding_contract import validate_track_finding_modes
+from fm4npp.pretrained import add_backbone_arguments
 
 from campaign_util import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_CHECKPOINT_ROOT,
     campaign_dir,
     discover_checkpoint,
+    catalog_backbones,
+    build_run_row,
     load_base_model_config,
     read_yaml,
-    parse_run_name,
     run_paths,
     utc_now,
     write_yaml,
@@ -32,6 +34,7 @@ DEFAULT_ANALYSIS_YAML = "train/downstream/eval/track_finding_analysis_adapteronl
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    add_backbone_arguments(parser, multiple=True)
     parser.add_argument("--checkpoint-root", default=str(DEFAULT_CHECKPOINT_ROOT))
     parser.add_argument("--checkpoint-name", help="Exact checkpoint filename to use inside every selected backbone directory.")
     parser.add_argument(
@@ -201,31 +204,14 @@ def adapter_row(base_dir: Path, eventnumber: int, train_batch_size: int, final_e
     return row
 
 
-def pretrained_row(source_dir: Path, checkpoint: Path, base_dir: Path, eventnumber: int, train_batch_size: int, final_evaluation_events: int, validation_events: int) -> dict:
-    metadata = parse_run_name(source_dir.name)
-    run_id = f"{source_dir.name}_label{eventnumber}"
-    row = {
-        "run_id": run_id,
-        "backbone_run_id": source_dir.name,
-        "source_dir": str(source_dir.resolve()),
-        "pretrained_checkpoint": str(checkpoint.resolve()),
-        "use_pretrained_backbone": True,
-        "base_model_yaml": DEFAULT_MODEL_YAML,
-        "base_model_config": "clas12_track_finding_adapteronly",
-        "model_family": "mamba1",
-        "base_dim": metadata["base_dim"],
-        "embed_dim": metadata["embed_dim"],
-        "num_layers_backbone": metadata["num_layers_backbone"],
-        "pretrain_events": metadata["pretrain_events"],
-        "eventnumber": int(eventnumber),
-        "labeled_events": int(eventnumber),
-        "train_batch_size": int(train_batch_size),
-        "final_evaluation_events": int(final_evaluation_events),
-        "validation_events": int(validation_events),
-        "status": "pending",
-        "model_config": f"clas12_track_finding_pretrained_{run_id}",
-    }
-    row.update({key: str(value) for key, value in run_paths(base_dir, run_id).items()})
+def pretrained_row(source_dir: Path, checkpoint: Path, base_dir: Path, eventnumber: int, train_batch_size: int, final_evaluation_events: int, validation_events: int, backbone=None) -> dict:
+    name = backbone["name"] if backbone else source_dir.name
+    row = build_run_row(source_dir, checkpoint, base_dir, eventnumber, train_batch_size,
+                        final_evaluation_events, run_id=f"{name}_label{eventnumber}",
+                        base_model_yaml=DEFAULT_MODEL_YAML, base_model_config="clas12_track_finding_adapteronly",
+                        backbone=backbone)
+    row.update(final_evaluation_events=int(final_evaluation_events), validation_events=int(validation_events),
+               model_config=f"clas12_track_finding_pretrained_{row['run_id']}")
     return row
 
 
@@ -259,8 +245,9 @@ def main() -> None:
             row["base_model_config"] = base_model_config
             runs.append(row)
 
-    if checkpoint_root.is_dir():
-        source_dirs = sorted(path for path in checkpoint_root.iterdir() if path.is_dir())
+    catalog_models = catalog_backbones(args)
+    if catalog_models is not None or checkpoint_root.is_dir():
+        source_dirs = [] if catalog_models is not None else sorted(path for path in checkpoint_root.iterdir() if path.is_dir())
         if args.checkpoint_run:
             requested = set(args.checkpoint_run)
             available = {path.name for path in source_dirs}
@@ -271,21 +258,15 @@ def main() -> None:
                     f"{checkpoint_root}: {', '.join(missing)}"
                 )
             source_dirs = [path for path in source_dirs if path.name in requested]
-        if args.expected_pretrained_count is not None and len(source_dirs) != args.expected_pretrained_count:
+        selected_count = len(catalog_models) if catalog_models is not None else len(source_dirs)
+        if args.expected_pretrained_count is not None and selected_count != args.expected_pretrained_count:
             raise ValueError(
-                f"Expected {args.expected_pretrained_count} pretrained backbones after filtering, found {len(source_dirs)}"
+                f"Expected {args.expected_pretrained_count} pretrained backbones after filtering, found {selected_count}"
             )
-        for source_dir in source_dirs:
-            metadata = parse_run_name(source_dir.name)
-            if args.expected_embed_dim is not None and metadata["embed_dim"] != args.expected_embed_dim:
-                raise ValueError(
-                    f"Backbone {source_dir.name} has embed_dim={metadata['embed_dim']}; "
-                    f"expected {args.expected_embed_dim}. A fixed-size adapter campaign cannot mix these."
-                )
-            checkpoint = (
-                source_dir / args.checkpoint_name
-                if args.checkpoint_name else discover_checkpoint(source_dir)
-            )
+        sources = [(Path(model["checkpoint"]).parent, Path(model["checkpoint"]), model) for model in catalog_models] if catalog_models is not None else [
+            (source, source / args.checkpoint_name if args.checkpoint_name else discover_checkpoint(source), None)
+            for source in source_dirs]
+        for source_dir, checkpoint, backbone in sources:
             if not checkpoint.is_file():
                 raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint}")
             for eventnumber in eventnumbers:
@@ -297,7 +278,10 @@ def main() -> None:
                     args.train_batch_size,
                     args.final_evaluation_events,
                     args.validation_events,
+                    backbone=backbone,
                 )
+                if args.expected_embed_dim is not None and row["embed_dim"] != args.expected_embed_dim:
+                    raise ValueError(f"Backbone {row['backbone_run_id']} has embed_dim={row['embed_dim']}; expected {args.expected_embed_dim}")
                 row["base_model_yaml"] = args.base_model_yaml
                 row["base_model_config"] = base_model_config
                 runs.append(row)

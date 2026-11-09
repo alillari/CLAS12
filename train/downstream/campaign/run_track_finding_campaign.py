@@ -19,6 +19,7 @@ from train.downstream.track_finding_contract import FINDING_METRICS_VERSION, val
 import numpy as np
 from mmap_ninja import RaggedMmap
 from fm4npp.utils import expand_config_string, expand_param_references
+from fm4npp.pretrained import apply_backbone_to_run
 
 from campaign_util import (
     command_env,
@@ -120,6 +121,7 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     })
     params.update(manifest.get("training_overrides", {}))
     params.update(run.get("training_overrides", {}))
+    apply_backbone_to_run(params, run, manifest.get("training_overrides", {}), run.get("training_overrides", {}))
     write_yaml(Path(run["model_yaml"]), {run["model_config"]: params})
 
 

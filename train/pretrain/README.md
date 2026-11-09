@@ -125,7 +125,12 @@ as explained in the recipe reference. Resume restores compatible optimizer and
 scheduler state, but follows epoch-based data iteration rather than an exact
 mid-epoch cursor. Optional W&B logging in this pretrainer is offline.
 
-Pass `ckpt_best.tar` to a downstream run with matching family, width, depth,
+New checkpoints include `backbone_config` with the factory's effective settings
+and the configured input contract. The shared [backbone resolver](../PRETRAINED_BACKBONES.md)
+uses it to configure downstream runs automatically. A portable catalog supplies
+missing metadata for historical checkpoints, including Mike's campaign 5.
+
+For legacy checkpoints selected by an explicit path, use matching family, width, depth,
 state, convolution/expand settings where applicable, `klen`, positional encoding
 and input representation. For supported four-column auxiliary inputs, match
 the length/pitch choice and use the regression `clas12_pos_plus_aux_v1` feature

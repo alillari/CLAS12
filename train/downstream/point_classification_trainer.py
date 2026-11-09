@@ -23,6 +23,7 @@ from cosine_annealing_warmup import CosineAnnealingWarmupRestarts # pip install 
 sys.path.append('../..')
 
 from fm4npp.utils import *
+from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
 from fm4npp.datasets.dataset import *
 from fm4npp.hilbert import (
     DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
@@ -64,6 +65,7 @@ class DownstreamTrainer():
     """ trainer class """
     def __init__(self, params, args):
         require_single_process(getattr(params, 'task', None))
+        configure_pretrained_backbone(params)
         
         ''' init vars for distributed training (ddp) and logging'''
         self.root_dir = args.root_dir
@@ -1054,7 +1056,10 @@ class DownstreamTrainer():
             load_optimizer_state: If True, load optimizer/scheduler state (for resuming training).
                                  If False, only load model weights (for pretrained initialization).
         """
-        checkpoint = torch.load(checkpoint_path, map_location=(f'cuda:{self.device}' if isinstance(self.device, int) else self.device), weights_only=False)
+        checkpoint, self.backbone_sha256 = load_pretrained_checkpoint(
+            checkpoint_path, self.params,
+            map_location=(f'cuda:{self.device}' if isinstance(self.device, int) else self.device),
+        )
         validate_checkpoint_hilbert_grid(checkpoint, self.params)
         validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}

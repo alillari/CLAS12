@@ -594,6 +594,8 @@ def main() -> None:
 
     validate_track_finding_modes(analysis, source="evaluation analysis")
     params = YParams(os.path.abspath(analysis["model_yaml"]), analysis["model_config"])
+    if getattr(params, "reader_type", None) == "hdf5":
+        params.validation_split = analysis.get("evaluation_split", "test")
     validate_track_finding_modes(vars(params), source="evaluation model")
     evaluate_coatjava = bool(analysis.get("evaluate_coatjava", True))
     params.limit_data = True
@@ -646,7 +648,10 @@ def main() -> None:
         )
         assignment_option = int(analysis.get("assignment_option", getattr(params, "assignment_option", 2)))
         assignment_threshold = float(analysis.get("assignment_threshold", getattr(params, "assignment_threshold", 0.0)))
-        momentum_scale = float(analysis.get("target_momentum_scale_to_gev", 0.001))
+        momentum_scale = float(analysis.get("target_momentum_scale_to_gev",
+                                           1.0 if getattr(params, "reader_type", None) == "hdf5" else 0.001))
+        if getattr(params, "reader_type", None) == "hdf5" and momentum_scale != 1.0:
+            raise ValueError("HDF5 momentum targets are already in GeV/c")
         save_points = bool(analysis.get("save_per_point_predictions", False)) or args.save_per_point_predictions
 
         if args.assignment_thresholds is not None:
@@ -734,6 +739,11 @@ def main() -> None:
                             momentum_scale=momentum_scale,
                         )
                         event_row, matches, truth_tracks = evaluated["rows"]
+                        if getattr(params, "reader_type", None) == "hdf5":
+                            identity = {key: int(batch[key][sample_index]) for key in
+                                        ("source_event_index", "source_id", "original_ordinal")}
+                            for row in (event_row, *matches, *truth_tracks):
+                                row.update(identity)
                         event_rows.append(event_row)
                         track_rows.extend(matches)
                         per_track_metric_rows.extend(truth_tracks)

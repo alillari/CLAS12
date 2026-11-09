@@ -86,3 +86,32 @@ Use [From single runs to campaigns](campaign/GETTING_STARTED.md) to repeat the
 validated recipe across backbones, label counts or seeds. For both tasks on the
 same backbone, use [the worked example](../WORKED_EXAMPLE.md). Reserve source
 events explicitly for a final test: sample limits alone do not create a split.
+
+## HDF5 AdapterOnly benchmark
+
+This branch integrates track finding with the published HDF5 cluster product.
+The shared data support is a separate ancestor commit; the other adapter
+integrations are independent sibling branches.
+
+```bash
+python -m train.downstream.benchmark_hdf5_finding \
+  --data-root /absolute/path/to/cvt-clusters-h5 \
+  --output-dir /absolute/path/to/new/finding-run
+```
+
+Defaults: 5,000 accepted training samples, 3,000 updates, 1,000 validation
+samples and 2,000 test samples, seed 42. Cohorts use accepted prefixes. The
+runner checks disjoint source-event identities, reloads the validation-selected
+checkpoint and writes configurations, cohort IDs, predictions and `summary.json`.
+For a smoke test add `--train-size 32 --steps 2 --validation-size 16 --test-size 16`.
+The configuration is `hdf5_finding_5k` in `scripts/configs/clas12_adapter_recipes.yaml`.
+
+Samples are whole events. `primary_segment == -1`, including contested clusters,
+remains background. The model, Hungarian targets and losses are unchanged.
+Both methods use identical truth/masks; COATJAVA groups come from first-pass
+`reco_segment`. Checkpoint selection uses validation signal ARI with a loss
+tie-break; inference remains option 2 at threshold 0.2. Standalone evaluation
+uses `test` by default and requires a target momentum scale of 1 for GeV/c.
+Campaign analysis rendering selects this scale from the effective HDF5 reader,
+including manifest and run training overrides. Explicit analysis overrides take
+precedence; incompatible HDF5 momentum units are rejected by evaluation.

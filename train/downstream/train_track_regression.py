@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from fm4npp.artifact_paths import artifact_path
+from fm4npp.pretrained import add_backbone_arguments
 
 try:
     from .track_regression_experiment import (
@@ -26,6 +27,7 @@ except ImportError:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    add_backbone_arguments(parser)
     parser.add_argument("--yaml_config", default="", type=str, help="Path to YAML config file")
     parser.add_argument("--config", default="", type=str, help="Model config name")
     parser.add_argument("--run_num", default="0", type=str, help="Sub run number")
@@ -33,6 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--global_log_dir", default="globallogs", type=str, help="Global dir to store logging only")
     parser.add_argument("--eventnumber", default=50000, type=int, help="Downstream training event number")
     parser.add_argument("--usepretrain", action="store_true", help="Use pretrained backbone")
+    parser.add_argument("--no-pretrain", dest="usepretrain", action="store_false", help="Disable pretrained backbone")
+    parser.set_defaults(usepretrain=None)
     parser.add_argument("--train_batch_size", default=32, type=int, help="Train batch size")
     parser.add_argument("--pretrained_ckpt", default=None, type=str, help="Optional pretrained checkpoint path.")
     parser.add_argument("--checkpoint_dir", default=None, type=str, help="Explicit checkpoint/log directory.")
@@ -57,6 +61,9 @@ def main() -> None:
             usepretrain=args.usepretrain,
             train_batch_size=args.train_batch_size,
             pretrained_ckpt=args.pretrained_ckpt,
+            backbone=args.backbone,
+            backbone_catalog=args.backbone_catalog,
+            backbone_root=args.backbone_root,
             checkpoint_dir=args.checkpoint_dir,
             log_file_name=args.log_file_name,
             checkpoint_file_name=args.checkpoint_file_name,

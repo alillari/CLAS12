@@ -102,8 +102,8 @@ default: &default
   d_conv: 4
   expand: 2
   # Backbone/dataset next-point horizon, not the number of track queries.
-  # The campaign_4 Mamba1 checkpoints have a 3-wide output head (klen=1), so
-  # this must remain one for strict pretrained-backbone compatibility.
+  # Legacy campaign_4 Mamba1 checkpoints have a 3-wide output head (klen=1).
+  # A --backbone catalog selection replaces these legacy backbone defaults.
   klen: 1
   dropout: 0.1
   downstream_dropout: 0.1

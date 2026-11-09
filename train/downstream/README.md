@@ -8,6 +8,8 @@ Choose the task first:
 | Track-level momentum regression | [Momentum guide](MOMENTUM.md) | `train_track_regression.py` |
 
 Both support AdapterOnly coordinate inputs or frozen pretrained features.
+Use the [pretrained-backbone catalog](../PRETRAINED_BACKBONES.md) to select
+campaign 5 models by ID and resolve their architecture/input settings.
 The [complete worked example](../WORKED_EXAMPLE.md) uses one backbone for both
 tasks. These are separate supervised fits; the momentum recipe receives supplied
 track membership rather than automatically consuming the finding head's output.

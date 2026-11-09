@@ -1,0 +1,27 @@
+# Paths are relative to --backbone-root / CLAS12_PRETRAINED_ROOT. If neither
+# is provided, paths are relative to this catalog. No symlinks/renaming needed.
+version: 1
+defaults:
+  # Missing historical input/target metadata from Mike's Nov. 9 handoff.
+  # Family, width, depth, SSM options, output width and grid come from checkpoints.
+  embed_method: pos_only
+  pe_method: nerf
+  klen: 5
+  use_sincos_target: true
+  input_layout: xyz
+  input_representation: center_only
+  serialization: clas12_band_hilbert
+  voxelize: false
+backbones:
+  campaign5_m1:
+    checkpoint: campaign_5_bg_merged/hdf5_chinchilla_m1_w64/hdf5_chinchilla/training_checkpoints/ckpt_best.tar
+    sha256: 616043ac11ee1e73a49cf3ac58fac12cf3077dfe9033cdcc67a7f1357a1def22
+  campaign5_m2:
+    checkpoint: campaign_5_bg_merged/hdf5_chinchilla_m2_w128/hdf5_chinchilla/training_checkpoints/ckpt_best.tar
+    sha256: 999918ac6714d8919d9921f090474d760148045534588ef3d5e00edb56e39e4f
+  campaign5_m3:
+    checkpoint: campaign_5_bg_merged/hdf5_chinchilla_m3_w256/hdf5_chinchilla/training_checkpoints/ckpt_best.tar
+    sha256: cb3dfdf2a76f2edca361352dccca97befb26e4d5f2b0c685cb8aa5fbe862898c
+  campaign5_m4:
+    checkpoint: campaign_5_bg_merged/hdf5_chinchilla_m4_w512/hdf5_chinchilla/training_checkpoints/ckpt_best.tar
+    sha256: 10274b39f1454471a2b7afb9cd47590e18e2fa33d7b0c8ac1c5a840a46addc4d

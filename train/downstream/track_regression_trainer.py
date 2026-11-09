@@ -24,6 +24,7 @@ from cosine_annealing_warmup import CosineAnnealingWarmupRestarts # pip install 
 sys.path.append('../..')
 
 from fm4npp.utils import *
+from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
 from fm4npp.datasets.dataset import *
 from fm4npp.hilbert import (
     DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
@@ -63,6 +64,7 @@ class DownstreamTrainer():
 
     def __init__(self, params, args):
         require_single_process()
+        configure_pretrained_backbone(params)
         self.root_dir = args.root_dir
         self.global_log_dir = os.path.join(args.root_dir, args.global_log_dir)
         self.config = args.config
@@ -1380,7 +1382,7 @@ class DownstreamTrainer():
             device_str = f'cuda:{self.device}' if torch.cuda.is_available() else 'cpu'
         else:
             device_str = str(self.device)
-        checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        checkpoint, self.backbone_sha256 = load_pretrained_checkpoint(checkpoint_path, self.params, map_location=device_str)
         validate_checkpoint_hilbert_grid(checkpoint, self.params)
         if "model_state" not in checkpoint:
             raise KeyError(

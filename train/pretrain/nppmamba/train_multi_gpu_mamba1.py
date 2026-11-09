@@ -19,6 +19,7 @@ from torch.nn.parallel import DistributedDataParallel
 import torch.distributed as dist
 
 from fm4npp.artifact_paths import artifact_path
+from fm4npp.pretrained import export_backbone_config
 from fm4npp.hilbert import (
     DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
 )
@@ -316,6 +317,7 @@ class Trainer():
             'validation_metric': VALIDATION_METRIC,
             'hilbert_angular_grid': self.params.hilbert_angular_grid,
             'backbone_architecture': architecture_metadata(self.model),
+            'backbone_config': export_backbone_config(self.params, self.model),
         }
         torch.save(payload, checkpoint_path)
 

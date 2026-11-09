@@ -149,8 +149,10 @@ def build_backbone(params, default="mamba2"):
         from fm4npp.models.transformer import TransformerGPT
         options = transformer_options(params, "backbone")
         common.pop("dropout")
-        return TransformerGPT(**common, **options,
-                              pos_dim=value(params, "pos_dim", 3), aux_dim=value(params, "aux_dim", 4))
+        model = TransformerGPT(**common, **options,
+                               pos_dim=value(params, "pos_dim", 3), aux_dim=value(params, "aux_dim", 4))
+        common["dropout"] = options["dropout"]
+        return _finish_backbone(model, params, version, common)
     if version in MAMBA_VERSIONS:
         from fm4npp.models.mambagpt import Mamba1GPT, MambaGPT, Mamba3GPT
         options = block_options(params, "backbone")
@@ -158,9 +160,10 @@ def build_backbone(params, default="mamba2"):
         d_conv = options.pop("d_conv", 4)
         expand = options.pop("expand", 2)
         cls = {"mamba1": Mamba1GPT, "mamba2": MambaGPT, "mamba3": Mamba3GPT}[version]
-        return cls(**common, d_state=d_state, d_conv=d_conv, expand=expand,
-                   pos_dim=value(params, "pos_dim", 3), aux_dim=value(params, "aux_dim", 4),
-                   block_kwargs=options)
+        model = cls(**common, d_state=d_state, d_conv=d_conv, expand=expand,
+                    pos_dim=value(params, "pos_dim", 3), aux_dim=value(params, "aux_dim", 4),
+                    block_kwargs=options)
+        return _finish_backbone(model, params, version, common)
     common["num_heads"] = value(params, "num_heads_backbone", 4)
     common["mlp_ratio"] = value(params, "mlp_ratio", 2.0)
     if version == "longformer":
@@ -171,6 +174,38 @@ def build_backbone(params, default="mamba2"):
         model = LinformerGPT(**common, seq_len=value(params, "seq_len", 512),
                              proj_dim=value(params, "proj_dim", 256))
     model.backbone_version = version
+    return _finish_backbone(model, params, version, common)
+
+
+def _finish_backbone(model, params, version, common):
+    """Keep historical state keys while supporting different pretraining targets."""
+    from fm4npp.pretrained import BLOCK_KEYS
+    output_dim = value(params, "backbone_output_dim",
+                       common["klen"] * (4 if value(params, "use_sincos_target", False) else 3))
+    if isinstance(output_dim, bool) or int(output_dim) != output_dim or output_dim <= 0:
+        raise ValueError("backbone_output_dim must be a positive integer")
+    if output_dim != model.output_layer.out_features:
+        model.output_layer = torch.nn.Linear(model.output_layer.in_features, int(output_dim))
+    config = dict(backbone_version=version, embed_dim=common["embed_dim"],
+                  num_layers_backbone=common["num_layers"], klen=common["klen"],
+                  dropout=common["dropout"], embed_method=common["embed_method"],
+                  pe_method=common["pe_method"], pos_dim=value(params, "pos_dim", 3),
+                  aux_dim=value(params, "aux_dim", 4), backbone_output_dim=int(output_dim))
+    blocks = list(architecture_metadata(model)["blocks"].values())
+    if blocks:
+        config.update({key: blocks[0][key] for key in BLOCK_KEYS if key in blocks[0]})
+    if version == "transformer":
+        options = transformer_options(params, "backbone")
+        config.update(num_heads_backbone=options["num_heads"],
+                      backbone_sequence_encoding=options["sequence_encoding"],
+                      backbone_rope_theta=options["rope_theta"], backbone_mlp_ratio=options["mlp_ratio"])
+    if version in {"longformer", "linformer"}:
+        config.update(num_heads_backbone=common["num_heads"], mlp_ratio=common["mlp_ratio"])
+        if version == "longformer":
+            config["window_size"] = value(params, "window_size", 256)
+        else:
+            config.update(seq_len=value(params, "seq_len", 512), proj_dim=value(params, "proj_dim", 256))
+    model._backbone_config = config
     return model
 
 

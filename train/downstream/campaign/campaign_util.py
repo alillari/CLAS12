@@ -34,6 +34,7 @@ except ImportError:
 from evaluation_contract import (
     configure_entrance_evaluation, is_entrance_evaluation, require_entrance_evaluation,
 )
+from fm4npp.pretrained import catalog_selections, resolve_backbone, apply_backbone_to_run
 DEFAULT_CHECKPOINT_ROOT = Path("/home/alessio/ML-work/pretrained-FMs/campaign_1")
 DEFAULT_ARTIFACT_ROOT = Path("/home/alessio/ML-work/result_deep_storage")
 DEFAULT_CAMPAIGN_NAME = "campaign_1_track_regression"
@@ -135,6 +136,18 @@ def load_sidecar_metadata(source_dir: Path) -> dict[str, Any]:
 
 
 def discover_checkpoint(source_dir: Path) -> Path:
+    sidecar = load_sidecar_metadata(source_dir)
+    if sidecar.get("checkpoint"):
+        path = Path(sidecar["checkpoint"])
+        path = path if path.is_absolute() else source_dir / path
+        if not path.is_file():
+            raise FileNotFoundError(f"Checkpoint does not exist: {path}")
+        return path.resolve()
+    best = sorted(source_dir.rglob("ckpt_best.tar"))
+    if len(best) == 1:
+        return best[0].resolve()
+    if len(best) > 1:
+        raise ValueError(f"Multiple best checkpoints under {source_dir}; select one in metadata.yaml or a backbone catalog: {best}")
     candidates = [
         path for path in source_dir.iterdir()
         if path.is_file() and not path.name.startswith(".")
@@ -153,6 +166,16 @@ def discover_checkpoint(source_dir: Path) -> Path:
     raise ValueError(
         f"Expected exactly one checkpoint-like file in {source_dir}; found: {names}"
     )
+
+
+def catalog_backbones(args):
+    """None selects the legacy directory flow; catalogs resolve once per model."""
+    if not args.backbone_catalog and not args.backbone:
+        return None
+    if getattr(args, "checkpoint_name", None) or getattr(args, "checkpoint_run", None):
+        raise ValueError("Use --backbone to filter a catalog; checkpoint-name/run select legacy directories")
+    return [resolve_backbone(selection) for selection in
+            catalog_selections(args.backbone_catalog, args.backbone_root, args.backbone)]
 
 
 def run_paths(base_dir: Path, run_id: str) -> dict[str, Path]:
@@ -193,11 +216,27 @@ def build_run_row(
     base_model_yaml: str | Path = DEFAULT_BASE_MODEL_YAML,
     base_model_config: str = "clas12_track_regression_pretrained",
     pretrain_events: int | None = None,
+    backbone: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    backbone_run_id = source_dir.name
+    backbone_run_id = backbone["name"] if backbone else source_dir.name
     run_id = run_id or backbone_run_id
-    metadata = parse_run_name(backbone_run_id)
     sidecar = load_sidecar_metadata(source_dir)
+    try:
+        metadata = parse_run_name(backbone_run_id)
+    except ValueError:
+        metadata = {}
+    metadata.update({key: sidecar[key] for key in ("embed_dim", "base_dim", "num_layers_backbone", "pretrain_events") if key in sidecar})
+    if backbone is None and sidecar.get("backbone_config"):
+        backbone = resolve_backbone({"name": backbone_run_id, "checkpoint": str(checkpoint),
+                                     "config": sidecar["backbone_config"], "sha256": sidecar.get("sha256")})
+    if backbone:
+        config = backbone["config"]
+        metadata.update(embed_dim=config["embed_dim"], base_dim=config["embed_dim"],
+                        num_layers_backbone=config["num_layers_backbone"])
+    if "embed_dim" not in metadata or "num_layers_backbone" not in metadata:
+        raise ValueError(f"{backbone_run_id}: supply backbone metadata in a catalog or metadata.yaml; directory names need not encode architecture")
+    metadata.setdefault("base_dim", metadata["embed_dim"])
+    metadata.setdefault("pretrain_events", 0)
     sidecar_checkpoint = sidecar.get("checkpoint", checkpoint)
     sidecar_checkpoint = Path(sidecar_checkpoint)
     if not sidecar_checkpoint.is_absolute():
@@ -210,7 +249,7 @@ def build_run_row(
         "use_pretrained_backbone": True,
         "base_model_yaml": str(sidecar.get("base_model_yaml", base_model_yaml)),
         "base_model_config": sidecar.get("model_config_base", base_model_config),
-        "model_family": sidecar.get("model_family", DEFAULT_MODEL_FAMILY),
+        "model_family": backbone["config"]["backbone_version"] if backbone else sidecar.get("model_family", DEFAULT_MODEL_FAMILY),
         "base_dim": int(sidecar.get("base_dim", metadata["base_dim"])),
         "embed_dim": int(sidecar.get("embed_dim", metadata["embed_dim"])),
         "num_layers_backbone": int(sidecar.get("num_layers_backbone", metadata["num_layers_backbone"])),
@@ -224,6 +263,11 @@ def build_run_row(
         "max_samples": int(sidecar.get("max_samples", max_samples)),
         "status": "pending",
     }
+    if backbone:
+        row["pretrained_backbone"] = backbone
+        row["pretrained_checkpoint"] = backbone["checkpoint"]
+        for key in ("base_dim", "embed_dim", "num_layers_backbone"):
+            row[key] = metadata[key]
     row["model_config"] = sidecar.get(
         "model_config",
         f"clas12_track_regression_pretrained_{row['run_id']}",
@@ -295,6 +339,7 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
         })
     params = deep_merge(params, manifest.get("training_overrides", {}))
     params = deep_merge(params, run.get("training_overrides", {}))
+    apply_backbone_to_run(params, run, manifest.get("training_overrides", {}), run.get("training_overrides", {}))
     dotted = [key for key in params if '.' in key]
     if dotted:
         raise ValueError(f"Use nested mappings in manifest training_overrides, not literal dotted keys: {dotted}")

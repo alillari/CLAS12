@@ -39,6 +39,7 @@ from track_finding_metrics import (  # noqa: E402
 )
 from train.downstream.track_finding_contract import FINDING_METRICS_VERSION, validate_track_finding_modes
 from track_finding_trainer import DownstreamTrainer  # noqa: E402
+from train.downstream.input_representation import representation_input
 
 
 ENV_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
@@ -425,14 +426,15 @@ def run_threshold_sweep(
             batch_size, channels = grouped.size(0), grouped.size(-1)
             grouped = grouped.reshape(batch_size, -1, channels)
             valid_mask = grouped[..., 0] != -100
+            model_input = representation_input(grouped, batch, trainer.params)
             if bool(analysis.get("use_pretrained_backbone", False)):
-                _, pre_embed, _ = trainer.model(grouped, return_z=True)
+                _, pre_embed, _ = trainer.model(model_input, return_z=True)
                 feature = torch.stack(pre_embed)
                 pred_dict = trainer.down_model(
-                    grouped, feature, pretrain=True, padding_mask=valid_mask
+                    model_input, feature, pretrain=True, padding_mask=valid_mask
                 )
             else:
-                pred_dict = trainer.down_model(grouped, feature=None, padding_mask=valid_mask)
+                pred_dict = trainer.down_model(model_input, feature=None, padding_mask=valid_mask)
             outputs = {
                 "pred_probs": pred_dict["class_probs"],
                 "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1),
@@ -686,12 +688,13 @@ def main() -> None:
                 b, c = grouped.size(0), grouped.size(-1)
                 grouped = grouped.reshape(b, -1, c)
                 valid_mask = grouped[..., 0] != -100
+                model_input = representation_input(grouped, batch, trainer.params)
                 if bool(analysis.get("use_pretrained_backbone", False)):
-                    _, pre_embed, _ = trainer.model(grouped, return_z=True)
+                    _, pre_embed, _ = trainer.model(model_input, return_z=True)
                     feature = torch.stack(pre_embed)
-                    pred_dict = trainer.down_model(grouped, feature, pretrain=True, padding_mask=valid_mask)
+                    pred_dict = trainer.down_model(model_input, feature, pretrain=True, padding_mask=valid_mask)
                 else:
-                    pred_dict = trainer.down_model(grouped, feature=None, padding_mask=valid_mask)
+                    pred_dict = trainer.down_model(model_input, feature=None, padding_mask=valid_mask)
                 outputs = {
                     "pred_probs": pred_dict["class_probs"],
                     "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1),

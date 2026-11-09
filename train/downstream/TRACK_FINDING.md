@@ -112,3 +112,6 @@ Both methods use identical truth/masks; COATJAVA groups come from first-pass
 `reco_segment`. Checkpoint selection uses validation signal ARI with a loss
 tie-break; inference remains option 2 at threshold 0.2. Standalone evaluation
 uses `test` by default and requires a target momentum scale of 1 for GeV/c.
+Campaign analysis rendering selects this scale from the effective HDF5 reader,
+including manifest and run training overrides. Explicit analysis overrides take
+precedence; incompatible HDF5 momentum units are rejected by evaluation.

@@ -129,6 +129,11 @@ def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     validate_track_finding_modes(analysis, source="base analysis")
     validate_track_finding_modes(manifest.get("analysis_overrides", {}), source="manifest analysis_overrides")
     validate_track_finding_modes(run.get("analysis_overrides", {}), source="run analysis_overrides")
+    model = load_base_model_config(Path(run["model_yaml"]), run["model_config"])
+    if model.get("reader_type") == "hdf5":
+        # HDF5 targets are already in GeV/c. Read the rendered model so reader
+        # overrides are included; explicit analysis overrides still apply below.
+        analysis["target_momentum_scale_to_gev"] = 1.0
     final_evaluation_events = int(
         run.get(
             "final_evaluation_events",

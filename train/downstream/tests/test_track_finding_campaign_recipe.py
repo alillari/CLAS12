@@ -15,6 +15,45 @@ with patch.object(sys, "path", [str(CAMPAIGN), *sys.path]):
 
 
 class TrackFindingCampaignRecipeTest(unittest.TestCase):
+    def test_analysis_momentum_scale_follows_rendered_reader_and_explicit_overrides(self):
+        cases = (
+            ("hdf5_profile", "hdf5_finding_5k", {}, {}, {}, {}, 1.0),
+            ("legacy_profile", "clas12_track_finding_50k", {}, {}, {}, {}, 0.001),
+            ("manifest_reader", "clas12_track_finding_50k",
+             {"reader_type": "hdf5"}, {}, {}, {}, 1.0),
+            ("run_reader", "clas12_track_finding_50k",
+             {}, {"reader_type": "hdf5"}, {}, {}, 1.0),
+            ("run_reader_wins", "hdf5_finding_5k",
+             {"reader_type": "hdf5"}, {"reader_type": "ragged_mmap"}, {}, {}, 0.001),
+            # Keep incompatible explicit units visible to the evaluator's guard.
+            ("explicit_manifest_scale", "hdf5_finding_5k",
+             {}, {}, {"target_momentum_scale_to_gev": 0.001}, {}, 0.001),
+            ("explicit_run_scale", "hdf5_finding_5k",
+             {}, {}, {"target_momentum_scale_to_gev": 0.001},
+             {"target_momentum_scale_to_gev": 1.0}, 1.0),
+        )
+        for name, profile, training, run_training, analysis, run_analysis, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                manifest_path = root / "manifest.yaml"
+                with patch.object(sys, "argv", [
+                    "build", "--checkpoint-root", str(root / "no_backbones"), "--allow-empty",
+                    "--base-model-yaml", "scripts/configs/clas12_adapter_recipes.yaml",
+                    "--base-model-config", profile, "--artifact-root", str(root),
+                    "--campaign-name", name, "--manifest", str(manifest_path),
+                ]):
+                    builder.main()
+                manifest = runner.read_yaml(manifest_path)
+                manifest["training_overrides"].update(training)
+                manifest["analysis_overrides"].update(analysis)
+                run = manifest["runs"][0]
+                run["training_overrides"] = run_training
+                run["analysis_overrides"] = run_analysis
+                runner.render_model_yaml(manifest, run)
+                runner.render_analysis_yaml(manifest, run)
+                rendered = runner.read_yaml(Path(run["analysis_yaml"]))["analysis"]
+                self.assertEqual(rendered["target_momentum_scale_to_gev"], expected)
+
     def test_named_single_run_profile_reaches_rows_rendering_and_preflight(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

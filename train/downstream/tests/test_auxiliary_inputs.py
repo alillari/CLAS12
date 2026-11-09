@@ -115,6 +115,15 @@ class AuxiliaryInputTest(unittest.TestCase):
                 head = trainer.build_head()
                 self.assertEqual(head.embedder.aux_proj.in_features, 5)
 
+    def test_attention_head_preserves_historical_position_encoding(self):
+        options = dict(input_dim=32, embed_dim=32, num_layers=1, num_embedder_layers=0,
+                       embed_method="pos_only", num_output_dim=2)
+        legacy = AttentionHead(**options, pe_method="nerf")
+        restored = AttentionHead(**options, pe_method="none")
+        restored.load_state_dict(legacy.state_dict(), strict=True)
+        auxiliary = AttentionHead(**dict(options, embed_method="pos_plus_aux"), pe_method="none")
+        self.assertEqual(auxiliary.embedder.embed.projection.shape[0], 3)
+
 
 class AuxiliaryTrainerTest(unittest.TestCase):
     device = "cpu"

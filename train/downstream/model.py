@@ -759,7 +759,10 @@ class AttentionHead(nn.Module):
         # Noise prediction head go from point embedding
         self.out_mlp = MLPHead(embed_dim, num_output_dim, dropout=dropout)
 
-        self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim,
+        # Historical attention-head checkpoints always used NeRF. Preserve that
+        # topology for existing embeddings; auxiliary backbones declare theirs.
+        embedding_pe_method = pe_method if embed_method == "pos_plus_aux" else "nerf"
+        self.embedder = Embedder(pe_method=embedding_pe_method, embed_dim=input_dim,
                                  **(dict(pos_dim=pos_dim, aux_dim=aux_dim) if embed_method == "pos_plus_aux" else {}))
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 

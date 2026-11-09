@@ -164,28 +164,35 @@ def parameter_counter():
         return None
 
     cache: dict[str, int] = {}
-    keys = {*MODEL_KEYS, "use_sincos_target", *(f"backbone_{name}" for name in BLOCK_KEYS)}
+    keys = {*MODEL_KEYS, "mambaversion", "use_sincos_target", *(f"backbone_{name}" for name in BLOCK_KEYS)}
     scalar = YAML(typ="safe")
+
+    def model_settings(values):
+        settings = {name: value for name, value in values.items() if name in keys}
+        legacy_version = settings.pop("mambaversion", None)
+        if legacy_version is not None:
+            settings.setdefault("backbone_version", legacy_version)
+        return settings
 
     def count(row: dict[str, Any]) -> int | None:
         # Retain legacy defaults only when no effective model config is stored.
         params = dict(backbone_version=row.get("model_family", "mamba1"),
-                      num_layers_backbone=12, d_state=16, d_conv=4, expand=2,
+                      num_layers_backbone=12, d_conv=4, expand=2,
                       klen=1, embed_method="pos_only", pe_method="nerf", dropout=.1)
-        params.update({name: value for name, value in row.items() if name in keys})
+        params.update(model_settings(row))
         selection = row.get("pretrained_backbone")
         if isinstance(selection, dict):
-            params.update(selection.get("config", {}))
+            params = model_settings(selection.get("config", {}))
         model_yaml = row.get("model_yaml")
         if model_yaml and Path(model_yaml).is_file():
             rendered = read_yaml(Path(model_yaml))[row["model_config"]]
-            params.update({name: value for name, value in rendered.items() if name in keys})
+            params = model_settings(rendered)
             selection = rendered.get("pretrained_backbone")
             if isinstance(selection, dict):
-                params.update(selection.get("config", {}))
+                params.update(model_settings(selection.get("config", {})))
         # A resolved descriptor has already excluded options for other families.
         from fm4npp.pretrained import FAMILY_BLOCK_KEYS
-        allowed = FAMILY_BLOCK_KEYS.get(params["backbone_version"])
+        allowed = FAMILY_BLOCK_KEYS.get(params.get("backbone_version", "mamba2"))
         if allowed is not None:
             for name in set(BLOCK_KEYS) - allowed:
                 params.pop(name, None)

@@ -74,6 +74,29 @@ class FindingPlotCompatibilityTest(unittest.TestCase):
 
 
 class BackbonePlotMetadataTest(unittest.TestCase):
+    def test_rendered_configs_use_factory_defaults_and_legacy_version_alias(self):
+        from fm4npp.models.mamba_config import build_backbone
+        from fm4npp.utils import count_parameters
+        cases = (
+            dict(backbone_version="mamba3", embed_dim=64, num_layers_backbone=2,
+                 klen=1, embed_method="pos_only", pe_method="nerf"),
+            dict(mambaversion="mamba2", embed_dim=64, num_layers_backbone=2,
+                 klen=1, embed_method="pos_only", pe_method="nerf", headdim=32),
+            dict(backbone_version="mamba1", embed_dim=64, num_layers_backbone=2),
+        )
+        count = regression.parameter_counter()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "model.yaml"
+            for config in cases:
+                with self.subTest(config=config):
+                    with path.open("w") as stream:
+                        YAML().dump({"run": config}, stream)
+                    row = dict(model_family="mamba1", embed_dim=64, num_layers_backbone=2,
+                               model_yaml=str(path), model_config="run")
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        expected = count_parameters(build_backbone(config))
+                    self.assertEqual(count(row), expected)
+
     def test_same_width_new_backbones_remain_separate_plot_series(self):
         metadata = {name: dict(backbone_run_id=name, model_family="transformer",
                               embed_dim=32, num_layers_backbone=2, labeled_events=32)

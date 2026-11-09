@@ -157,40 +157,47 @@ def bool_value(value: Any) -> bool:
 def parameter_counter():
     try:
         from fm4npp.models.mamba_config import build_backbone
+        from fm4npp.pretrained import MODEL_KEYS, BLOCK_KEYS
         from fm4npp.utils import count_parameters
+        from ruamel.yaml import YAML
     except Exception:
         return None
 
-    cache: dict[tuple[Any, ...], int] = {}
+    cache: dict[str, int] = {}
+    keys = {*MODEL_KEYS, "use_sincos_target", *(f"backbone_{name}" for name in BLOCK_KEYS)}
+    scalar = YAML(typ="safe")
 
     def count(row: dict[str, Any]) -> int | None:
-        key = (
-            row.get("model_family", "mamba1"),
-            int(row["embed_dim"]),
-            int(row.get("num_layers_backbone", 12)),
-            int(row.get("d_state", 16)),
-            int(row.get("d_conv", 4)),
-            int(row.get("expand", 2)),
-            int(row.get("klen", 1)),
-            row.get("embed_method", "pos_only"),
-            row.get("pe_method", "nerf"),
-        )
+        # Retain legacy defaults only when no effective model config is stored.
+        params = dict(backbone_version=row.get("model_family", "mamba1"),
+                      num_layers_backbone=12, d_state=16, d_conv=4, expand=2,
+                      klen=1, embed_method="pos_only", pe_method="nerf", dropout=.1)
+        params.update({name: value for name, value in row.items() if name in keys})
+        selection = row.get("pretrained_backbone")
+        if isinstance(selection, dict):
+            params.update(selection.get("config", {}))
+        model_yaml = row.get("model_yaml")
+        if model_yaml and Path(model_yaml).is_file():
+            rendered = read_yaml(Path(model_yaml))[row["model_config"]]
+            params.update({name: value for name, value in rendered.items() if name in keys})
+            selection = rendered.get("pretrained_backbone")
+            if isinstance(selection, dict):
+                params.update(selection.get("config", {}))
+        # A resolved descriptor has already excluded options for other families.
+        from fm4npp.pretrained import FAMILY_BLOCK_KEYS
+        allowed = FAMILY_BLOCK_KEYS.get(params["backbone_version"])
+        if allowed is not None:
+            for name in set(BLOCK_KEYS) - allowed:
+                params.pop(name, None)
+                params.pop(f"backbone_{name}", None)
+        params = {name: value for name, value in params.items() if name in keys}
+        params = {name: scalar.load(value) if isinstance(value, str) else value
+                  for name, value in params.items()}
+        key = json.dumps(params, sort_keys=True)
         if key in cache:
             return cache[key]
-        model_family, embed_dim, layers, d_state, d_conv, expand, klen, embed_method, pe_method = key
         with contextlib.redirect_stdout(io.StringIO()):
-            model = build_backbone(dict(
-                backbone_version=model_family,
-                embed_dim=embed_dim,
-                num_layers_backbone=layers,
-                d_state=d_state,
-                d_conv=d_conv,
-                expand=expand,
-                klen=klen,
-                dropout=0.1,
-                embed_method=embed_method,
-                pe_method=pe_method,
-            ))
+            model = build_backbone(params)
         cache[key] = int(count_parameters(model))
         return cache[key]
 
@@ -279,6 +286,13 @@ def build_plot_rows(metric_rows: list[dict[str, Any]], manifest_rows: dict[str, 
         else:
             row["backbone_n_params"] = None
         rows.append(row)
+    identities = defaultdict(set)
+    for row in rows:
+        if not is_adapter_only_row(row):
+            identities[row["embed_dim"]].add(row["backbone_run_id"])
+    for row in rows:
+        if row["model_family"] not in {"adapteronly", "mamba1"} and len(identities[row["embed_dim"]]) > 1:
+            row["backbone_width_label"] = f"{row['embed_dim']}: {row['backbone_run_id']}"
     return rows
 
 

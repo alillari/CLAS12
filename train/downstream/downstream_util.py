@@ -1,4 +1,17 @@
+import os
+
 import torch
+
+
+def require_single_process(task="Momentum regression"):
+    """Reject distributed launches before a single-process trainer sets up devices or writes files."""
+    if (int(os.environ.get("WORLD_SIZE", 1)) != 1
+            or (torch.distributed.is_initialized() and torch.distributed.get_world_size() != 1)):
+        raise RuntimeError(
+            f"{task} supports one process. Launch with WORLD_SIZE=1 "
+            "or torchrun --nproc-per-node=1."
+        )
+
 
 def get_early_stopping_config(params, default_patience, default_min_delta=1e-4, default_warmup_steps=20):
     """Read early-stopping knobs from params while preserving trainer defaults."""

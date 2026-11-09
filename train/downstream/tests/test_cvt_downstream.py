@@ -111,6 +111,36 @@ class DownstreamHDF5Test(unittest.TestCase):
 
 
 
+    def test_hilbert_grids_preserve_singletons_and_hdf5_row_alignment(self):
+        row = event()
+        phi = np.array([1.2, .5, 2., -.7, -1.3, 2.6, -.1, -1.8])
+        row['clusters/xyz'] = np.column_stack((6.5 * np.cos(phi), 6.5 * np.sin(phi),
+                                               np.arange(8) / 5)).astype('f4')
+        singleton = {key: value[:1] if key.startswith('clusters/') else value
+                     for key, value in event(1).items()}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            publish_fixture(root, {'train': [[row, singleton]]})
+            samples = []
+            for grid in ('legacy_v1', 'unit_v2'):
+                loader = TPCBatchDataset(root, split='train', reader_type='hdf5',
+                                        hilbert_angular_grid=grid, normalize=True,
+                                        voxelize=False, return_dict=True, compute_neighbors=False,
+                                        input_representation='clas12_pos_plus_aux_v1',
+                                        return_coatjava_seg_pred=True)
+                single = loader[1]
+                self.assertEqual(single['points'].shape, (1, 3))
+                self.assertEqual(single['target'].shape, (1,))
+                self.assertEqual(single['noise_target'].tolist(), [0])
+                samples.append(loader[0])
+            old, new = samples
+            old_ids, new_ids = old['token_context'][:, 3], new['token_context'][:, 3]
+            self.assertFalse(torch.equal(old_ids, new_ids))
+            for key, value in old.items():
+                if torch.is_tensor(value):
+                    torch.testing.assert_close(value[old_ids.argsort()], new[key][new_ids.argsort()],
+                                               rtol=0, atol=0, equal_nan=True)
+
     def test_default_splits(self):
         from types import SimpleNamespace
         self.assertEqual(downstream_split(SimpleNamespace(reader_type="hdf5"), "validation"), "validation")

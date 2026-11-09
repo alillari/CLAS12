@@ -53,6 +53,11 @@ predicts the nearest eligible point in an outward band. `klen: 1` means one
 coordinate triple per token, not sequence length. Use the maintained pretraining
 loader so serialization, target construction and calibration agree.
 
+The shared angular grid defaults to `hilbert_angular_grid: unit_v2`. Historical
+backbones and adapters require `hilbert_angular_grid: legacy_v1` in their model
+recipe. Checkpoints record this policy and loaders reject a mismatch. See the
+[serialization compatibility instructions](pretrain/README.md).
+
 | Choice | Required settings / consequence |
 | --- | --- |
 | Mamba1 | `backbone_version: mamba1`, state 16, conv 4, expand 2; standard sweep family. |

@@ -11,6 +11,7 @@ from functools import partial
 
 import torch
 from fm4npp.utils import *
+from fm4npp.hilbert import DEFAULT_HILBERT_GRID, validate_hilbert_grid
 from .voxelizer import *
 
 try:
@@ -366,6 +367,7 @@ class TPCBatchDataset(Dataset):
                  return_coatjava_seg_pred=False,
                  require_coatjava_seg_pred=False,
                  input_representation='center_only',
+                 hilbert_angular_grid=DEFAULT_HILBERT_GRID,
                  reader_type='ragged_mmap',
                  compute_neighbors=True):
 
@@ -444,6 +446,7 @@ class TPCBatchDataset(Dataset):
         self.input_layout = input_layout.lower()
         self.serialization = serialization
         self.clas12_band_config = clas12_band_config
+        self.hilbert_angular_grid = validate_hilbert_grid(hilbert_angular_grid)
         if self.serialization in {'clas12_band_hilbert_legacy6', 'clas12_band_hilbert_6'}:
             self.serialization = 'clas12_band_hilbert'
             self.clas12_band_config = 'legacy6'
@@ -724,6 +727,7 @@ class TPCBatchDataset(Dataset):
                     eta=nf[:, 0],
                     r=nf[:, 2],
                     band_config=self.clas12_band_config,
+                    angular_grid=self.hilbert_angular_grid,
                 ).reshape(-1)
             # Robust fallback: radius-only ordering.
             return norm_features[..., -1].argsort(dim=1).squeeze(0)
@@ -1367,6 +1371,7 @@ def get_data_loader(params, distributed):
                                     input_layout=getattr(params, 'input_layout', 'xyz'),
                                     serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                     clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
+                                    hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
                                     low_thr=getattr(params, 'low_thr', 1),
                                     high_thr=getattr(params, 'high_thr', 100),
                                     max_tracks=getattr(params, 'max_tracks', 150),
@@ -1403,6 +1408,7 @@ def get_data_loader(params, distributed):
                                    input_layout=getattr(params, 'input_layout', 'xyz'),
                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                    clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
+                                   hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
                                    low_thr=getattr(params, 'low_thr', 1),
                                    high_thr=getattr(params, 'high_thr', 100),
                                    max_tracks=getattr(params, 'max_tracks', 150),
@@ -1490,6 +1496,7 @@ def get_val_loader(params, distributed):
                                    input_layout=getattr(params, 'input_layout', 'xyz'),
                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                    clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
+                                   hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
                                    low_thr=getattr(params, 'low_thr', 1),
                                    high_thr=getattr(params, 'high_thr', 100),
                                    max_tracks=getattr(params, 'max_tracks', 150),

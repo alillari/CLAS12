@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from train.downstream.track_finding_contract import validate_track_finding_modes
+from train.downstream.track_finding_contract import FINDING_METRICS_VERSION, validate_track_finding_modes
 
 import numpy as np
 from mmap_ninja import RaggedMmap
@@ -260,18 +260,23 @@ def collate_summary(
 ) -> None:
     base_dir = Path(manifest["campaign_dir"]).resolve()
     summary_dir = base_dir / str(summary_name)
+    evaluations = {}
+    for run in manifest.get("runs", []):
+        directory = Path(run["evaluation_dir"])
+        if evaluation_suffix:
+            directory = directory.with_name(f"{directory.name}_{evaluation_suffix}")
+        evaluations[run["run_id"]] = directory
+        summary = directory / "summary.json"
+        if summary.is_file() and read_json(summary).get("finding_metrics_version") != FINDING_METRICS_VERSION:
+            raise ValueError(f"Reevaluate the track-finding checkpoint before collating legacy metrics in {directory}")
     summary_dir.mkdir(parents=True, exist_ok=True)
     table_rows = []
     with (summary_dir / "campaign_headline_metrics.jsonl").open("w") as headline_stream:
         for run in manifest.get("runs", []):
-            evaluation_dir = Path(run["evaluation_dir"])
-            if evaluation_suffix:
-                evaluation_dir = evaluation_dir.with_name(
-                    f"{evaluation_dir.name}_{evaluation_suffix}"
-                )
+            evaluation_dir = evaluations[run["run_id"]]
             headline = evaluation_dir / "campaign_headline_metrics.jsonl"
             summary = evaluation_dir / "summary.json"
-            if headline.exists():
+            if headline.exists() and summary.is_file():
                 with headline.open() as stream:
                     shutil.copyfileobj(stream, headline_stream)
             table_row = {
@@ -302,6 +307,7 @@ def collate_summary(
                 native_metrics = summary_data.get("native_metrics", {})
                 native_coatjava_metrics = summary_data.get("native_baselines", {}).get("coatjava", {})
                 native_deltas = summary_data.get("native_comparisons", {}).get("adapter_minus_coatjava", {})
+                table_row["finding_metrics_version"] = summary_data["finding_metrics_version"]
                 table_row["metric_view"] = summary_data.get("metric_view", "canonical")
                 table_row["noise_attribution_mode"] = summary_data.get("noise_attribution_mode")
                 table_row["assignment_threshold"] = summary_data.get("assignment_threshold")
@@ -442,6 +448,16 @@ def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
         print("Progress values are the latest completed validation point.")
 
 
+def has_selected_checkpoint(run):
+    checkpoint = Path(run["adapter_checkpoint"])
+    receipt = Path(run["artifact_summary"])
+    if not checkpoint.is_file() or not receipt.is_file():
+        return False
+    data = read_json(receipt)
+    return (data.get("best_step") is not None and data.get("checkpoint") is not None
+            and Path(data["checkpoint"]).resolve() == checkpoint.resolve())
+
+
 def train_if_needed(
     args: argparse.Namespace,
     manifest: dict[str, Any],
@@ -452,14 +468,14 @@ def train_if_needed(
     current_status = run_current_status(status_data, run)
     checkpoint = Path(run["adapter_checkpoint"])
     status_record = status_data.get("runs", {}).get(run["run_id"], {})
-    if not args.force_train and current_status in TRAIN_DONE_STATUSES and checkpoint.is_file():
+    if not args.force_train and current_status in TRAIN_DONE_STATUSES and has_selected_checkpoint(run):
         print(f"[{run['run_id']}] training already complete; skipping")
         return
     if (
         not args.force_train
         and current_status == "failed"
         and status_record.get("stage") == "eval"
-        and checkpoint.is_file()
+        and has_selected_checkpoint(run)
     ):
         print(f"[{run['run_id']}] prior evaluation failed; preserving existing training checkpoint")
         return
@@ -514,7 +530,7 @@ def train_if_needed(
         raise RuntimeError(
             f"Training failed for {run['run_id']} with exit code {code}. See {attempt_log}"
         )
-    if not checkpoint.is_file():
+    if not has_selected_checkpoint(run):
         update_status(
             status_path,
             run["run_id"],
@@ -547,7 +563,8 @@ def eval_if_needed(
         return
     current_status = run_current_status(load_status(status_path), run)
     summary = Path(run["evaluation_dir"]) / "summary.json"
-    if not args.force_eval and current_status in DONE_STATUSES and summary.is_file():
+    if (not args.force_eval and current_status in DONE_STATUSES and summary.is_file()
+            and read_json(summary).get("finding_metrics_version") == FINDING_METRICS_VERSION):
         print(f"[{run['run_id']}] evaluation already complete; skipping")
         return
 

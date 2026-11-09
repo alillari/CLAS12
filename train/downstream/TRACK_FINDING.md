@@ -29,6 +29,12 @@ Other checkpoints require their matching configuration. For AdapterOnly,
 omit `--usepretrain`; for frozen features, supply both `--usepretrain` and
 `--pretrained_ckpt`. Track finding needs **no target-standardization JSON**.
 
+Run the trainer with one process and select the GPU with `CUDA_VISIBLE_DEVICES`.
+Frozen-feature evaluation requires the original backbone weights. New adapter
+checkpoints record the backbone file's SHA-256 digest, input mode, and decoder
+settings. Older checkpoints use their saved training parameters to validate
+the input mode and decoder, and lack a backbone digest.
+
 ## Run and evaluate
 
 1. [Set paths and copy the model recipe](../TRAINING_RECIPES.md#1-choose-a-task-and-prepare-the-run-configuration).
@@ -44,9 +50,13 @@ omit `--usepretrain`; for frozen features, supply both `--usepretrain` and
 
 Checkpoint selection uses **assignment-option-2 ARI** in the configured
 `validation_ari_mode`, with a validation-loss tie-break. The preset uses signal
-ARI. Option 2 combines mask probability with query-class confidence and excludes
+ARI. Selection averages eligible events across the full validation cohort.
+No-object assignments count as background for both options. A run that reaches
+its update or epoch cap validates the last update and must produce a finite
+selected checkpoint to succeed. Option 2 combines mask probability with query-class confidence and excludes
 no-object queries. Its point-assignment threshold is 0.2; IoU, purity and
-efficiency matching cuts are each 0.5. Keep those definitions fixed when comparing
+efficiency matching cuts are each 0.5. Matching maximizes the number of pairs that pass all three
+cuts, then their total IoU. Keep those definitions fixed when comparing
 runs. Changing the threshold changes the efficiency/background operating point.
 
 ## Inspect behavior

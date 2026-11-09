@@ -193,3 +193,36 @@ clas12_track_finding_50k_evaluation:
 clas12_momentum_50k_evaluation:
   <<: *momentum
   data_root_test: ${CLAS12_EVAL_DATA_ROOT:-$CLAS12_DATA_ROOT}
+
+hdf5_noise_5k: &noise
+  <<: [*hdf5, *default]
+  model_version: hdf5_noise_5k
+  task: nid
+  num_output_classes: 2
+  adapter_sample_mode: event
+  batch_size: 32
+  local_batch_size: 32
+  valid_batch_size: 32
+  local_valid_batch_size: 32
+  high_thr: 512
+  max_tracks: 150
+  max_gt_classes: 150
+  return_reg: false
+  return_reg_test: false
+  return_coatjava_seg_pred: true
+  use_attention_head: true
+
+hdf5_noise_50k_balanced:
+  <<: *noise
+  model_version: hdf5_noise_50k_balanced
+  noise_class_balance: inverse_frequency
+  limit_size: 50000
+  limit_test_size: 5000
+  test_size: 10000
+  max_validation_events: 5000
+  max_optimizer_steps: 30000
+  total_steps: 30000
+  first_cycle_steps: 30000
+  scheduler_first_cycle_steps: 30000
+  warmup_steps: 1000
+  val_interval_steps: 1000

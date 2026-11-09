@@ -1,0 +1,17 @@
+# Paths are relative to this manifest; use absolute paths if results live elsewhere.
+# Every completed results_dir contains summary.json, resolved_config.json and cohorts.json.
+# This file only describes existing/future results; neither collator nor plotter trains models.
+campaign_name: noise_tagging_label_sweep
+runs:
+  - run_id: adapteronly_label1000_seed42
+    model_id: adapteronly
+    model_label: Adapter only
+    results_dir: /path/to/noise_label1000_seed42
+  - run_id: adapteronly_label10000_seed42
+    model_id: adapteronly
+    model_label: Adapter only
+    results_dir: /path/to/noise_label10000_seed42
+  - run_id: adapteronly_label50000_seed42
+    model_id: adapteronly
+    model_label: Adapter only
+    results_dir: /path/to/noise_label50000_seed42

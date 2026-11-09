@@ -126,6 +126,9 @@ tokens. A `checkpoint` field selects a relative path; a `backbone_config` mappin
 provides missing historical settings and enables checkpoint-metadata resolution.
 Discovery prefers a unique `ckpt_best.tar`, including nested directories, and
 rejects ambiguous choices. Existing single-file directories remain supported.
+An explicit `--checkpoint-name` takes precedence over a sidecar checkpoint.
+Catalog selections use their catalog IDs/settings and do not inherit legacy
+sidecars from neighboring checkpoint files.
 
 ## Build A Manifest
 

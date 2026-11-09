@@ -243,6 +243,42 @@ class PretrainedBackboneTest(unittest.TestCase):
         row = campaign.build_run_row(source, campaign.discover_checkpoint(source), self.root, 100, 4, 100)
         self.assertEqual((row["model_family"], row["embed_dim"], row["num_layers_backbone"]), ("mamba3", 64, 2))
 
+    def test_catalog_rows_do_not_inherit_incidental_legacy_sidecars(self):
+        source = self.checkpoint.parent
+        (source / "metadata.json").write_text(json.dumps({
+            "run_id": "unrelated", "backbone_run_id": "old_run", "eventnumber": 7,
+            "labeled_events": 7, "train_batch_size": 99,
+        }))
+        row = campaign.build_run_row(source, self.checkpoint, self.root, 100, 4, 100,
+                                     run_id="small_label100", backbone=self.resolve())
+        self.assertEqual((row["run_id"], row["backbone_run_id"]), ("small_label100", "small"))
+        self.assertEqual((row["eventnumber"], row["labeled_events"], row["train_batch_size"]), (100, 100, 4))
+
+    def test_explicit_checkpoint_selection_takes_precedence_over_sidecar(self):
+        source = self.root / "legacy_w64_d2"
+        source.mkdir()
+        selected = source / "selected.tar"
+        selected.touch()
+        (source / "old.tar").touch()
+        (source / "metadata.json").write_text(json.dumps({"checkpoint": "old.tar"}))
+        row = finding_builder.pretrained_row(source, selected, self.root, 100, 4, 100, 10)
+        self.assertEqual(row["pretrained_checkpoint"], str(selected))
+
+    def test_empty_catalog_requires_allow_empty_when_no_baseline_is_selected(self):
+        self.catalog_data["backbones"] = {}
+        self.write_catalog()
+        for task, builder in (("finding", finding_builder), ("regression", regression_builder)):
+            with self.subTest(task=task):
+                manifest_path = self.root / f"empty_{task}.yaml"
+                argv = ["build", "--backbone-catalog", str(self.catalog), "--artifact-root", str(self.root),
+                        "--manifest", str(manifest_path), "--no-adapter-only"]
+                with patch.object(sys, "argv", argv), self.assertRaises(FileNotFoundError):
+                    builder.main()
+                self.assertFalse(manifest_path.exists())
+                with patch.object(sys, "argv", [*argv, "--allow-empty"]):
+                    builder.main()
+                self.assertEqual(campaign.read_yaml(manifest_path)["runs"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

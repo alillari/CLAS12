@@ -463,6 +463,9 @@ def main() -> None:
             + "\n".join(f"  - {error}" for error in errors)
         )
 
+    if not runs and not args.allow_empty:
+        raise FileNotFoundError("No track-regression campaign rows were generated")
+
     manifest = {
         "campaign_name": args.campaign_name,
         "campaign_dir": str(base_dir),

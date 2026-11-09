@@ -220,7 +220,9 @@ def build_run_row(
 ) -> dict[str, Any]:
     backbone_run_id = backbone["name"] if backbone else source_dir.name
     run_id = run_id or backbone_run_id
-    sidecar = load_sidecar_metadata(source_dir)
+    # Catalog entries own their identities and recipes. A neighboring legacy
+    # sidecar belongs only to directory-discovery selections.
+    sidecar = {} if backbone is not None else load_sidecar_metadata(source_dir)
     try:
         metadata = parse_run_name(backbone_run_id)
     except ValueError:
@@ -237,15 +239,13 @@ def build_run_row(
         raise ValueError(f"{backbone_run_id}: supply backbone metadata in a catalog or metadata.yaml; directory names need not encode architecture")
     metadata.setdefault("base_dim", metadata["embed_dim"])
     metadata.setdefault("pretrain_events", 0)
-    sidecar_checkpoint = sidecar.get("checkpoint", checkpoint)
-    sidecar_checkpoint = Path(sidecar_checkpoint)
-    if not sidecar_checkpoint.is_absolute():
-        sidecar_checkpoint = source_dir / sidecar_checkpoint
     row = {
         "run_id": sidecar.get("run_id", run_id),
         "backbone_run_id": sidecar.get("backbone_run_id", backbone_run_id),
         "source_dir": str(source_dir.resolve()),
-        "pretrained_checkpoint": str(sidecar_checkpoint.resolve()),
+        # Discovery has already applied sidecar paths; an explicit CLI selection
+        # must not be replaced a second time here.
+        "pretrained_checkpoint": str(checkpoint.resolve()),
         "use_pretrained_backbone": True,
         "base_model_yaml": str(sidecar.get("base_model_yaml", base_model_yaml)),
         "base_model_config": sidecar.get("model_config_base", base_model_config),

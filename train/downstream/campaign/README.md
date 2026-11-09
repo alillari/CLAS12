@@ -916,3 +916,25 @@ These evaluation diagnostics still use the existing test folder and may overlap
 selection samples; they are not an independent final test benchmark. Evaluation
 metrics never drive checkpoint reselection. Hyperparameters can be specified
 manually through the existing overrides; Optuna recipe import is unchanged.
+
+## Plotting portability checks
+
+Track-finding presentation axes use the supplied positive training-label budgets,
+and focus layouts support any number of pretrained models. Parameter-count plots
+use effective model configurations or portable backbone descriptors, preserving
+family-specific options and pretraining output dimensions. Checkpoint files are
+not reopened for plotting; descriptors in the campaign manifest also support
+rendered YAML paths that belong to another machine.
+For a manifest stored outside the finding campaign directory, pass
+`--manifest /path/to/manifest.yaml` to `plot_track_finding_campaign.py`.
+
+The CPU plotting smoke covers the maintained campaign, presentation, residual,
+noise and pretraining plotting entry points with explicit synthetic fixtures:
+
+```bash
+python train/downstream/tests/smoke_plotting_suites.py --output-dir /tmp/plot-smoke
+```
+
+Optionally add `--real-finding-campaign /path/to/completed/campaign` to plot its
+stored evaluation and validation history. Synthetic figures test compatibility
+and layout; they are not physics results.

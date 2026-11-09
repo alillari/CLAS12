@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Render native track-finding scaling plots from a collated campaign."""
 from __future__ import annotations
-import argparse, contextlib, csv, io
+import argparse, csv
 from collections import defaultdict
 from pathlib import Path
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 from campaign_util import read_yaml
 
 METRICS=(("native_ari_signal","Signal ARI"),("native_ari_with_background","Inclusive ARI"),("native_matched_iou_mean","Matched IoU"),("native_track_purity_global","Global track purity"),("native_track_efficiency_global","Global track efficiency"),("native_fake_rate","Fake-track rate"),("native_background_rejection","Background rejection"),("native_signal_loss_to_background","Signal loss to background"))
@@ -23,7 +23,7 @@ def val(x):
     except ValueError: return None
 def adapter(r): return r.get("backbone_run_id")=="adapteronly" or r.get("model_family")=="adapteronly"
 def parse():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument("--campaign-dir",required=True);p.add_argument("--summary-name",default="summary");p.add_argument("--output-dir");return p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument("--campaign-dir",required=True);p.add_argument("--manifest",help="Manifest metadata when stored outside the campaign directory");p.add_argument("--summary-name",default="summary");p.add_argument("--output-dir");return p.parse_args()
 def model_labels(rs):
     models={}
     for r in rs:
@@ -77,8 +77,9 @@ def paper_suite(rs,out,model_names):
             row=next(r for r in rs if r.get("backbone_run_id")==name)
             writer.writerow((label,name,row["embed_dim"],row["num_layers_backbone"]))
     ordered=sorted(by_label,key=lambda label:int(label[1:]))
-    has_m6_largest=bool(ordered) and ordered[-1]=="m6"
-    other_names=[by_label[label] for label in ordered if label!="m6"]
+    focus=ordered[-1] if ordered else None
+    other_names=[by_label[label] for label in ordered if label!=focus]
+    budgets=sorted({x for r in rs if (x:=val(r.get("labeled_events"))) is not None and x>0})
     def points(rows,key):
         return sorted(
             (x,y) for r in rows
@@ -90,9 +91,11 @@ def paper_suite(rs,out,model_names):
         if pts:
             ax.plot(*zip(*pts),label=label,color=color,lw=lw,alpha=alpha,
                     marker="o",ms=5.5,zorder=zorder)
-    for subset in ("all_models","adapter_m6_coatjava","other_pretrained_lines","other_pretrained_envelope"):
-        if subset!="all_models" and not has_m6_largest:
-            continue
+    subsets=["all_models"]
+    if focus: subsets.append(f"adapter_{focus}_coatjava")
+    if other_names: subsets.append("other_pretrained_lines")
+    if len(other_names)>=2: subsets.append("other_pretrained_envelope")
+    for subset in subsets:
         for layout in ("3x1","1x3"):
             vertical=layout=="3x1"
             fig,axs=plt.subplots(3 if vertical else 1,1 if vertical else 3,figsize=(7.2,11) if vertical else (15,4.6),squeeze=False,constrained_layout=True)
@@ -102,7 +105,7 @@ def paper_suite(rs,out,model_names):
                 line(ax,[r for r in rs if adapter(r)],key,"Adapter only",DNP_NAVY)
                 if subset=="all_models":
                     for i,label in enumerate(ordered):
-                        if has_m6_largest and label=="m6": continue
+                        if label==focus: continue
                         rows=[r for r in rs if r.get("backbone_run_id")==by_label[label]]
                         line(ax,rows,key,label,OTHER_COLORS[i%len(OTHER_COLORS)],lw=1.7,alpha=.9,zorder=2)
                 elif subset=="other_pretrained_lines":
@@ -124,19 +127,22 @@ def paper_suite(rs,out,model_names):
                                         label="Other pretrained backbones (range)",zorder=1)
                         ax.plot(xs,lower,color="#9CA7A2",lw=.8,zorder=2)
                         ax.plot(xs,upper,color="#9CA7A2",lw=.8,zorder=2)
-                if has_m6_largest:
-                    line(ax,[r for r in rs if r.get("backbone_run_id")==by_label["m6"]],key,
-                         "Largest pretrained backbone (m6)",DNP_RUST,lw=2.7,zorder=4)
+                if focus:
+                    line(ax,[r for r in rs if r.get("backbone_run_id")==by_label[focus]],key,
+                         f"Focus pretrained backbone ({focus})",DNP_RUST,lw=2.7,zorder=4)
                 baseline=[val(r.get(key.replace("native_","native_coatjava_"))) for r in rs]
                 baseline=[x for x in baseline if x is not None]
                 if baseline: ax.axhline(sum(baseline)/len(baseline),label="COATJAVA",color=DNP_TEXT,lw=1.8,ls="--",zorder=2)
                 ax.set_title(title,fontsize=13,weight="semibold",pad=10,color=DNP_TEXT)
                 ax.set_xscale("log");ax.set_xlabel("Labeled events",color=DNP_TEXT)
-                ax.set_xlim(80,125000)
-                ax.set_xticks((100,1000,10000,100000),labels=("100","1k","10k","100k"))
+                if budgets:
+                    ax.set_xticks(budgets)
+                    ax.xaxis.set_major_formatter(FuncFormatter(
+                        lambda x,_: f"{x/1e6:g}M" if x>=1e6 else f"{x/1e3:g}k" if x>=1e3 else f"{x:g}"))
+                    ax.set_xlim(budgets[0]/1.25,budgets[-1]*1.25)
                 values=[val(r.get(key)) for r in rs]+baseline
                 values=[x for x in values if x is not None]
-                if values: ax.set_ylim(max(0,min(values)-0.04),min(1,max(values)+0.04))
+                if values: ax.set_ylim(max(-1 if "ari_" in key else 0,min(values)-0.04),min(1,max(values)+0.04))
                 ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
                 ax.grid(axis="y",color=DNP_SOFT,lw=.9)
                 ax.spines[["top","right"]].set_visible(False)
@@ -152,14 +158,14 @@ def paper_suite(rs,out,model_names):
 def nparams(r):
     if adapter(r): return None
     try:
-        p=read_yaml(Path(r["model_yaml"]))[r["model_config"]]
-        from fm4npp.models.mamba_config import build_backbone
-        from fm4npp.utils import count_parameters
-        with contextlib.redirect_stdout(io.StringIO()): m=build_backbone(p, default="mamba1")
-        return int(count_parameters(m))
+        from plot_track_regression_campaign import parameter_counter
+        count=parameter_counter()
+        return count(r) if count else None
     except Exception:return None
 def parameter_suite(rs,out):
-    counts={r["backbone_run_id"]:nparams(r) for r in rs}
+    counts={}
+    for r in rs:
+        if r["backbone_run_id"] not in counts: counts[r["backbone_run_id"]]=nparams(r)
     for key,label in METRICS:
         fig,ax=plt.subplots(figsize=(8,5),constrained_layout=True);groups=defaultdict(list)
         for r in rs:
@@ -169,9 +175,16 @@ def parameter_suite(rs,out):
         if groups:
             ax.set_xscale("log");ax.set_xlabel("Pretrained backbone parameters");ax.set_ylabel(label);ax.grid(True,which="both",alpha=.25);ax.legend(fontsize="small");fig.savefig(out/f"pretrained_{key}_vs_backbone_params.png",dpi=160)
         plt.close(fig)
+def campaign_rows(root,summary,manifest=None):
+    with (summary/"run_table.csv").open(newline="") as s:rs=[r for r in csv.DictReader(s) if r.get("summary_found","").lower()=="true"]
+    manifest=Path(manifest) if manifest is not None else root/"manifest.yaml"
+    metadata={r["run_id"]:r for r in read_yaml(manifest).get("runs",[])} if manifest.is_file() else {}
+    # Catalog descriptors remain usable when rendered model paths refer to a
+    # different machine; plotting never needs to open the checkpoint itself.
+    return [{**metadata.get(r["run_id"],{}),**r} for r in rs]
 def main():
     a=parse();root=Path(a.campaign_dir).resolve();summary=root/a.summary_name;out=Path(a.output_dir).resolve() if a.output_dir else summary/"plots";out.mkdir(parents=True,exist_ok=True)
-    with (summary/"run_table.csv").open(newline="") as s:rs=[r for r in csv.DictReader(s) if r.get("summary_found","").lower()=="true"]
+    rs=campaign_rows(root,summary,a.manifest)
     if not rs:raise ValueError("No completed evaluations; collate first.")
     labels=model_labels(rs)
     for b in sorted({r.get("backbone_run_id") for r in rs}):suite([r for r in rs if r.get("backbone_run_id")==b],out/f"per_model",f"{b}_vs_labeled_events",True,labels)

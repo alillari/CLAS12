@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from fm4npp.models.mamba_config import backbone_version, adapter_options
+from fm4npp.pretrained import configure_pretrained_backbone
 from fm4npp.utils import YParams
 from fm4npp.artifact_paths import artifact_path
 from train.downstream.track_finding_contract import validate_track_finding_modes
@@ -41,9 +42,12 @@ class TrackFindingExperimentConfig:
     root_dir: str = field(default_factory=lambda: artifact_path("downstream_log"))
     global_log_dir: str = "globallogs"
     eventnumber: int = 50000
-    usepretrain: bool = False
+    usepretrain: bool | None = None
     train_batch_size: int = 32
     pretrained_ckpt: str | None = None
+    backbone: str | None = None
+    backbone_catalog: str | None = None
+    backbone_root: str | None = None
     checkpoint_dir: str | None = None
     log_file_name: str | None = None
     checkpoint_file_name: str | None = None
@@ -131,14 +135,10 @@ def resolve_params(config: TrackFindingExperimentConfig) -> YParams:
     if config.seed is not None:
         params.seed = int(config.seed)
 
-    if config.usepretrain:
-        if not config.pretrained_ckpt:
-            raise ValueError("--usepretrain requires --pretrained_ckpt for track finding")
-        params.pretrained_ckpt = os.path.abspath(config.pretrained_ckpt)
-        if not os.path.isfile(params.pretrained_ckpt):
-            raise FileNotFoundError(f"Pretrained checkpoint does not exist: {params.pretrained_ckpt}")
-    else:
-        params.pretrained_ckpt = None
+    configure_pretrained_backbone(
+        params, enabled=config.usepretrain, checkpoint=config.pretrained_ckpt,
+        backbone=config.backbone, catalog=config.backbone_catalog, root=config.backbone_root,
+    )
 
     params.log_file_name = config.log_file_name or (
         f"{config.config}_track_finding_d{params.limit_size}_{config.run_num}.log"
@@ -169,7 +169,7 @@ def train_experiment(
     try:
         trainer.launch()
         trainer.train(
-            pretrain=config.usepretrain,
+            pretrain=bool(params.pretrained_ckpt),
             train_from_checkpoint=False,
             checkpoint_path=None,
             optuna_trial=optuna_trial,
@@ -183,8 +183,9 @@ def train_experiment(
             "config": config.config,
             "run_num": config.run_num,
             "yaml_config": os.path.abspath(config.yaml_config),
-            "usepretrain": bool(config.usepretrain),
+            "usepretrain": bool(params.pretrained_ckpt),
             "pretrained_ckpt": params.pretrained_ckpt,
+            "pretrained_backbone": getattr(params, "pretrained_backbone", None),
             "experiment_dir": getattr(params, "experiment_dir", None),
             "checkpoint_dir": os.path.abspath(params.checkpoint_dir),
             "log_file": getattr(params, "training_log_path", None),

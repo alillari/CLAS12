@@ -23,13 +23,16 @@ from campaign_util import (
     build_run_row,
     campaign_dir,
     discover_checkpoint,
+    catalog_backbones,
     utc_now,
     write_yaml,
 )
+from fm4npp.pretrained import add_backbone_arguments
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    add_backbone_arguments(parser, multiple=True)
     parser.add_argument(
         "--checkpoint-root",
         default=str(DEFAULT_CHECKPOINT_ROOT),
@@ -400,7 +403,8 @@ def main() -> None:
                 "for scheduler_mode=cosine_hold"
             )
 
-    if args.adapter_only_only:
+    catalog_models = None if args.adapter_only_only else catalog_backbones(args)
+    if args.adapter_only_only or catalog_models is not None:
         source_dirs = []
     else:
         if not checkpoint_root.is_dir():
@@ -423,14 +427,17 @@ def main() -> None:
             runs.append(row)
 
     errors = []
-    for source_dir in source_dirs:
+    sources = [(Path(model["checkpoint"]).parent, Path(model["checkpoint"]), model) for model in catalog_models] if catalog_models is not None else [
+        (source, None, None) for source in source_dirs]
+    for source_dir, checkpoint, backbone in sources:
         try:
-            checkpoint = discover_checkpoint(source_dir)
+            checkpoint = checkpoint or discover_checkpoint(source_dir)
+            name = backbone["name"] if backbone else source_dir.name
             for eventnumber in eventnumbers:
                 run_id = (
-                    source_dir.name
+                    name
                     if len(eventnumbers) == 1
-                    else f"{source_dir.name}_label{eventnumber}"
+                    else f"{name}_label{eventnumber}"
                 )
                 runs.append(
                     build_run_row(
@@ -444,6 +451,7 @@ def main() -> None:
                         base_model_yaml=args.base_model_yaml,
                         base_model_config=args.pretrained_model_config,
                         pretrain_events=args.pretrain_events,
+                        backbone=backbone,
                     )
                 )
         except Exception as exc:
@@ -454,6 +462,9 @@ def main() -> None:
             "Failed to build manifest for one or more pretrained directories:\n"
             + "\n".join(f"  - {error}" for error in errors)
         )
+
+    if not runs and not args.allow_empty:
+        raise FileNotFoundError("No track-regression campaign rows were generated")
 
     manifest = {
         "campaign_name": args.campaign_name,

@@ -8,12 +8,14 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fm4npp.utils import YParams
+from fm4npp.pretrained import add_backbone_arguments, configure_pretrained_backbone
 from fm4npp.artifact_paths import artifact_path
 from train.downstream.noise_checkpoint import require_single_process, file_sha256
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_backbone_arguments(parser)
     parser.add_argument('--yaml_config', required=True)
     parser.add_argument('--config', required=True)
     parser.add_argument('--run_num', default='0')
@@ -23,6 +25,8 @@ def parse_args(argv=None):
     parser.add_argument('--train_batch_size', type=int)
     parser.add_argument('--seed', type=int)
     parser.add_argument('--usepretrain', action='store_true', help='Require a pretrained backbone')
+    parser.add_argument('--no-pretrain', dest='usepretrain', action='store_false')
+    parser.set_defaults(usepretrain=None)
     parser.add_argument('--pretrained_ckpt', help='Backbone checkpoint; implies frozen-backbone training')
     parser.add_argument('--task', choices=['pid', 'nid'])
     return parser.parse_args(argv)
@@ -39,9 +43,10 @@ def configure_training(params, args):
     if args.eventnumber is not None:
         params['limit_data'] = True
     params['seed'] = getattr(params, 'seed', 42)
-    params['pretrained_ckpt'] = args.pretrained_ckpt or getattr(params, 'pretrained_ckpt', None)
-    if args.usepretrain and not params.pretrained_ckpt:
-        raise ValueError('--usepretrain requires --pretrained_ckpt or pretrained_ckpt in YAML')
+    configure_pretrained_backbone(
+        params, enabled=args.usepretrain, checkpoint=args.pretrained_ckpt,
+        backbone=args.backbone, catalog=args.backbone_catalog, root=args.backbone_root,
+    )
     params['continue_from_best'] = False  # Public CLI always starts a fresh adapter.
     if not getattr(params, 'log_file_name', None):
         params['log_file_name'] = f'{args.config}_{params.task}_{args.run_num}.log'

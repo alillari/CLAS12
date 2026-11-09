@@ -1,7 +1,6 @@
 import numpy as np
 from sklearn.metrics import adjusted_rand_score
 import os, sys, time, shutil, random
-import hashlib
 import tempfile
 import argparse
 import torch
@@ -26,6 +25,7 @@ from cosine_annealing_warmup import CosineAnnealingWarmupRestarts # pip install 
 sys.path.append('../..')
 
 from fm4npp.utils import *
+from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
 from fm4npp.datasets.dataset import *
 from fm4npp.hilbert import (
     DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
@@ -60,6 +60,7 @@ class DownstreamTrainer():
     def __init__(self, params, args):
         require_single_process("Track finding")
         validate_track_finding_modes(vars(params), source="track-finding model")
+        configure_pretrained_backbone(params)
         self.root_dir = args.root_dir
         self.global_log_dir = os.path.join(args.root_dir, args.global_log_dir)
         self.config = args.config
@@ -1534,12 +1535,7 @@ class DownstreamTrainer():
             device_str = f'cuda:{self.device}' if torch.cuda.is_available() else 'cpu'
         else:
             device_str = str(self.device)
-        with open(checkpoint_path, "rb") as stream:
-            digest = hashlib.sha256()
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-            stream.seek(0)
-            checkpoint = torch.load(stream, map_location=device_str, weights_only=False)
+        checkpoint, sha256 = load_pretrained_checkpoint(checkpoint_path, getattr(self, "params", None), map_location=device_str)
         validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
         validate_checkpoint_hilbert_grid(checkpoint, self.params)
         validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
@@ -1547,7 +1543,7 @@ class DownstreamTrainer():
         #try:
             #self.model.load_state_dict(checkpoint['model_state'])
         self.model.load_state_dict(new_state_dict)
-        self.backbone_sha256 = digest.hexdigest()
+        self.backbone_sha256 = sha256
         #except:
         #    new_state_dict = OrderedDict()
         #    for key, val in checkpoint['model_state'].items():

@@ -617,11 +617,12 @@ def main() -> None:
     use_pretrained = analysis.get("use_pretrained_backbone", False)
     if not isinstance(use_pretrained, bool):
         raise ValueError("use_pretrained_backbone must be a boolean")
-    params.pretrained_ckpt = analysis.get("pretrained_checkpoint") if use_pretrained else None
-    if use_pretrained and not params.pretrained_ckpt:
-        raise ValueError("Frozen track finding requires pretrained_checkpoint")
-    if use_pretrained and not Path(params.pretrained_ckpt).is_file():
-        raise FileNotFoundError(f"Missing pretrained backbone checkpoint: {params.pretrained_ckpt}")
+    from fm4npp.pretrained import configure_pretrained_backbone
+    configure_pretrained_backbone(
+        params, enabled=use_pretrained, checkpoint=analysis.get("pretrained_checkpoint"),
+        backbone=analysis.get("pretrained_backbone"), catalog=analysis.get("backbone_catalog"),
+        root=analysis.get("backbone_root"),
+    )
 
     trainer_args = SimpleNamespace(
         root_dir=str(Path(analysis.get("output_dir", ".")).resolve() / "runtime"),

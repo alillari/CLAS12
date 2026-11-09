@@ -26,6 +26,10 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
+from train.downstream.input_representation import (
+    AUX_REPRESENTATION, input_config, representation_input,
+    validate_input_representation, validate_checkpoint_inputs,
+)
 from fm4npp.datasets.dataset import *
 from fm4npp.hilbert import (
     DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
@@ -61,6 +65,9 @@ class DownstreamTrainer():
         require_single_process("Track finding")
         validate_track_finding_modes(vars(params), source="track-finding model")
         configure_pretrained_backbone(params)
+        validate_input_representation(params)
+        if getattr(params, "input_representation", "center_only") == AUX_REPRESENTATION:
+            params["return_dict"] = True
         self.root_dir = args.root_dir
         self.global_log_dir = os.path.join(args.root_dir, args.global_log_dir)
         self.config = args.config
@@ -369,6 +376,9 @@ class DownstreamTrainer():
         self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
         self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
 
+    def _representation_input(self, grouped, batch):
+        return representation_input(grouped, batch, self.params)
+
     def _unpack_batch(self, batch):
         if isinstance(batch, dict):
             return (
@@ -516,6 +526,7 @@ class DownstreamTrainer():
                 labels = label.to(self.device)
                 grouped = grouped.reshape(b, -1, c).to(self.device)  # B X N X C
                 mask = grouped[..., 0] != -100  # B X N
+                model_input = self._representation_input(grouped, batch)
                 # One-hot encode the labels using the inverse mapping
                 #one_hot_labels = F.one_hot(inverse_indices, num_classes=n_gt_classes).float().to(self.device) # B X N X C_gt
                 targets, _ = self._build_track_targets(labels, mask)
@@ -523,14 +534,14 @@ class DownstreamTrainer():
                 with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
                     if pretrain:
                         #print(grouped.size())
-                        _, pre_embed, _ = self.model(grouped, return_z=True)
+                        _, pre_embed, _ = self.model(model_input, return_z=True)
                         #feature = torch.stack(pre_embed).mean(0)
                         feature = torch.stack(pre_embed)
-                        pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
-                        #pred_logit = self.down_model(grouped, feature, pretrain=pretrain) #B X N X C_classes
+                        pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
+                        #pred_logit = self.down_model(model_input, feature, pretrain=pretrain) #B X N X C_classes
                     else:
-                        pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
-                        #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
+                        pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
+                        #pred_logit = self.down_model(model_input, feature=None) #B X N X C_classes
                     #softmax it to the prob
                     #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
                     pred_probs = pred_dict['mask_probs'] # (B, N, N_pred)
@@ -987,18 +998,19 @@ class DownstreamTrainer():
         labels = label.to(self.device)
         grouped = grouped.reshape(b, -1, c).to(self.device)
         mask = grouped[..., 0] != -100
+        model_input = self._representation_input(grouped, batch)
         targets, _ = self._build_track_targets(labels, mask)
 
         if pretrain:
             if train and self.use_lora:
-                _, pre_embed, _ = self.model(grouped, return_z=True)
+                _, pre_embed, _ = self.model(model_input, return_z=True)
             else:
                 with torch.no_grad():
-                    _, pre_embed, _ = self.model(grouped, return_z=True)
+                    _, pre_embed, _ = self.model(model_input, return_z=True)
             feature = torch.stack(pre_embed)
-            pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+            pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
         else:
-            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+            pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
 
         outputs = {
             "pred_probs": pred_dict["class_probs"],
@@ -1239,6 +1251,7 @@ class DownstreamTrainer():
             labels = label.to(self.device)# B X N
             grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
             mask = grouped[..., 0] != -100 # B X N
+            model_input = self._representation_input(grouped, batch)
 
             targets, _ = self._build_track_targets(labels, mask)
             
@@ -1251,17 +1264,17 @@ class DownstreamTrainer():
                 if pretrain:
                     if not self.use_lora:
                         with torch.no_grad():
-                            _, pre_embed, _ = self.model(grouped, return_z=True)
+                            _, pre_embed, _ = self.model(model_input, return_z=True)
                     else:
-                        _, pre_embed, _ = self.model(grouped, return_z=True)
+                        _, pre_embed, _ = self.model(model_input, return_z=True)
                     #feature = torch.stack(pre_embed).mean(0)
                     feature = torch.stack(pre_embed)
                     #print('feature: ', feature.size())
-                    pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+                    pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
-                    #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
+                    pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
+                    #pred_logit = self.down_model(model_input, feature=None) #B X N X C_classes
                 #softmax it to the prob
                 #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
                 pred_probs = pred_dict['mask_probs'] # (B, N, N_pred)
@@ -1356,19 +1369,21 @@ class DownstreamTrainer():
             if limit is not None and count >= int(limit):
                 break
             points, labels, _, _ = self._unpack_batch(batch)
+            points = points.reshape(points.size(0), -1, points.size(-1)).to(self.device)
+            model_input = self._representation_input(points, batch)
             if limit is not None:
                 remaining = int(limit) - count
                 points, labels = points[:remaining], labels[:remaining]
-            points = points.reshape(points.size(0), -1, points.size(-1)).to(self.device)
+                model_input = model_input[:remaining]
             mask = points[..., 0] != -100
             labels = labels.to(self.device)
             targets, _ = self._build_track_targets(labels, mask)
             with autocast("cuda", dtype=torch.bfloat16) if torch.cuda.is_available() and self.use_amp else nullcontext():
                 features = None
                 if pretrain:
-                    _, embeddings, _ = self.model(points, return_z=True)
+                    _, embeddings, _ = self.model(model_input, return_z=True)
                     features = torch.stack(embeddings)
-                pred = self.down_model(points, feature=features, pretrain=pretrain, padding_mask=mask)
+                pred = self.down_model(model_input, feature=features, pretrain=pretrain, padding_mask=mask)
             outputs = {"pred_probs": pred["class_probs"], "pred_masks": pred["mask_probs"].permute(0, 2, 1)}
             losses = compute_point_loss(outputs, targets, mask, self.matcher, no_object_class=0)
             for key in weights:
@@ -1396,6 +1411,7 @@ class DownstreamTrainer():
 
     def _checkpoint_payload(self, epoch, loss, inference_only=False):
         checkpoint = {
+            'input_config': input_config(self.params),
             'epoch': epoch,
             'model_state_dict': self.down_model.state_dict(),
             'backbone_architecture': architecture_metadata(self.model),
@@ -1464,6 +1480,7 @@ class DownstreamTrainer():
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
         validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
         validate_checkpoint_hilbert_grid(checkpoint, self.params)
+        validate_checkpoint_inputs(checkpoint, self.params)
         if checkpoint.get('inference_only', False) and not inference:
             raise ValueError("Validation snapshots are for inference/selection; resume training from a full checkpoint.")
 

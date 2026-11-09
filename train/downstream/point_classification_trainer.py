@@ -24,6 +24,9 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
+from train.downstream.input_representation import (
+    input_config, representation_input, validate_input_representation, validate_checkpoint_inputs,
+)
 from fm4npp.datasets.dataset import *
 from fm4npp.hilbert import (
     DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
@@ -66,6 +69,7 @@ class DownstreamTrainer():
     def __init__(self, params, args):
         require_single_process(getattr(params, 'task', None))
         configure_pretrained_backbone(params)
+        validate_input_representation(params)
         
         ''' init vars for distributed training (ddp) and logging'''
         self.root_dir = args.root_dir
@@ -435,10 +439,14 @@ class DownstreamTrainer():
         #  training
         #self.train()
 
+    def _representation_input(self, grouped, batch):
+        return representation_input(grouped, batch, self.params)
+
     def build_head(self):
         if self.params.use_attention_head and getattr(self.params, "adapter_version", "mamba2") != "transformer":
             self.down_model = AttentionHead(**adapter_options(self.params), input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
                           embed_method=self.params.embed_method, pe_method=self.params.pe_method,
+                          pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4),
                           num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
                           num_embedder_layers= self.params.num_embedder_layers, 
                           ).to(self.device)
@@ -498,19 +506,20 @@ class DownstreamTrainer():
                 b, c = grouped.size(0), grouped.size(-1)
                 grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
                 mask = grouped[..., 0] != -100 # B X N
+                model_input = self._representation_input(grouped, inputdict)
                 targets = self.build_point_targets(inputdict, mask)
 
                 self.down_optimizer.zero_grad()
                 if pretrain:
                     with torch.no_grad():
-                        _, pre_embed, _ = self.model(grouped, return_z = True)
+                        _, pre_embed, _ = self.model(model_input, return_z = True)
                     #feature = torch.stack(pre_embed).mean(0)
                     feature = torch.stack(pre_embed)
                     #print('feature: ', feature.size())
-                    pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+                    pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+                    pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
 
                 pred_logits = pred_dict['pred_logits'] # (B, N, C_classes)
                 outputs = {
@@ -768,6 +777,7 @@ class DownstreamTrainer():
         b, c = grouped.size(0), grouped.size(-1)
         grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
         mask = grouped[..., 0] != -100 # B X N
+        model_input = self._representation_input(grouped, inputdict)
         targets = self.build_point_targets(inputdict, mask)
 
         self.down_optimizer.zero_grad()
@@ -775,14 +785,14 @@ class DownstreamTrainer():
             #print(grouped.size())
             #print("passing to pretrained model")
             with torch.no_grad():
-                _, pre_embed, _ = self.model(grouped, return_z = True)
+                _, pre_embed, _ = self.model(model_input, return_z = True)
             #feature = torch.stack(pre_embed).mean(0)
             feature = torch.stack(pre_embed)
             #print('feature: ', feature.size())
-            pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+            pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
         else:
-            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+            pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
 
         pred_logits = pred_dict['pred_logits'] # (B, N, C_classes)
         outputs = {
@@ -869,19 +879,20 @@ class DownstreamTrainer():
                 b, c = grouped.size(0), grouped.size(-1)
                 grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
                 mask = grouped[..., 0] != -100 # B X N
+                model_input = self._representation_input(grouped, inputdict)
                 targets = self.build_point_targets(inputdict, mask)
 
                 self.down_optimizer.zero_grad()
                 if pretrain:
                     with torch.no_grad():
-                        _, pre_embed, _ = self.model(grouped, return_z = True)
+                        _, pre_embed, _ = self.model(model_input, return_z = True)
                     #feature = torch.stack(pre_embed).mean(0)
                     feature = torch.stack(pre_embed)
                     #print('feature: ', feature.size())
-                    pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+                    pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+                    pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
 
                 pred_logits = pred_dict['pred_logits'] # (B, N, C_classes)
                 outputs = {
@@ -937,6 +948,7 @@ class DownstreamTrainer():
 
     def _save_checkpoint(self, filename, epoch, is_best, loss):
         checkpoint = {
+            'input_config': input_config(self.params),
             'epoch': epoch,
             'global_step': getattr(self, 'global_step', self.iters),
             'model_state_dict': self.down_model.state_dict(),
@@ -980,6 +992,7 @@ class DownstreamTrainer():
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
         validate_checkpoint_hilbert_grid(checkpoint, self.params)
+        validate_checkpoint_inputs(checkpoint, self.params)
         if self.params.task == 'nid':
             validate_noise_checkpoint(checkpoint, self.noise_training_contract)
             if getattr(self.params, 'reader_type', None) == 'hdf5':

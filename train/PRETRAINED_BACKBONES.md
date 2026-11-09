@@ -128,3 +128,35 @@ they can be selected through a catalog with only a path (and optional hash).
 An explicit checkpoint path also works with metadata or a matching legacy
 recipe. The old regression `MODEL2CKPT` dictionary has been removed: recipes no
 longer select machine-specific checkpoints implicitly by their config name.
+
+## Auxiliary CLAS12 inputs
+
+Track finding, point classification (PID/noise), and momentum regression support
+Mike's `pos_plus_aux` backbones. Training, validation and evaluation pack the same
+serialized centers and geometry into `[eta, phi, r, s_r, s_phi, s_z, scalar]`.
+Directions use the local radial/tangential/beam frame; length is divided by 45 cm
+and pitch by 0.10 cm. Padding stays `-100` across every token column. Coordinate
+exports and physics metrics continue to use the three center columns.
+
+For an older auxiliary checkpoint, supply the missing input contract in its
+catalog entry (along with the matching embedding and target settings):
+
+```yaml
+config:
+  embed_method: pos_plus_aux
+  pe_method: nerf
+  input_layout: xyz
+  input_representation: clas12_pos_plus_aux_v1
+  pos_dim: 3
+  aux_dim: 4
+  aux_extra_feature: length   # length or pitch: four auxiliary columns
+  klen: 5                   # match the checkpoint
+  use_sincos_target: true    # match the checkpoint
+```
+
+Use `aux_extra_feature: both` with `aux_dim: 5` for an eight-column token
+containing both length and pitch. Match the checkpoint's Hilbert grid as well.
+These inputs require the published HDF5 geometry fields or aligned v7 token and
+geometry sidecars; a dataset containing only centers cannot supply them.
+New finding/classification adapter checkpoints save the input contract and
+reject changes such as switching length to pitch when resuming or evaluating.

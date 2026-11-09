@@ -25,6 +25,7 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
+from train.downstream.input_representation import representation_input, validate_input_representation
 from fm4npp.datasets.dataset import *
 from fm4npp.hilbert import (
     DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
@@ -85,30 +86,7 @@ class DownstreamTrainer():
         params.hilbert_angular_grid = validate_hilbert_grid(
             getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
         )
-        input_representation = getattr(params, "input_representation", "center_only")
-        if input_representation == "clas12_pos_plus_aux_v1":
-            if getattr(params, "embed_method", None) != "pos_plus_aux":
-                raise ValueError(
-                    "clas12_pos_plus_aux_v1 requires embed_method='pos_plus_aux'"
-                )
-            if int(getattr(params, "pos_dim", 3)) != 3:
-                raise ValueError("clas12_pos_plus_aux_v1 requires pos_dim=3")
-            aux_extra_feature = str(getattr(params, "aux_extra_feature", "length"))
-            expected_aux_dim = 5 if aux_extra_feature == "both" else 4
-            if aux_extra_feature not in {"length", "pitch", "both"}:
-                raise ValueError(
-                    "aux_extra_feature must be one of 'length', 'pitch', or 'both'"
-                )
-            if int(getattr(params, "aux_dim", expected_aux_dim)) != expected_aux_dim:
-                raise ValueError(
-                    f"aux_extra_feature={aux_extra_feature!r} produces {expected_aux_dim} "
-                    f"auxiliary columns, but aux_dim={getattr(params, 'aux_dim', None)!r}"
-                )
-            if backbone_version(params) not in {"mamba1", "mamba2", "mamba3", "transformer"}:
-                raise ValueError(
-                    "clas12_pos_plus_aux_v1 is currently supported only by "
-                    "Mamba1GPT, MambaGPT, Mamba3GPT, or TransformerGPT backbones"
-                )
+        validate_input_representation(params)
         if getattr(params, "adapter_sample_mode", "event_segment") != "event_segment":
             raise ValueError(
                 "track_legacy regression is disabled. Use the v6 event product with "
@@ -885,73 +863,7 @@ class DownstreamTrainer():
 
 
     def _representation_input(self, grouped, inputdict):
-        """Return the backbone/adapter token tensor for the selected input contract.
-
-        ``clas12_pos_plus_aux_v1`` reproduces Mike's v7 preprocessing from our
-        typed sidecars: normalized center ``[eta, phi, r]`` plus strip direction
-        in the local radial/tangential/z frame and a normalized length or pitch.
-        The points and sidecars have already undergone the same serialization in
-        ``TPCBatchDataset``; this method only packages their aligned rows.
-        """
-        if getattr(self.params, "input_representation", "center_only") != "clas12_pos_plus_aux_v1":
-            return grouped
-        if grouped.size(-1) != 3:
-            raise ValueError(
-                "clas12_pos_plus_aux_v1 expects normalized center points with three columns"
-            )
-        try:
-            geometry_context = inputdict["geometry_context"].to(
-                self.device, dtype=grouped.dtype
-            )
-        except KeyError as exc:
-            raise KeyError(
-                "clas12_pos_plus_aux_v1 requires v7 geometry_context sidecars"
-            ) from exc
-        if geometry_context.shape[:2] != grouped.shape[:2] or geometry_context.size(-1) != 11:
-            raise ValueError(
-                "geometry_context must be row-aligned (B, N, 11) with serialized points; "
-                f"got points={tuple(grouped.shape)}, geometry={tuple(geometry_context.shape)}"
-            )
-
-        # The loader's phi normalization is (phi + pi) / (2*pi).  Constructing
-        # this frame from serialized normalized phi is algebraically identical to
-        # Mike's raw-x/raw-y calculation, while preserving our typed sidecars.
-        phi = grouped[..., 1] * (2.0 * math.pi) - math.pi
-        r_hat = torch.stack((torch.cos(phi), torch.sin(phi), torch.zeros_like(phi)), dim=-1)
-        phi_hat = torch.stack((-torch.sin(phi), torch.cos(phi), torch.zeros_like(phi)), dim=-1)
-        strip_direction = geometry_context[..., 6:9]
-        s_r = (strip_direction * r_hat).sum(dim=-1, keepdim=True)
-        s_phi = (strip_direction * phi_hat).sum(dim=-1, keepdim=True)
-        s_z = strip_direction[..., 2:3]
-
-        aux_extra_feature = str(getattr(self.params, "aux_extra_feature", "length"))
-        length = geometry_context[..., 9:10] / 45.0
-        pitch = geometry_context[..., 10:11] / 0.10
-        if aux_extra_feature == "length":
-            scalar = length
-        elif aux_extra_feature == "pitch":
-            scalar = pitch
-        elif aux_extra_feature == "both":
-            scalar = torch.cat((length, pitch), dim=-1)
-        else:
-            raise RuntimeError(f"Unexpected aux_extra_feature={aux_extra_feature!r}")
-
-        packed = torch.cat((grouped, s_r, s_phi, s_z, scalar), dim=-1)
-        expected_width = int(getattr(self.params, "pos_dim", 3)) + int(
-            getattr(self.params, "aux_dim", 4)
-        )
-        if packed.size(-1) != expected_width:
-            raise ValueError(
-                f"Packed CLAS12 token has width {packed.size(-1)}, but pos_dim + aux_dim "
-                f"is {expected_width}; check aux_extra_feature and aux_dim"
-            )
-
-        # Preserve the established all--100 padding contract for both Mamba
-        # backbones (which replace it with zero) and AdapterOnly masking.
-        padding_mask = grouped[..., 0] != -100
-        return torch.where(
-            padding_mask.unsqueeze(-1), packed, torch.full_like(packed, -100.0)
-        )
+        return representation_input(grouped, inputdict, self.params)
 
 
     def _train_one_batch(self, inputdict, pretrain=False):

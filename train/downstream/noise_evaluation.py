@@ -9,6 +9,7 @@ import torch
 from ruamel.yaml import YAML
 
 from fm4npp.datasets.dataset import get_val_loader
+from train.downstream.input_representation import representation_input
 from train.downstream.hdf5_benchmark_utils import clean, write_json, cohort, event_keys
 from train.downstream.noise_checkpoint import checkpoint_config, file_sha256
 from train.downstream.noise_metrics import at_threshold, calibrate_thresholds, score_summary
@@ -27,11 +28,12 @@ def evaluate(trainer, loader, output, split='test', thresholds=None):
     for batch in loader:
         points = batch['points'].to(trainer.device)
         mask = points[..., 0] != -100
+        model_input = representation_input(points, batch, getattr(trainer, 'params', None))
         if trainer.noise_training_contract['mode'] == 'frozen':
-            _, embeddings, _ = trainer.model(points, return_z=True)
-            pred = trainer.down_model(points, torch.stack(embeddings), pretrain=True, padding_mask=mask)
+            _, embeddings, _ = trainer.model(model_input, return_z=True)
+            pred = trainer.down_model(model_input, torch.stack(embeddings), pretrain=True, padding_mask=mask)
         else:
-            pred = trainer.down_model(points, feature=None, padding_mask=mask)
+            pred = trainer.down_model(model_input, feature=None, padding_mask=mask)
         scores = pred['pred_logits'].softmax(-1)[..., 1].cpu().numpy()
         for i in range(len(points)):
             identity = {key: int(batch[key][i]) for key in ('source_id', 'original_ordinal', 'source_event_index')}

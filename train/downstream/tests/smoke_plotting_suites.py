@@ -45,6 +45,17 @@ def yaml_file(path, value):
         YAML().dump(value, stream)
 
 
+def relocated_history(receipt_path):
+    receipt = json.loads(receipt_path.read_text())
+    history = Path(receipt["validation_history_dir"])
+    if not history.is_absolute():
+        return receipt_path.parent / history
+    if history.is_dir():
+        return history
+    source_run = Path(receipt["checkpoint_dir"]).parent
+    return receipt_path.parent.parent / history.relative_to(source_run)
+
+
 def make_joint_campaign(directory):
     rows, headlines, fits = [], [], []
     for model in ("adapteronly", "mamba3", "transformer_nope", "transformer_rope"):
@@ -193,8 +204,7 @@ def main():
         run("real_finding", ["train/downstream/campaign/plot_track_finding_campaign.py", "--campaign-dir", str(real),
                              "--output-dir", str(output / "real_finding")], output / "real_finding")
         receipt_path = next((real / "runs").glob("*/train/artifacts.json"))
-        receipt = json.loads(receipt_path.read_text())
-        history = real / Path(receipt["validation_history_dir"]).relative_to("/results/campaigns/hdf5_scale_fix")
+        history = relocated_history(receipt_path)
         run("real_validation", ["train/downstream/campaign/plot_track_finding_validation.py",
                                 "--history", str(history), "--output-dir", str(output / "validation")],
                                output / "validation")

@@ -1,0 +1,295 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage[margin=0.65in,headsep=14pt,footskip=18pt]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,microtype,amsmath,amssymb,booktabs,array,tabularx,enumitem,fancyhdr,xcolor}
+\usepackage[colorlinks=true,urlcolor=blue!45!black,linkcolor=blue!45!black]{hyperref}
+\hypersetup{pdftitle={CLAS12 reconstruction metrics: a physicist's cheat sheet},pdfauthor={CLAS12 evaluation documentation},pdfsubject={Equations, populations, and interpretation of finding and noise metrics}}
+\definecolor{ink}{HTML}{17384A}
+\definecolor{muted}{HTML}{475B67}
+\definecolor{wash}{HTML}{EDF3F6}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\arraystretch}{1.10}
+\setlist[itemize]{nosep,leftmargin=13pt,topsep=2pt}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small\color{muted}CLAS12 / reconstruction metrics}
+\fancyhead[R]{\small\color{muted}Cheat sheet v1 / 10 November 2026}
+\fancyfoot[L]{\scriptsize\color{muted}Metric profile: mc\_reconstruction\_v1 \quad Truth policy: primary\_mc\_min4\_v1}
+\fancyfoot[R]{\small\thepage\ / 4}
+\setlength{\headheight}{13pt}
+\newcommand{\metric}[1]{\ifmmode\text{\footnotesize\ttfamily\detokenize{#1}}\else{\footnotesize\ttfamily\detokenize{#1}}\fi}
+\newcommand{\field}[2]{\textbf{#1}\newline\metric{#2}}
+\newcommand{\heading}[2]{{\Large\bfseries\color{ink}#1}\par{\color{muted}#2}\par\vspace{3pt}}
+\newcommand{\labelhead}[1]{\par\vspace{3pt}{\large\bfseries\color{ink}#1}\par}
+\newcommand{\note}[1]{\par\noindent\colorbox{wash}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{#1}}\par}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\begin{document}
+
+\heading{1 / What are we measuring?}{A quick reference for physicists: the equation, its population, and what the number means.}
+
+\textbf{The task.} Given the Central Vertex Tracker (CVT) clusters in an event, track finding groups them into
+predicted tracks or leaves them unassigned. We ask how completely and cleanly it
+recovers the \emph{eligible Monte Carlo (MC) targets}. We cannot establish the physical validity
+of independently reconstructed non-target tracks, so they are neutral to the primary score.
+
+\note{\textbf{Three vocabulary rules.} A ``hit'' here is one \textbf{cluster token},
+not a strip or energy deposit. ``Signal'' means \textbf{eligible target support},
+not every MC-origin cluster. ``Background'' in legacy labels means
+\textbf{non-target}, not necessarily real-data overlay or a fake physical track.}
+
+\textbf{Eligibility.} Keep the existing direct-primary ownership rule (unambiguous,
+strict majority of cluster members) and require $\geq4$ owned clusters per MC track
+in the \emph{full event}. Secondary/decay tracks and shorter tracks are non-target.
+Count before sorting, chunking or padding; retain all clusters and their provenance.
+
+\labelhead{One truth track and one prediction}
+Within event $e$, $T_{ei}$ is the set of clusters in eligible truth track $i$;
+$P_{ej}$ is the set assigned to prediction $j$. The sets within each collection
+are disjoint. Unassigned clusters belong to no $P_{ej}$. Define
+\[
+ t_{ei}=|T_{ei}|,\qquad q_{ej}=|P_{ej}|,\qquad a_{eij}=|T_{ei}\cap P_{ej}|.
+\]
+\begin{tabularx}{\linewidth}{@{}L{0.28\linewidth}L{0.22\linewidth}Y@{}}
+\toprule Pair quantity & Equation & Read it as\\\midrule
+Completeness $c$ & $a/t$ & Fraction of this truth track's clusters recovered by this prediction.\\
+Purity $r$ & $a/q$ & Fraction of this prediction belonging to this particular truth track.\\
+Intersection-over-union $J$ & $a/(t+q-a)$ & Correct overlap divided by the union of both sets.\\
+Dice $D$ & $2a/(t+q)$ & Harmonic mean of pair completeness and purity: $2cr/(c+r)$.\\
+\bottomrule
+\end{tabularx}
+Prediction size $q$ includes \emph{all} assigned clusters: correct, wrong eligible
+track, excluded MC and overlay. Zero overlap gives zero for all four quantities.
+
+\labelhead{Two different answers to ``which prediction belongs to this track?''}
+\textbf{Dice association $\mathcal M_e$:}
+$\displaystyle\arg\max_{\text{one-to-one pairs}}\sum_{(i,j)\in\mathcal M_e}D_{eij}$.
+Hungarian matching maximizes total Dice \emph{within each event}; keep only positive
+overlaps. There is no quality threshold. Only these predictions are
+\emph{MC-associated} in the new hit and contamination metrics.
+
+\textbf{Accepted matching $\mathcal E_e$:}
+require $J\geq0.5$, $r\geq0.5$, $c\geq0.5$, then maximize the number of
+one-to-one accepted pairs, breaking ties by total IoU. This independent assignment
+defines historical track efficiency. It is \emph{not} a cut on the Dice assignment.
+At these defaults $J\geq0.5$ already implies both other cuts; all three remain explicit.
+
+\note{\textbf{Three thresholds must not be conflated.} The finding assignment threshold
+decides which clusters enter predictions. The match cuts above decide whether a
+truth track counts as accepted. The minimum of four defines \emph{truth eligibility};
+it is not a minimum predicted-track size or an accepted-match requirement.}
+
+\textbf{Scope/status.} Pages 1--3 describe track finding; page 4 describes binary
+noise tagging. The new Dice evaluator is available offline. It does not yet select
+training checkpoints: the finding preset still selects signal ARI with a loss
+tie-break; noise tagging selects validation loss. A reported metric is not necessarily
+the differentiable loss that trains the model.
+
+\textbf{Reference.} This sheet accompanies
+\href{mc_reconstruction_v1.pdf}{\texttt{mc\_reconstruction\_v1.pdf}} (exact definitions,
+provenance codes, tie conventions and API) and
+\href{primary_mc_min4_v1.md}{\texttt{primary\_mc\_min4\_v1.md}} (eligibility).
+Executable definitions are in \metric{track_finding_metrics.py} and \metric{noise_metrics.py}.
+
+\newpage
+\heading{2 / The six headline quantities}{Read every denominator aloud. ``Efficiency'' and ``purity'' alone are not complete definitions.}
+
+All sums below pool the evaluated dataset. Let
+$S_e=\bigcup_iT_{ei}$, $U_e=V_e\setminus S_e$ (non-target),
+$R_e=\bigcup_{(i,j)\in\mathcal M_e}P_{ej}$ (associated predictions), and
+$B_e\subseteq U_e$ (\emph{verified pure-overlay} clusters). $V_e$ excludes padding.
+\[
+\begin{aligned}
+N_T&=\sum_e\#\{T_{ei}\}, & N_S&=\sum_e|S_e|, & H_A&=\sum_e|R_e|,\\
+C&=\sum_e\sum_{(i,j)\in\mathcal M_e}a_{eij}, &
+Q_D&=\sum_e\sum_{(i,j)\in\mathcal M_e}D_{eij}, & K&=\sum_e|\mathcal E_e|,\\
+H_B&=\sum_e|B_e|, & B_A&=\sum_e|R_e\cap B_e|. &&
+\end{aligned}
+\]
+\begin{tabularx}{\linewidth}{@{}L{0.34\linewidth}L{0.12\linewidth}Y@{}}
+\toprule Metric / output field & Equation & Physical question and limit\\\midrule
+\field{Mean track Dice (primary)}{mc_track_dice_mean} & $Q_D/N_T$ & How completely and cleanly is the average eligible track reconstructed? Each truth track has one vote; misses contribute zero.\\
+\field{Hit completeness}{mc_hit_completeness_global} & $C/N_S$ & What fraction of eligible clusters is recovered in the selected one-to-one associations? Misses and unclaimed split fragments remain in the denominator.\\
+\field{Hit purity}{mc_hit_purity_global} & $C/H_A$ & What fraction of clusters in associated predictions belongs to their assigned truth track? Does not measure the fraction of predicted tracks that are genuine.\\
+\field{Track efficiency}{track_efficiency_global} & $K/N_T$ & What fraction of eligible truth tracks passes the accepted-match definition? Binary per track; does not require complete recovery.\\
+\field{Overlay contamination}{mc_bg_contamination_global} & $B_A/H_A$ & What fraction of associated prediction clusters is verified pure overlay? Only one component of impurity.\\
+\field{Overlay leakage to MC}{bg_leakage_to_mc_global} & $B_A/H_B$ & What fraction of all verified pure-overlay clusters enters associated predictions? Same numerator as contamination, different denominator.\\
+\bottomrule
+\end{tabularx}
+
+\textbf{Interpretation.} Higher is better for the first four; lower for the last
+two, interpreted alongside completeness. All lie in $[0,1]$ when defined. Track
+efficiency is conditional on \emph{eligible tracks in the evaluated events}; it is
+not efficiency relative to all generated particles, geometrical acceptance, PID
+purity, or a cross-section correction. Purity can be high while most tracks are missed.
+
+\labelhead{Impurity is broader than overlay contamination}
+Let $X=\sum_e|R_e\cap S_e|-C$ count clusters belonging to the \emph{wrong eligible}
+track, and $U_A=\sum_e|R_e\cap U_e|$ count associated non-target clusters.
+Then $H_A=C+X+U_A$ and
+\[
+\underbrace{1-C/H_A}_{\metric{mc_hit_impurity_global}}
+=\underbrace{X/H_A}_{\metric{mc_other_track_contamination_global}}
++\underbrace{U_A/H_A}_{\metric{mc_nontarget_contamination_global}}.
+\]
+Excluded MC can increase $U_A$ without increasing $B_A$. Mixed clusters and clusters
+with MC present but unresolved composition are counted separately. Neither is
+called pure overlay. All clusters have unit weight; no strip-level overlay fraction
+is inferred. Even an eligible, mixed-origin cluster counts wholly toward its assigned truth track.
+
+\note{\textbf{Undefined does not mean zero.} No truth tracks: Dice, completeness and
+efficiency are null. No Dice associations: purity and associated contamination are
+null. No verified overlay: leakage is null. Unknown associated provenance makes
+overlay contamination null; unknown provenance anywhere makes leakage null.
+The explicit \metric{mc_bg_contamination_lower_bound_global} still gives $B_A/H_A$
+when $H_A>0$. A zero lower bound does not establish zero contamination.}
+
+\textbf{Provenance fractions.} For category $g$ (MC-only, overlay-only, mixed,
+MC-present/unresolved, unknown), associated fraction is $|R\cap g|/H_A$ and
+non-target associated fraction is $|R\cap U\cap g|/H_A$ (dataset-pooled counts).
+They appear as \metric{mc_associated_<g>_fraction_global} and
+\metric{mc_nontarget_<g>_fraction_global}. Coverage is $(H_A-Z_A)/H_A$ or
+$(|V|-Z)/|V|$, with $Z_A,Z$ the corresponding unknown counts; classified unresolved
+MC is included in coverage, not claimed to have fully known composition.
+
+\newpage
+\heading{3 / Read the plots without importing the wrong meaning}{Counterexamples, historical names, and the averaging convention.}
+
+\begin{tabularx}{\linewidth}{@{}Yrrrr@{}}
+\toprule One-event example & Mean Dice & Hit compl. & Hit purity & Track eff.\\\midrule
+Two four-cluster truths, both recovered exactly & $1$ & $1$ & $1$ & $1$\\
+Same, plus an independent non-target prediction & $1$ & $1$ & $1$ & $1$\\
+One four-cluster truth split into two pure pairs & $2/3$ & $1/2$ & $1$ & $1$\\
+Two four-cluster truths merged into one prediction & $1/3$ & $1/2$ & $1/2$ & $1/2$\\
+One four-cluster truth, all clusters unassigned & $0$ & $0$ & null & $0$\\
+One four-cluster truth + four non-target clusters in one prediction & $2/3$ & $1$ & $1/2$ & $1$\\
+\bottomrule
+\end{tabularx}
+\textbf{Why?} A truth can claim only one split fragment; a merged prediction can
+serve only one truth. Inclusive match cuts accept the half-track boundary.
+Independent non-target predictions can lower historical prediction-level purity.
+In the missed-track row,
+\emph{legacy signal ARI is still 1}: all truth clusters share the same unassigned label.
+
+\labelhead{Historical dictionary: these names keep their original definitions}
+For a single event suppress $e$: $n=\#T$, $m=\#P$, $k=|\mathcal E|$,
+$H^+=\sum_j|P_j|$, $U^+=|U\cap\bigcup_jP_j|$, $L=|S\setminus\bigcup_jP_j|$.
+Let $F$ count truths overlapping $>1$ prediction and $G$ predictions overlapping
+$>1$ truth. \emph{Any} positive overlap counts in $F,G$.
+\begin{tabularx}{\linewidth}{@{}L{0.37\linewidth}L{0.19\linewidth}Y@{}}
+\toprule Output name & Event equation & What it actually counts\\\midrule
+\metric{track_efficiency} / \metric{miss_rate} & $k/n$; $1-k/n$ & Accepted / unaccepted eligible tracks, respectively.\\
+\metric{track_purity} / \metric{fake_rate} & $k/m$; $1-k/m$ & Accepted / unmatched predictions; unmatched is not proof of a physical fake.\\
+\metric{matched_iou_mean} & $k^{-1}\sum_{\mathcal E}J$ & Mean IoU of accepted pairs only.\\
+\metric{matched_purity_mean} & $k^{-1}\sum_{\mathcal E}r$ & Accepted-pair purity; misses and rejected predictions are absent.\\
+\metric{matched_efficiency_mean} & $k^{-1}\sum_{\mathcal E}c$ & Accepted-pair \emph{completeness}, not track efficiency.\\
+\metric{split_rate} / \metric{merge_rate} & $F/n$; $G/m$ & Overlap multiplicity, before either matching.\\
+\metric{background_rejection} & $1-U^+/|U|$ & Non-target clusters left unassigned, including excluded MC.\\
+\metric{background_contamination} & $U^+/H^+$ & Non-target fraction of \emph{all} predictions; includes independent non-target tracks.\\
+\metric{signal_loss_to_background} & $L/|S|$ & Eligible clusters left unassigned; wrong-track assignments are not counted as lost.\\
+\bottomrule
+\end{tabularx}
+
+\textbf{ARI: partition agreement, not efficiency.}
+For counts $n_{ij}$ on the selected support, row/column totals $n_{i\cdot},n_{\cdot j}$,
+and $N=\sum_{ij}n_{ij}$, define
+$I=\sum_{ij}\binom{n_{ij}}2$, $A=\sum_i\binom{n_{i\cdot}}2$,
+$B=\sum_j\binom{n_{\cdot j}}2$, $Q=\binom{N}{2}$.
+\[
+\mathrm{ARI}=\frac{I-AB/Q}{(A+B)/2-AB/Q}.
+\]
+One means identical partitions; zero is the random-partition reference at fixed
+group sizes; negative is possible. \metric{ari_signal} uses eligible clusters only:
+it ignores non-target contamination. With one truth track, it returns 1 for one
+predicted label (even all unassigned), 0 otherwise; no signal gives null.
+\metric{ari_with_background} groups all non-target truth into one class, so can
+penalize independent non-target tracks. It is null with fewer than two distinct
+truth labels. Other degenerate cases follow sklearn's conventions.
+
+\note{\textbf{Averages are part of the definition.}
+Global ratio $=\sum_e x_e/\sum_e d_e$; event macro
+$=|\mathcal F|^{-1}\sum_{e\in\mathcal F}x_e/d_e$, where $\mathcal F$ contains
+defined events. Historical unsuffixed fields above and ARI are event macro;
+\metric{_event_macro} makes this explicit. \metric{_global} pools counts;
+\metric{matched_<quality>_mean_global} averages all accepted pairs equally.
+\metric{mc_track_dice_mean} weights \emph{truth tracks}. One perfect four-cluster
+track in one event plus three missed eight-cluster tracks in another gives
+Dice $1/4$, event-macro Dice $1/2$, and hit completeness $1/7$. Never average batch means.}
+
+\textbf{Extra diagnostics} (not physical fake identifications; denominator $\sum m$):
+\begin{itemize}
+\item \metric{unmatched_predicted_fraction_global}: $(\sum m-\sum k)/\sum m$, the global fake-rate meaning.
+\item \metric{non_target_only_predicted_fraction_global}: zero-target-overlap prediction count divided by $\sum m$.
+\item \metric{mc_overlap_unassociated_predicted_fraction_global}: overlapping predictions not chosen by Dice, divided by $\sum m$.
+\end{itemize}
+
+\newpage
+\heading{4 / Noise tagging is a different measurement}{A binary decision for each cluster; no track matching is involved.}
+
+\textbf{Labels and decision.} Signal is class 0, noise is class 1. Under the HDF5
+policy, signal means a cluster owned by an eligible MC track; non-target clusters
+are noise-class examples. The shared full-event cut changes clusters of one-, two-
+or three-cluster tracks to noise in both storage paths; legacy ragged data otherwise
+retains its existing noise labels. ``Noise'' does not assert an unphysical origin.
+For score $s=P_{\rm model}(\mathrm{noise})$, reject if $s>\tau$; ties are retained.
+The standard operating point is $\tau=0.5$.
+
+Pool cluster counts across all events, excluding padding. Use semantic subscripts
+to avoid the ambiguity of which class is ``positive'':
+\[
+\begin{array}{c|cc}
+ & \text{predicted signal (retained)} & \text{predicted noise (rejected)}\\\hline
+\text{true signal} & n_{SS}\;(\mathrm{TN}) & n_{SN}\;(\mathrm{FP})\\
+\text{true noise} & n_{NS}\;(\mathrm{FN}) & n_{NN}\;(\mathrm{TP})
+\end{array}
+\]
+The code's TP/TN convention treats \emph{noise} as positive. Let
+$N=n_{SS}+n_{SN}+n_{NS}+n_{NN}$.
+
+\begin{tabularx}{\linewidth}{@{}L{0.38\linewidth}L{0.25\linewidth}Y@{}}
+\toprule Metric / output name & Equation & Read it as\\\midrule
+\field{Signal retention (recall)}{signal_retention / signal_recall} & $n_{SS}/(n_{SS}+n_{SN})$ & Fraction of true signal kept. A cluster-selection efficiency, not finding track efficiency.\\
+\field{Signal precision}{signal_precision} & $n_{SS}/(n_{SS}+n_{NS})$ & Signal fraction of the retained sample. A sample purity, without track identity.\\
+\field{Noise rejection (recall)}{noise_rejection / noise_recall} & $n_{NN}/(n_{NS}+n_{NN})$ & Fraction of true noise rejected. Not the reciprocal rejection factor.\\
+\field{Noise precision}{noise_precision} & $n_{NN}/(n_{SN}+n_{NN})$ & Noise fraction of what was rejected.\\
+\metric{accuracy} & $(n_{SS}+n_{NN})/N$ & Fraction of all clusters classified correctly; sensitive to class prevalence.\\
+\metric{balanced_accuracy}\newline\metric{macro_recall} & $(R_S+R_N)/2$ & Equal mean of signal/noise recalls. These two names have the same value.\\
+\metric{macro_precision} & $(P_S+P_N)/2$ & Equal mean of signal/noise precisions.\\
+\metric{all_noise_accuracy} & $(n_{NS}+n_{NN})/N$ & Accuracy of rejecting everything: a trivial baseline.\\
+\bottomrule
+\end{tabularx}
+$R_S,R_N$ denote the two recalls; $P_S,P_N$ the two precisions.
+Zero denominators give null; macro quantities require both component values.
+All these fractions lie in $[0,1]$. If 95\% of clusters are noise, rejecting
+everything gives 95\% accuracy, 0\% signal retention and 50\% balanced accuracy.
+Retained-sample purity depends on the signal/noise mixture, even at fixed recalls.
+
+\labelhead{Threshold scans and ranking scores}
+\textbf{Signal ROC AUC} (\metric{signal_roc_auc}): with $u=1-s$,
+$\Pr(u_S>u_N)+\tfrac12\Pr(u_S=u_N)$ over signal/noise pairs.
+It measures ranking: 1 is perfect, 0.5 is random ordering. It is not retention
+or purity at $\tau=0.5$. The ROC axes are signal retention and noise leakage
+($1-\text{noise rejection}$).
+
+\textbf{Signal average precision} (\metric{signal_average_precision}):
+$\mathrm{AP}=\sum_\ell(R_\ell-R_{\ell-1})P_\ell$, along increasing signal recall
+as the score cut is relaxed. This is a step-weighted precision--recall summary,
+not trapezoidal ROC area; it depends on signal prevalence. Both ranking metrics
+are null in this implementation if either truth class is absent.
+
+\note{\textbf{An operating point needs both axes.} Quote signal retention \emph{and}
+noise rejection at a specified threshold. The 95\%/99\% retention thresholds and
+COATJAVA-matched retention threshold are calibrated on validation and held fixed on
+test; achieved test retention can differ. COATJAVA ``noise'' here means its unassigned
+clusters, not a dedicated noise classifier. Class-weighted training scores need not
+be calibrated physical probabilities. Noise-score quantiles describe score distributions,
+not additional reconstruction efficiencies.}
+
+\textbf{Comparisons and uncertainty.} Compare the same truth policy, event cohort,
+prediction settings and metric profile.
+Report eligible track/cluster counts and provenance coverage; unknown coverage is
+not evidence of clean reconstruction. Uncertainty from clustered events or repeated
+training seeds is a separate calculation, not supplied by these point estimates.
+
+\end{document}

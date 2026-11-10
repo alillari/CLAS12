@@ -7,6 +7,11 @@ complete event become noise-class examples (`1`); exactly four clusters remain
 eligible signal. This is applied before serialization/chunking in both HDF5 and
 legacy ragged adapter loaders. Physical primary/MC provenance remains unchanged.
 
+Page 4 of the [metrics cheat sheet](../../docs/evaluation/metrics_cheat_sheet_v1.pdf)
+defines the confusion matrix, retention, rejection, precision, accuracy, ROC AUC,
+and average precision, with equations and interpretation alongside the finding
+metrics. Noise rejection is a fraction, not a reciprocal rejection factor.
+
 ## HDF5 AdapterOnly benchmark
 
 This branch integrates noise tagging with the published HDF5 cluster product.

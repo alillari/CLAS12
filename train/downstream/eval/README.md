@@ -98,6 +98,14 @@ point from final test performance would reuse the test labels.
 
 ### Phase 1 MC reconstruction evaluator
 
+For a physicist's quick reference, start with the four-page
+[metrics cheat sheet](../../../docs/evaluation/metrics_cheat_sheet_v1.pdf)
+([editable LaTeX](../../../docs/evaluation/metrics_cheat_sheet_v1.tex)). It pairs
+equations and defined symbols with plain-language interpretations, denominators,
+matching rules, counterexamples, and a separate noise-tagging reference. It
+distinguishes track efficiency, hit completeness, the different purity measures,
+and non-target labels from verified overlay.
+
 The opt-in shared evaluator adds `mc_track_dice_mean`: event-local Hungarian
 matching maximizing total Dice, averaged over all supplied eligible truth tracks
 with missed tracks contributing zero. It also provides pooled hit completeness,

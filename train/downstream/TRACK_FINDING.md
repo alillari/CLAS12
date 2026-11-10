@@ -65,9 +65,10 @@ runs. Changing the threshold changes the efficiency/background operating point.
 
 ## Inspect behavior
 
-The [metrics cheat sheet](../../docs/evaluation/metrics_cheat_sheet_v1.pdf) pairs
-equations with physical interpretations and examples. Start there to distinguish
-track efficiency, hit completeness, hit purity, and prediction-level purity.
+The two-page [metric reference](../../docs/evaluation/metrics_cheat_sheet_v1.pdf)
+defines track efficiency, hit completeness, hit purity and prediction-level purity
+using explicit set equations. It also defines efficiency at specified purity and
+completeness cuts.
 
 | Output | Use |
 | --- | --- |

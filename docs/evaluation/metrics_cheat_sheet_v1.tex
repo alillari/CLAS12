@@ -1,11 +1,12 @@
 \documentclass[10pt,letterpaper]{article}
-\usepackage[margin=0.7in,headsep=14pt,footskip=18pt]{geometry}
+\usepackage[margin=0.6in,headsep=14pt,footskip=18pt]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern,microtype,amsmath,amssymb,booktabs,array,tabularx,fancyhdr}
 \usepackage[hidelinks]{hyperref}
 \hypersetup{pdftitle={CLAS12 track reconstruction: metric reference},pdfauthor={CLAS12 evaluation documentation}}
 \setlength{\parindent}{0pt}
-\setlength{\parskip}{4pt}
+\setlength{\parskip}{3pt}
+\AtBeginDocument{\setlength{\abovedisplayskip}{6pt}\setlength{\belowdisplayskip}{6pt}}
 \setlength{\emergencystretch}{2em}
 \setlength{\headheight}{13pt}
 \pagestyle{fancy}\fancyhf{}
@@ -71,6 +72,20 @@ These pool cluster counts over the dataset using the Dice association.
 Completeness includes missed tracks in its denominator; purity includes every
 cluster in the associated predictions. Thus purity can remain high when many
 tracks are missed. Total impurity is $1-P_{\mathrm{MC}}$.
+
+\textbf{MC hit F1.} The harmonic mean of global hit completeness and purity is
+\[
+ F_{1,\mathrm{MC}}=
+ \frac{2C_{\mathrm{MC}}P_{\mathrm{MC}}}{C_{\mathrm{MC}}+P_{\mathrm{MC}}}
+ =\frac{2\pairsum |T_{ei}\cap P_{ej}|}
+ {\sum_e\sum_{i=1}^{N_{\mathrm{MC},e}}|T_{ei}|
+  +\pairsum |P_{ej}|}.
+\]
+For a single pair, $F_{1,eij}=2p_{eij}c_{eij}/(p_{eij}+c_{eij})=D_{eij}$:
+Dice and hit F1 are identical (zero for no overlap). Globally, MC hit F1 pools
+cluster counts, whereas mean track Dice weights each eligible track equally;
+they generally differ. This derived count ratio is zero when all eligible tracks
+are missed, and undefined when its denominator is zero.
 
 \entry{Overlay contamination and leakage}{mc_bg_contamination_global / bg_leakage_to_mc_global}
 Let $R_e=\bigcup_{(i,j)\in\mathcal M_e}P_{ej}$ be the associated predicted support,

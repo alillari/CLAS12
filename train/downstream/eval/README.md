@@ -196,6 +196,16 @@ The per-truth-track table contains valid signal labels even when their momentum
 is unavailable. Momentum bins use only finite track kinematics. Reevaluate
 older results from a saved adapter checkpoint before campaign collation.
 
+Finding summaries, threshold-sweep JSONs, and campaign headline records also
+include `track_eligibility_contract`, read from the effective evaluation dataset.
+The fixed contract is `primary_mc_min4_v1`: at least four owned clusters in the
+full event, with background label `-1`. Threshold CSVs and campaign tables expose
+its fields as `track_eligibility_*` columns. The campaign runner reevaluates
+caches with missing or different contracts, even if their metric version is 2;
+collation rejects them before writing aggregate files. A subprocess exit code of
+zero is insufficient without a compatible output contract. See the
+[eligibility specification](../../../docs/evaluation/primary_mc_min4_v1.md#finding-evaluation-metadata-and-reuse).
+
 Each training invocation creates a fresh directory beside its training log:
 
 ```text

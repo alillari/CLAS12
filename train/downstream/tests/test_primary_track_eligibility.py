@@ -14,7 +14,7 @@ from mmap_ninja import RaggedMmap
 
 from fm4npp.datasets.track_eligibility import (
     PRIMARY_TRACK_POLICY, eligible_primary_labels, EligibleTrackLabelView,
-    EligibleNoiseLabelView, configure_primary_track_cut,
+    EligibleNoiseLabelView, configure_primary_track_cut, primary_track_eligibility_contract,
 )
 from fm4npp.datasets.cvt_downstream import CVTDownstreamSource, MIN4_NOISE_POLICY
 from fm4npp.datasets.dataset import TPCBatchDataset, MyCollator, get_data_loader, get_val_loader
@@ -23,6 +23,7 @@ from train.downstream.tests.test_cvt_downstream import event, publish_fixture
 from train.downstream.noise_metrics import training_class_counts
 from train.downstream.track_finding_targets import build_track_instance_targets
 from train.downstream.eval.rescore_track_finding import rescore_archive
+from train.downstream.track_finding_contract import finding_evaluation_metadata
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -127,6 +128,12 @@ class PrimaryTrackEligibilityTest(unittest.TestCase):
                               return_dict=True, compute_neighbors=False, apply_primary_track_cut=True,
                               input_representation='clas12_pos_plus_aux_v1', return_coatjava_seg_pred=True)
                 ds = TPCBatchDataset(storage, **kwargs)
+                self.assertEqual(finding_evaluation_metadata(ds)['track_eligibility_contract'],
+                                 primary_track_eligibility_contract())
+                raw_ds = TPCBatchDataset(storage, **{**kwargs, 'apply_primary_track_cut': False})
+                self.assertIsNone(raw_ds.track_eligibility_contract)
+                with self.assertRaisesRegex(ValueError, 'track_eligibility_contract'):
+                    finding_evaluation_metadata(raw_ds)
                 item = ds[0]; samples.append(item)
                 np.testing.assert_array_equal(training_class_counts(ds), [4, 5])
                 self.assertEqual(int((item['target'] >= 0).sum()), 4)

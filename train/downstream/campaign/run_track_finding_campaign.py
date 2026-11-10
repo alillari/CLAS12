@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from train.downstream.track_finding_contract import FINDING_METRICS_VERSION, validate_track_finding_modes
+from train.downstream.track_finding_contract import (
+    validate_finding_evaluation_summary, finding_eligibility_columns, validate_track_finding_modes,
+)
 
 import numpy as np
 from mmap_ninja import RaggedMmap
@@ -262,6 +264,19 @@ def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_f
     return summary
 
 
+def validated_evaluation_summary(directory: Path) -> dict[str, Any]:
+    """Reject stale truth policies, including stale headline rows, before reuse."""
+    summary_path = directory / "summary.json"
+    summary = read_json(summary_path)
+    validate_finding_evaluation_summary(summary, source=str(summary_path))
+    headline = directory / "campaign_headline_metrics.jsonl"
+    if headline.is_file():
+        with headline.open() as stream:
+            for number, line in enumerate(stream, 1):
+                validate_finding_evaluation_summary(json.loads(line), source=f"{headline}:{number}")
+    return summary
+
+
 def collate_summary(
     manifest: dict[str, Any],
     evaluation_suffix: str | None = None,
@@ -270,22 +285,23 @@ def collate_summary(
     base_dir = Path(manifest["campaign_dir"]).resolve()
     summary_dir = base_dir / str(summary_name)
     evaluations = {}
+    summaries = {}
     for run in manifest.get("runs", []):
         directory = Path(run["evaluation_dir"])
         if evaluation_suffix:
             directory = directory.with_name(f"{directory.name}_{evaluation_suffix}")
         evaluations[run["run_id"]] = directory
         summary = directory / "summary.json"
-        if summary.is_file() and read_json(summary).get("finding_metrics_version") != FINDING_METRICS_VERSION:
-            raise ValueError(f"Reevaluate the track-finding checkpoint before collating legacy metrics in {directory}")
+        if summary.is_file():
+            summaries[run["run_id"]] = validated_evaluation_summary(directory)
     summary_dir.mkdir(parents=True, exist_ok=True)
     table_rows = []
     with (summary_dir / "campaign_headline_metrics.jsonl").open("w") as headline_stream:
         for run in manifest.get("runs", []):
             evaluation_dir = evaluations[run["run_id"]]
             headline = evaluation_dir / "campaign_headline_metrics.jsonl"
-            summary = evaluation_dir / "summary.json"
-            if headline.exists() and summary.is_file():
+            summary_data = summaries.get(run["run_id"])
+            if headline.exists() and summary_data is not None:
                 with headline.open() as stream:
                     shutil.copyfileobj(stream, headline_stream)
             table_row = {
@@ -306,10 +322,9 @@ def collate_summary(
                 "model_yaml": run["model_yaml"],
                 "model_config": run["model_config"],
                 "evaluation_dir": run["evaluation_dir"],
-                "summary_found": summary.exists(),
+                "summary_found": summary_data is not None,
             }
-            if summary.exists():
-                summary_data = read_json(summary)
+            if summary_data is not None:
                 metrics = summary_data.get("metrics", {})
                 coatjava_metrics = summary_data.get("baselines", {}).get("coatjava", {})
                 deltas = summary_data.get("comparisons", {}).get("adapter_minus_coatjava", {})
@@ -317,6 +332,7 @@ def collate_summary(
                 native_coatjava_metrics = summary_data.get("native_baselines", {}).get("coatjava", {})
                 native_deltas = summary_data.get("native_comparisons", {}).get("adapter_minus_coatjava", {})
                 table_row["finding_metrics_version"] = summary_data["finding_metrics_version"]
+                table_row.update(finding_eligibility_columns(summary_data))
                 table_row["metric_view"] = summary_data.get("metric_view", "canonical")
                 table_row["noise_attribution_mode"] = summary_data.get("noise_attribution_mode")
                 table_row["assignment_threshold"] = summary_data.get("assignment_threshold")
@@ -572,10 +588,14 @@ def eval_if_needed(
         return
     current_status = run_current_status(load_status(status_path), run)
     summary = Path(run["evaluation_dir"]) / "summary.json"
-    if (not args.force_eval and current_status in DONE_STATUSES and summary.is_file()
-            and read_json(summary).get("finding_metrics_version") == FINDING_METRICS_VERSION):
-        print(f"[{run['run_id']}] evaluation already complete; skipping")
-        return
+    if not args.force_eval and current_status in DONE_STATUSES and summary.is_file():
+        try:
+            validated_evaluation_summary(summary.parent)
+        except ValueError as error:
+            print(f"[{run['run_id']}] cached evaluation is stale: {error}")
+        else:
+            print(f"[{run['run_id']}] evaluation already complete; skipping")
+            return
 
     command = eval_command(run)
     log_path = Path(run["eval_stdout"])
@@ -638,6 +658,12 @@ def eval_if_needed(
             cuda_preflight_log=str(preflight_log.resolve()),
         )
         raise FileNotFoundError(f"Evaluation finished but summary.json was not created: {summary}")
+    try:
+        validated_evaluation_summary(summary.parent)
+    except ValueError:
+        update_status(status_path, run["run_id"], "failed", stage="eval",
+                      reason="incompatible_evaluation_contract", log=str(attempt_log.resolve()))
+        raise
     update_status(
         status_path,
         run["run_id"],

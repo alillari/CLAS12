@@ -22,7 +22,9 @@ except Exception:
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from .cvt_downstream import CVTDownstreamSource, downstream_split
-from .track_eligibility import EligibleTrackLabelView, EligibleNoiseLabelView
+from .track_eligibility import (
+    EligibleTrackLabelView, EligibleNoiseLabelView, primary_track_eligibility_contract,
+)
 
 #torch.manual_seed(42)
 
@@ -532,6 +534,11 @@ class TPCBatchDataset(Dataset):
             self.serialization = 'radius'
 
         self.filter_data(low_thr=self.low_thr, high_thr=self.high_thr, max_tracks=self.max_tracks)
+
+    @property
+    def track_eligibility_contract(self):
+        """Eligibility actually applied by this dataset, independent of checkpoint metadata."""
+        return primary_track_eligibility_contract() if self.apply_primary_track_cut else None
 
     def znormalize(self, arr, mean_, std_):
         return (arr - mean_) / std_

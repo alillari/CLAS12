@@ -92,6 +92,43 @@ Compare checkpoints on the same truth policy, event cohort and prediction
 assignment settings. A score computed with the cut is not directly comparable
 to an older score using all raw primary labels.
 
+### Finding evaluation metadata and reuse
+
+The inference evaluator reads the effective contract from its evaluation dataset
+and writes it to `summary.json`, `threshold_sweep.json`,
+`selected_heldout_summary.json`, and every campaign headline JSONL record:
+
+```json
+{
+  "track_eligibility_contract": {
+    "policy": "primary_mc_min4_v1",
+    "min_clusters": 4,
+    "count_support": "full_event_owned_clusters",
+    "background_label": -1
+  }
+}
+```
+
+This describes the truth used for evaluation, independently of the checkpoint's
+training policy. The evaluator requires the cut to be active on that dataset;
+it does not infer compliance from saved checkpoint settings. Threshold CSVs and
+campaign `run_table.csv` expose the same four values in `track_eligibility_*`
+columns. Other per-event/per-track CSVs are accompanied by their summary JSON.
+
+`finding_metrics_version: 2` still identifies the unchanged legacy metric
+definitions. It is not sufficient to establish compatible truth. Campaign reuse
+requires that version and an exact match to the fixed eligibility contract,
+including any existing headline records. Missing or incompatible metadata
+causes the normal campaign runner to reevaluate. A successful subprocess must
+also produce compatible outputs before it is marked `eval_done`.
+
+Collation validates all available summaries and headline records before opening
+aggregate output files. It rejects unmarked or incompatible results, preserving
+any existing table. Older reports must be regenerated from checkpoints for this
+benchmark; adding metadata to an old score would not correct its denominator.
+These checks do not replace matching the event cohort and prediction settings.
+The four-cluster rule remains fixed; subgroup reporting is not introduced here.
+
 ## Existing jobs and checkpoints
 
 Running managed jobs retain their frozen source snapshots and original targets;
@@ -115,3 +152,7 @@ counts, all three loader splits, provenance preservation and explicit rescoring.
 The broader finding, noise, metric and momentum-sample regression suites check
 compatibility. The versioned metric equations remain in
 [`mc_reconstruction_v1.pdf`](mc_reconstruction_v1.pdf).
+`test_track_finding_evaluation_contract.py` checks compatible cache reuse,
+reevaluation of stale outputs, post-evaluation validation, and rejection before
+collation can overwrite an existing table. The evaluator integration test checks
+policy metadata in ordinary and threshold-sweep outputs.

@@ -9,6 +9,12 @@ PRIMARY_TRACK_MIN_CLUSTERS = 4
 PRIMARY_TRACK_POLICY = "primary_mc_min4_v1"
 
 
+def primary_track_eligibility_contract():
+    """Describe the fixed downstream policy; return an independent metadata copy."""
+    return {"policy": PRIMARY_TRACK_POLICY, "min_clusters": PRIMARY_TRACK_MIN_CLUSTERS,
+            "count_support": "full_event_owned_clusters", "background_label": -1}
+
+
 def eligible_primary_labels(labels):
     """Copy a complete event's labels, replacing positive-ID sets of size <4.
 
@@ -62,8 +68,7 @@ def configure_primary_track_cut(params):
     if hasattr(params, "params"):
         params.params["apply_primary_track_cut"] = enabled
     if enabled:
-        contract = {"policy": PRIMARY_TRACK_POLICY, "min_clusters": PRIMARY_TRACK_MIN_CLUSTERS,
-                    "count_support": "full_event_owned_clusters", "background_label": -1}
+        contract = primary_track_eligibility_contract()
         setattr(params, "track_eligibility_contract", contract)
         if hasattr(params, "params"):
             params.params["track_eligibility_contract"] = contract

@@ -124,6 +124,9 @@ def score_full(archive, threshold, config):
 def calibrate(validation, output_dir, *, metadata=None, test=None, test_metadata=None,
               truth_policy='as_saved', objective='dice', min_purity=.9, min_completeness=.9,
               min_iou=.5, thresholds=None, refine_steps=(.001, .0001)):
+    output = Path(output_dir)
+    if output.exists():
+        raise FileExistsError(f'Calibration output directory must be new: {output}')
     config = metrics.MatchConfig(min_purity=probability(min_purity, 'min_purity'),
         min_efficiency=probability(min_completeness, 'min_completeness'),
         iou_threshold=probability(min_iou, 'min_iou'))
@@ -131,7 +134,7 @@ def calibrate(validation, output_dir, *, metadata=None, test=None, test_metadata
         raise ValueError('Unknown calibration objective')
     if test_metadata and not test:
         raise ValueError('test_metadata requires a test archive')
-    grid = sorted({probability(t, 'threshold') for t in (thresholds if thresholds is not None else np.linspace(0, 1, 101))})
+    grid = sorted({probability(t, 'threshold') for t in (thresholds if thresholds is not None else (i / 100 for i in range(101)))})
     if not grid:
         raise ValueError('Threshold scan is empty')
     steps = [float(step) for step in refine_steps]
@@ -158,7 +161,7 @@ def calibrate(validation, output_dir, *, metadata=None, test=None, test_metadata
         search=dict(scope='best scanned threshold', thresholds=sorted(rows), refine_steps=steps),
         truth_policy=truth_policy, selection_split='validation', checkpoint_selection_modified=False,
         tool_source_sha256=sha256(__file__))
-    output = Path(output_dir); output.mkdir(parents=True, exist_ok=False)
+    output.mkdir(parents=True, exist_ok=False)
     write_json(output / 'validation_scan.json', dict(rows=[rows[t] for t in sorted(rows)]))
     write_json(output / 'selection.json', result)
     selection_hash = sha256(output / 'selection.json')

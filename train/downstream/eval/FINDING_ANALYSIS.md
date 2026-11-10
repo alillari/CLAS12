@@ -72,6 +72,11 @@ Every NPZ uses one-dimensional flat arrays plus complete-event offsets:
 | `endpoints` | Optional finite `(n_points, 6)` measurement-support endpoints in cm |
 | `detector`, `layer` | Optional aligned integer arrays; CLAS12 detector 1 = BMT, 2 = BST |
 
+Labels and original cluster indices must fit signed `int64`; original indices
+must be nonnegative. Unsigned NPZ/HDF5 labels within that range are normalized
+before thresholding so that rejected points retain the signed -1 sentinel.
+Every raw provenance field must span all points, and geometry must be real-valued.
+
 An aligned metadata NPZ must include exactly matching `truth` and `offsets`.
 Duplicate fields must agree; metadata cannot override contradictory archive
 contents. The existing `verified_point_identity.npz` study sidecar can therefore
@@ -148,6 +153,11 @@ to show distinct failure types first, with duplicate event/track pairs removed.
 `comparison.json` records counts and selected examples, all input hashes,
 thresholds, policies and full-cohort summaries. Examples are deliberately
 selected illustrations, **not an unbiased sample or a frequency estimate**.
+`selection_config` preserves the requested categories, example limit and minimum
+truth-cluster count, including when no example qualifies.
+`quality_summaries` contains each method's pooled efficiency at the configured
+cuts. The shared evaluator's `summaries` retain their default accepted-match
+configuration; the legacy `track_efficiency_global` field is not a 90%/90% metric.
 
 Plots compare baseline and focus model in transverse and longitudinal views,
 with assignment matrices and associated-prediction composition for every model.
@@ -161,6 +171,9 @@ between the baseline and each model. All clusters/tracks of an event move
 together, preserving track weighting. `--bootstrap-resamples` and `--seed`
 control the calculation. Replicates with no eligible truth tracks are omitted
 and counted explicitly. Intervals cover test-event sampling, not training seeds.
+Count arrays must contain nonnegative integer values no larger than `2**53-1`;
+unsigned arrays are converted before calculating signed differences. Existing
+output directories are rejected before input processing.
 
 ## Runnable synthetic example
 
@@ -196,5 +209,6 @@ Run CPU regressions with:
 
 ```bash
 python -m unittest train.downstream.tests.test_finding_analysis_tools \
+  train.downstream.tests.test_finding_analysis_edge_cases \
   train.downstream.tests.test_mc_reconstruction_metrics -v
 ```

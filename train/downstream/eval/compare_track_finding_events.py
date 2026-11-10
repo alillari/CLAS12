@@ -82,10 +82,20 @@ def paired_efficiency_interval(reference_counts, model_counts, truth_counts, *, 
     """Paired complete-event bootstrap of pooled quality-efficiency differences."""
     a, b, n = [np.asarray(x) for x in (reference_counts, model_counts, truth_counts)]
     if (a.ndim != 1 or a.shape != b.shape or a.shape != n.shape or not len(n)
+            or any(x.dtype.kind not in 'fiu' for x in (a, b, n))):
+        raise ValueError('Invalid paired event counts')
+    if (any(np.any(x > 2**53 - 1) or np.any(x != np.floor(x)) for x in (a, b, n))
             or not np.isfinite(np.concatenate([a, b, n])).all()
             or np.any((a < 0) | (b < 0) | (n < 0) | (a > n) | (b > n))
-            or n.sum() <= 0 or resamples < 1):
-        raise ValueError('Invalid paired event counts or bootstrap resamples')
+            or not isinstance(resamples, (int, np.integer)) or resamples < 1
+            or not isinstance(seed, (int, np.integer)) or seed < 0):
+        raise ValueError('Counts must be integral; bootstrap resamples must be positive and seed nonnegative')
+    # HDF5/NPZ count arrays can be unsigned. Cast before subtraction, preserving
+    # exact per-event integer values and avoiding wrapped efficiency differences.
+    a, b, n = [x.astype(np.float64) for x in (a, b, n)]
+    if n.sum() <= 0:
+        raise ValueError('Paired counts require eligible truth tracks')
+    resamples, seed = int(resamples), int(seed)
     rng = np.random.default_rng(seed); values = []
     for _ in range(resamples):
         ix = rng.integers(len(n), size=len(n)); den = n[ix].sum()
@@ -116,8 +126,14 @@ def _spec_archive(spec, root, truth_policy):
 def compare_events(manifest, output_dir, *, focus_model, min_purity=.9, min_completeness=.9,
                    min_iou=.5, categories=CATEGORIES, max_examples=3, min_truth_clusters=4,
                    bootstrap_resamples=1000, seed=42, plots=True):
-    if max_examples < 1 or min_truth_clusters < 1 or bootstrap_resamples < 1:
-        raise ValueError('Example, truth-cluster and bootstrap counts must be positive')
+    out = Path(output_dir)
+    if out.exists():
+        raise FileExistsError(f'Comparison output directory must be new: {out}')
+    if any(not isinstance(x, (int, np.integer)) or x < 1
+           for x in (max_examples, min_truth_clusters, bootstrap_resamples)):
+        raise ValueError('Example, truth-cluster and bootstrap counts must be positive integers')
+    if not isinstance(seed, (int, np.integer)) or seed < 0:
+        raise ValueError('Bootstrap seed must be a nonnegative integer')
     categories = tuple(categories)
     if not categories or any(c not in CATEGORIES for c in categories):
         raise ValueError('Unknown or empty failure categories')
@@ -164,17 +180,26 @@ def compare_events(manifest, output_dir, *, focus_model, min_purity=.9, min_comp
     for name in names[1:]:
         counts = [d['n_qualified_tracks'] for d in diagnostics[name]]
         paired[name] = paired_efficiency_interval(ref_counts, counts, nt, resamples=bootstrap_resamples, seed=seed) if nt.sum() else None
+    quality_summaries = {}
+    for name in names:
+        qualified = sum(d['n_qualified_tracks'] for d in diagnostics[name])
+        truth_count = int(nt.sum())
+        quality_summaries[name] = dict(n_true_tracks=truth_count, n_qualified_tracks=qualified,
+            quality_efficiency=qualified / truth_count if truth_count else None)
     keys = baseline.physical_keys()
     for row in selected:
         e, tid = row['event_index'], row['true_id']; row['physical_identity'] = dict(source_id=keys[e][0], original_ordinal=keys[e][1])
         row['methods'] = {name: next(t for t in diagnostics[name][e]['tracks'] if t['true_id'] == tid) for name in names}
     result = dict(baseline=names[0], focus_model=focus_model, truth_policy=truth_policy,
         quality_config=dict(vars(config)), inputs={n: a.receipt for n,a in archives.items()},
+        selection_config=dict(categories=list(categories), max_examples=int(max_examples),
+                              min_truth_clusters=int(min_truth_clusters)),
         manifest_sha256=sha256(path), tool_source_sha256=sha256(__file__),
-        summaries={n: a.summary() for n,a in totals.items()}, paired_quality_efficiency=paired,
+        summaries={n: a.summary() for n,a in totals.items()}, quality_summaries=quality_summaries,
+        paired_quality_efficiency=paired,
         candidate_counts={c: len(v) for c,v in candidates.items()}, selected=selected,
         selection='Illustrative quality failures; selected examples are not an unbiased sample')
-    out = Path(output_dir); out.mkdir(parents=True, exist_ok=False)
+    out.mkdir(parents=True, exist_ok=False)
     write_json(out / 'comparison.json', result)
     if plots:
         from train.downstream.eval.plot_finding_events import plot_comparison

@@ -85,7 +85,8 @@ def plot_comparison(events, selected, baseline, focus_model, output_stem):
               'mixing': 'Clusters from different MC tracks are mixed',
               'miss': 'The Dice association misses this MC track',
               'incomplete': 'The reconstructed track loses true clusters'}
-    with plt.rc_context({'font.size': 10, 'axes.spines.top': False, 'axes.spines.right': False, 'svg.fonttype': 'none'}):
+    with plt.rc_context({'font.size': 10, 'axes.spines.top': False, 'axes.spines.right': False,
+                         'svg.fonttype': 'none', 'text.parse_math': False, 'text.usetex': False}):
         fig = plt.figure(figsize=(13.5, height))
         gs = fig.add_gridspec(rows, 2, left=left, right=.975, bottom=.20 if geometry else .32, top=.77,
                              hspace=.5, wspace=.45 if long_names else .25, height_ratios=[1, 1, .8] if geometry else [1])

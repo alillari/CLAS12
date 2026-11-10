@@ -43,6 +43,14 @@ def vector(value, name, length=None, integer=False):
     return value
 
 
+def signed_labels(value, name, length=None):
+    """Normalize integer labels without unsigned wraparound or float promotion."""
+    value = vector(value, name, length, integer=True)
+    if value.dtype.kind == 'u' and np.any(value > np.uint64(np.iinfo(np.int64).max)):
+        raise ValueError(f'{name} must fit in signed int64')
+    return value.astype(np.int64, copy=False)
+
+
 @dataclass
 class PredictionArchive:
     arrays: dict
@@ -67,11 +75,12 @@ class PredictionArchive:
 
     def final_predictions(self, threshold=None):
         if threshold is None:
-            return self.arrays['pred'].copy()
+            return np.where(self.arrays['pred'] >= 0, self.arrays['pred'], -1)
         threshold = probability(threshold, 'assignment threshold')
         if 'scores' not in self.arrays or 'signal' not in self.arrays:
             raise ValueError('Thresholding requires raw scores and the native signal gate')
-        return np.where(self.arrays['signal'] & (self.arrays['scores'] > threshold), self.arrays['pred'], -1)
+        gate = self.arrays['signal'] & (self.arrays['pred'] >= 0) & (self.arrays['scores'] > threshold)
+        return np.where(gate, self.arrays['pred'], -1)
 
 
 def load_archive(path, *, metadata=None, prediction_key='pred', truth_policy='as_saved', require_scores=False):
@@ -94,7 +103,7 @@ def load_archive(path, *, metadata=None, prediction_key='pred', truth_policy='as
                 if key in raw and not np.array_equal(raw[key], sidecar[key]):
                     raise ValueError(f'Metadata field mismatch: {key}')
                 raw[key] = sidecar[key]
-    truth = vector(raw['truth'], 'truth', integer=True).astype(np.int64)
+    truth = signed_labels(raw['truth'], 'truth')
     if np.any(truth < -1):
         raise ValueError('Truth background must use -1')
     offsets = vector(raw['offsets'], 'offsets', integer=True)
@@ -102,7 +111,7 @@ def load_archive(path, *, metadata=None, prediction_key='pred', truth_policy='as
             or np.any(offsets[1:] < offsets[:-1])):
         raise ValueError('Invalid event offsets')
     arrays = dict(truth=truth.copy(), offsets=offsets,
-                  pred=vector(raw[prediction_key], prediction_key, len(truth), integer=True))
+                  pred=signed_labels(raw[prediction_key], prediction_key, len(truth)))
     n_events = len(offsets) - 1
     for key in ('source_id', 'original_ordinal'):
         if key in raw:
@@ -111,14 +120,20 @@ def load_archive(path, *, metadata=None, prediction_key='pred', truth_policy='as
         raise ValueError('Supply source_id and original_ordinal together')
     if 'source_id' in arrays and len(set(zip(arrays['source_id'], arrays['original_ordinal']))) != n_events:
         raise ValueError('Duplicate physical events')
-    for key in ('point_ids', 'provenance'):
-        if key in raw:
-            arrays[key] = vector(raw[key], key, len(truth), integer=True)
+    if 'point_ids' in raw:
+        arrays['point_ids'] = signed_labels(raw['point_ids'], 'point_ids', len(truth))
+        if np.any(arrays['point_ids'] < 0):
+            raise ValueError('Original point_ids must be nonnegative')
+    if 'provenance' in raw:
+        arrays['provenance'] = vector(raw['provenance'], 'provenance', len(truth), integer=True)
     raw_provenance = ('background_only', 'ownership', 'origin_noise', 'purity')
     if 'provenance' in raw and any(key in raw for key in raw_provenance):
         raise ValueError('Supply provenance codes or raw provenance fields, not both')
     if any(key in raw for key in raw_provenance[1:]) and 'background_only' not in raw:
         raise ValueError('Raw provenance fields require background_only')
+    for key in raw_provenance:
+        if key in raw:
+            vector(raw[key], key, len(truth))
     if 'provenance' not in arrays and 'background_only' in raw:
         arrays['provenance'] = metrics.cluster_provenance_from_hdf5(**{
             key: raw.get(key) for key in ('background_only', 'ownership', 'origin_noise', 'purity')})
@@ -138,9 +153,9 @@ def load_archive(path, *, metadata=None, prediction_key='pred', truth_policy='as
     for key, shape in (('xyz', (len(truth), 3)), ('endpoints', (len(truth), 6))):
         if key in raw:
             value = np.asarray(raw[key])
-            if value.shape != shape or not np.isfinite(value).all():
+            if value.shape != shape or value.dtype.kind not in 'fiu' or not np.isfinite(value).all():
                 raise ValueError(f'Invalid {key} geometry')
-            arrays[key] = value
+            arrays[key] = value.astype(np.float64, copy=False)
     for key in ('detector', 'layer'):
         if key in raw:
             arrays[key] = vector(raw[key], key, len(truth), integer=True)

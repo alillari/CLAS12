@@ -24,6 +24,7 @@ sys.path.insert(0, str(DOWNSTREAM_DIR))
 from fm4npp.models.mamba_config import backbone_version, adapter_options
 from fm4npp.pretrained import configure_pretrained_backbone
 from fm4npp.utils import YParams
+from fm4npp.datasets.track_eligibility import configure_primary_track_cut
 from fm4npp.artifact_paths import artifact_path
 from train.downstream.track_finding_contract import validate_track_finding_modes
 from train.downstream.downstream_util import require_single_process
@@ -113,6 +114,7 @@ def _write_json(path: str, payload: dict[str, Any]) -> None:
 def resolve_params(config: TrackFindingExperimentConfig) -> YParams:
     params = YParams(os.path.abspath(config.yaml_config), config.config)
     validate_track_finding_modes(vars(params), source=config.yaml_config)
+    configure_primary_track_cut(params)
     batch_size = int(config.train_batch_size)
     params.update_params({
         "continue_from_best": True,

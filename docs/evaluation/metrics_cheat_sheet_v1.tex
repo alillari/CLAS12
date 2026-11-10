@@ -1,0 +1,180 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage[margin=0.6in,headsep=14pt,footskip=18pt]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,microtype,amsmath,amssymb,booktabs,array,tabularx,fancyhdr}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{pdftitle={CLAS12 track reconstruction: metric reference},pdfauthor={CLAS12 evaluation documentation}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\AtBeginDocument{\setlength{\abovedisplayskip}{6pt}\setlength{\belowdisplayskip}{6pt}}
+\setlength{\emergencystretch}{2em}
+\setlength{\headheight}{13pt}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small CLAS12 track reconstruction}
+\fancyhead[R]{\small Metric reference / 10 November 2026}
+\fancyfoot[L]{\scriptsize mc\_reconstruction\_v1 \quad / \quad primary\_mc\_min4\_v1}
+\fancyfoot[R]{\small\thepage\,/\,2}
+\newcommand{\code}[1]{{\footnotesize\ttfamily\detokenize{#1}}}
+\newcommand{\entry}[2]{\par\vspace{3pt}\textbf{#1}\hfill\code{#2}\par}
+\newcommand{\pairsum}{\sum_e\sum_{(i,j)\in\mathcal M_e}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\begin{document}
+
+{\Large\bfseries Track reconstruction: metric reference}\par
+
+In event $e$, let $T_{ei}$ be the cluster set of eligible MC track $i$ and
+$P_{ej}$ the cluster set of predicted track $j$. There are $N_{\mathrm{MC},e}$
+eligible tracks. Eligibility retains the existing primary-particle and ownership
+requirements and at least four owned CVT clusters in the full event. Secondary,
+decay and shorter tracks are non-target; their clusters remain in the input.
+Each cluster belongs to at most one truth target and one prediction. Unassigned
+clusters belong to no $P_{ej}$.
+
+\textbf{Pair completeness, purity, IoU and Dice.}
+For a candidate truth--prediction pair,
+\begin{align*}
+ c_{eij}&=\frac{|T_{ei}\cap P_{ej}|}{|T_{ei}|},
+ & p_{eij}&=\frac{|T_{ei}\cap P_{ej}|}{|P_{ej}|},\\[3pt]
+ J_{eij}&=\frac{|T_{ei}\cap P_{ej}|}{|T_{ei}\cup P_{ej}|},
+ & D_{eij}&=\frac{2|T_{ei}\cap P_{ej}|}{|T_{ei}|+|P_{ej}|}.
+\end{align*}
+Completeness measures the recovered fraction of a truth track; purity measures
+the fraction of a prediction belonging to that truth track. Prediction size
+includes all assigned clusters, including other eligible tracks, excluded MC
+and real-data overlay. Here, a hit denotes a CVT cluster, with unit weight.
+
+\entry{Mean track Dice}{mc_track_dice_mean}
+For each event, Hungarian matching chooses a one-to-one association $\mathcal M_e$
+maximizing $\sum_{(i,j)\in\mathcal M_e}D_{eij}$; zero-overlap pairs are discarded.
+The dataset score is
+\[
+ \overline D_{\mathrm{MC}}=
+ \frac{\displaystyle\pairsum
+       \frac{2|T_{ei}\cap P_{ej}|}{|T_{ei}|+|P_{ej}|}}
+      {\displaystyle\sum_e N_{\mathrm{MC},e}}.
+\]
+Every eligible truth track has equal weight, with unmatched tracks contributing
+zero. Only one fragment of a split track can contribute, and a merged prediction
+can be associated to only one truth track. Independent non-target predictions
+have no effect on this score.
+
+\entry{Global hit completeness and purity}{mc_hit_completeness_global / mc_hit_purity_global}
+\[
+ C_{\mathrm{MC}}=
+ \frac{\displaystyle\pairsum |T_{ei}\cap P_{ej}|}
+      {\displaystyle\sum_e\sum_{i=1}^{N_{\mathrm{MC},e}}|T_{ei}|},
+ \qquad
+ P_{\mathrm{MC}}=
+ \frac{\displaystyle\pairsum |T_{ei}\cap P_{ej}|}
+      {\displaystyle\pairsum |P_{ej}|}.
+\]
+These pool cluster counts over the dataset using the Dice association.
+Completeness includes missed tracks in its denominator; purity includes every
+cluster in the associated predictions. Thus purity can remain high when many
+tracks are missed. Total impurity is $1-P_{\mathrm{MC}}$.
+
+\textbf{MC hit F1.} The harmonic mean of global hit completeness and purity is
+\[
+ F_{1,\mathrm{MC}}=
+ \frac{2C_{\mathrm{MC}}P_{\mathrm{MC}}}{C_{\mathrm{MC}}+P_{\mathrm{MC}}}
+ =\frac{2\pairsum |T_{ei}\cap P_{ej}|}
+ {\sum_e\sum_{i=1}^{N_{\mathrm{MC},e}}|T_{ei}|
+  +\pairsum |P_{ej}|}.
+\]
+For a single pair, $F_{1,eij}=2p_{eij}c_{eij}/(p_{eij}+c_{eij})=D_{eij}$:
+Dice and hit F1 are identical (zero for no overlap). Globally, MC hit F1 pools
+cluster counts, whereas mean track Dice weights each eligible track equally;
+they generally differ. This derived count ratio is zero when all eligible tracks
+are missed, and undefined when its denominator is zero.
+
+\entry{Overlay contamination and leakage}{mc_bg_contamination_global / bg_leakage_to_mc_global}
+Let $R_e=\bigcup_{(i,j)\in\mathcal M_e}P_{ej}$ be the associated predicted support,
+and $B_e$ the set of clusters verified to consist entirely of real-data overlay.
+Then
+\[
+ f_{\mathrm{overlay\ in\ MC}}=
+ \frac{\displaystyle\sum_e|R_e\cap B_e|}{\displaystyle\sum_e|R_e|},
+ \qquad
+ \ell_{\mathrm{overlay}\to\mathrm{MC}}=
+ \frac{\displaystyle\sum_e|R_e\cap B_e|}{\displaystyle\sum_e|B_e|}.
+\]
+The first is the overlay fraction of associated predictions; the second is the
+fraction of all verified overlay entering those predictions. Excluded MC and
+wrong-track clusters reduce purity but are not verified overlay. Mixed and
+MC-present/unresolved provenance are reported separately. Unknown associated
+provenance makes contamination undefined; unknown provenance anywhere makes
+leakage undefined. The separately reported contamination lower bound uses only
+the verified numerator. Any zero-denominator ratio is undefined (JSON null).
+
+\newpage
+{\Large\bfseries Track efficiency and secondary diagnostics}\par
+
+\entry{Track efficiency at specified reconstruction quality}{track_efficiency_global}
+Define the accepted edges by
+\[
+ \mathcal A_e(p_{\min},c_{\min},J_{\min})=
+ \left\{(i,j):
+ \frac{|T_{ei}\cap P_{ej}|}{|P_{ej}|}\geq p_{\min},\quad
+ \frac{|T_{ei}\cap P_{ej}|}{|T_{ei}|}\geq c_{\min},\quad
+ \frac{|T_{ei}\cap P_{ej}|}{|T_{ei}\cup P_{ej}|}\geq J_{\min}
+ \right\}.
+\]
+Choose $\mathcal E_e\subseteq\mathcal A_e$ to maximize the number of one-to-one
+accepted pairs, then their total IoU. This matching is independent of
+$\mathcal M_e$. The number and fraction of reconstructed eligible MC tracks are
+\[
+ N_{\mathrm{reconstructed}}=\sum_e|\mathcal E_e|,
+ \qquad
+ \epsilon_{\mathrm{track}}(p_{\min},c_{\min};J_{\min})=
+ \frac{\displaystyle\sum_e|\mathcal E_e|}
+      {\displaystyle\sum_e N_{\mathrm{MC},e}}.
+\]
+The standard result uses $p_{\min}=c_{\min}=J_{\min}=0.5$.
+For example, $\epsilon_{\mathrm{track}}(0.9,0.9;0.5)$ is the fraction of all eligible
+MC tracks reconstructed with at least 90\% completeness and 90\% purity.
+Increasing only $p_{\min}$ measures cleaner reconstruction without requiring
+more complete recovery. Each set of cuts requires its own accepted matching.
+
+\textbf{Related quantities.} Write $S_e=\bigcup_iT_{ei}$ for eligible support,
+$U_e=V_e\setminus S_e$ for non-target support, and $A_e=\bigcup_jP_{ej}$ for all
+assigned clusters; $V_e$ excludes padding. The event-level legacy definitions are
+
+\renewcommand{\arraystretch}{1.35}
+\begin{tabularx}{\linewidth}{@{}p{0.30\linewidth}p{0.29\linewidth}Y@{}}
+\toprule Metric & Equation & Interpretation\\\midrule
+Track purity & $|\mathcal E_e|/N_{\mathrm{pred},e}$ & Accepted fraction of predictions; distinct from cluster purity.\\
+Fake rate / miss rate & $1-|\mathcal E_e|/N_{\mathrm{pred},e}$;\newline $1-|\mathcal E_e|/N_{\mathrm{MC},e}$ & Unmatched predictions / unmatched truth tracks. Unmatched non-target predictions may be physical tracks.\\
+Background contamination & $|U_e\cap A_e|/|A_e|$ & Non-target fraction of all predictions, including independent non-target tracks.\\
+Background rejection & $|U_e\setminus A_e|/|U_e|$ & Non-target clusters left unassigned.\\
+Signal loss to background & $|S_e\setminus A_e|/|S_e|$ & Eligible clusters left unassigned.\\
+Split rate / merge rate & $N_{\mathrm{split},e}/N_{\mathrm{MC},e}$;\newline $N_{\mathrm{merged},e}/N_{\mathrm{pred},e}$ & Truths overlapping multiple predictions / predictions overlapping multiple truths.\\
+\bottomrule
+\end{tabularx}
+$N_{\mathrm{pred},e}$ counts all nonempty predictions. Splits and merges use any
+positive overlap. The \code{matched_*_mean} quantities average pair IoU, purity
+or completeness over $\mathcal E_e$; the field \code{matched_efficiency_mean}
+denotes pair completeness.
+
+\textbf{Adjusted Rand index.} For truth--prediction contingency counts $n_{ij}$
+on the chosen support, row/column sums $n_{i\cdot},n_{\cdot j}$ and
+$N=\sum_{ij}n_{ij}$,
+\[
+ \mathrm{ARI}=
+ \frac{\displaystyle\sum_{ij}\binom{n_{ij}}2-
+       \frac{\sum_i\binom{n_{i\cdot}}2\sum_j\binom{n_{\cdot j}}2}{\binom N2}}
+      {\displaystyle\frac12\!\left[\sum_i\binom{n_{i\cdot}}2+\sum_j\binom{n_{\cdot j}}2\right]-
+       \frac{\sum_i\binom{n_{i\cdot}}2\sum_j\binom{n_{\cdot j}}2}{\binom N2}}.
+\]
+\code{ari_signal} uses eligible clusters only, excluding contamination outside
+that support. The legacy single-track convention gives 1 when all its clusters
+share one prediction label, including unassigned. \code{ari_with_background}
+includes non-target truth as one additional class. ARI measures partition agreement.
+
+\textbf{Aggregation.} Historical unsuffixed diagnostics are event means over
+defined events. Global ratios pool numerators and denominators before division;
+global matched-quality means pool accepted pairs. Mean track Dice instead weights
+truth tracks equally. Full definitions, degenerate cases and provenance accounting:
+\href{mc_reconstruction_v1.pdf}{\code{mc_reconstruction_v1.pdf}}.
+All comparisons require the same truth policy, event cohort and prediction settings.
+
+\end{document}

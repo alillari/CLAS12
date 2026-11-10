@@ -14,6 +14,10 @@ then follow the task-specific route below. Technical settings are defined in
 - Signal segment IDs define instances; `-1` denotes background. With
   `track_target_mode: signal_only`, background is negative in each signal mask
   and is not an additional query target.
+- Before serialization or chunking, the adapter marks MC segments with fewer
+  than four owned clusters in the complete event as `-1`. It retains every
+  cluster and leaves physical MC provenance unchanged. Noise tagging uses the
+  same [versioned eligibility policy](../../docs/evaluation/primary_mc_min4_v1.md).
 - Samples and `--eventnumber` count **events**. The starting profile accepts
   1–512 clusters/event, uses 16 queries and a width-256 attention decoder,
   two prototype-attention refinement layers and zero Mamba input/refinement layers.
@@ -60,6 +64,11 @@ cuts, then their total IoU. Keep those definitions fixed when comparing
 runs. Changing the threshold changes the efficiency/background operating point.
 
 ## Inspect behavior
+
+The two-page [metric reference](../../docs/evaluation/metrics_cheat_sheet_v1.pdf)
+defines track efficiency, hit completeness, hit purity and prediction-level purity
+using explicit set equations. It also defines efficiency at specified purity and
+completeness cuts.
 
 | Output | Use |
 | --- | --- |

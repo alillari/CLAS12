@@ -1,5 +1,12 @@
 # Noise tagging
 
+CLAS12 noise supervision uses the shared
+[minimum-four-cluster eligibility policy](../../docs/evaluation/primary_mc_min4_v1.md).
+Clusters belonging to an MC segment with fewer than four owned clusters in the
+complete event become noise-class examples (`1`); exactly four clusters remain
+eligible signal. This is applied before serialization/chunking in both HDF5 and
+legacy ragged adapter loaders. Physical primary/MC provenance remains unchanged.
+
 ## HDF5 AdapterOnly benchmark
 
 This branch integrates noise tagging with the published HDF5 cluster product.

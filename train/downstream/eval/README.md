@@ -96,6 +96,53 @@ point from final test performance would reuse the test labels.
 
 ## Track-finding background policy
 
+### Phase 1 MC reconstruction evaluator
+
+The two-page [metric reference](../../../docs/evaluation/metrics_cheat_sheet_v1.pdf)
+([editable LaTeX](../../../docs/evaluation/metrics_cheat_sheet_v1.tex)) gives explicit
+set-based equations for track finding with short scientific descriptions. It
+includes efficiency at specified purity and completeness cuts, historical
+diagnostics, and aggregation conventions.
+
+The opt-in shared evaluator adds `mc_track_dice_mean`: event-local Hungarian
+matching maximizing total Dice, averaged over all supplied eligible truth tracks
+with missed tracks contributing zero. It also provides pooled hit completeness,
+purity, provenance-aware contamination diagnostics, explicit event-macro variants,
+and the unchanged independent accepted-match efficiency. Independent non-target
+predictions are neutral to the primary score and remain visible in diagnostics.
+
+The [versioned evaluation specification](../../../docs/evaluation/mc_reconstruction_v1.pdf)
+defines the equations, eligibility policy, provenance limits, legacy metrics,
+worked examples and input contract. Its [LaTeX source](../../../docs/evaluation/mc_reconstruction_v1.tex)
+is the normative editable specification. The evaluator preserves supplied labels;
+`n_truth_tracks_below_policy_min_clusters` flags a discrepancy with the established
+four-cluster policy without silently relabeling historical data. The subsequent
+[eligibility patch](../../../docs/evaluation/primary_mc_min4_v1.md) now enforces
+that cut in both adapter loaders. Pass `--truth-policy primary_mc_min4_v1` to
+explicitly rescore an older prediction archive under the same policy.
+
+For saved final assignments, run from the repository root:
+
+```bash
+python -m train.downstream.eval.rescore_track_finding \
+  --input /path/to/predictions.npz --prediction-key pred coatjava \
+  --output /path/to/new_summary.json
+```
+
+The NPZ contains flat `truth`/prediction arrays and event `offsets`. Optional
+provenance is supplied as aligned codes or existing HDF5 scalar fields. An HDF5
+join additionally requires physical event identities and original cluster indices;
+see the specification. Missing provenance is explicit and never inferred from
+the non-target label. Overlay metrics count verified pure-overlay clusters;
+mixed and unresolved provenance have separate counts and fractions.
+
+The API is `event_mc_reconstruction_metrics` plus `MCReconstructionAccumulator`
+in `track_finding_metrics.py`. Existing training, checkpoint selection and model
+inference entry points continue to use the original metrics. This phase does not
+automatically rescore or reselect checkpoints.
+
+### Existing training and inference contract
+
 Track finding supports `track_target_mode: signal_only`. Background clusters
 are negative members of every signal-track mask, never a separate query target.
 The query-level no-object class and the point assignment threshold remain active.
@@ -148,6 +195,16 @@ the count of eligible one-to-one pairs and uses total IoU to break ties.
 The per-truth-track table contains valid signal labels even when their momentum
 is unavailable. Momentum bins use only finite track kinematics. Reevaluate
 older results from a saved adapter checkpoint before campaign collation.
+
+Finding summaries, threshold-sweep JSONs, and campaign headline records also
+include `track_eligibility_contract`, read from the effective evaluation dataset.
+The fixed contract is `primary_mc_min4_v1`: at least four owned clusters in the
+full event, with background label `-1`. Threshold CSVs and campaign tables expose
+its fields as `track_eligibility_*` columns. The campaign runner reevaluates
+caches with missing or different contracts, even if their metric version is 2;
+collation rejects them before writing aggregate files. A subprocess exit code of
+zero is insufficient without a compatible output contract. See the
+[eligibility specification](../../../docs/evaluation/primary_mc_min4_v1.md#finding-evaluation-metadata-and-reuse).
 
 Each training invocation creates a fresh directory beside its training log:
 

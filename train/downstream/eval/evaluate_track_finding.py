@@ -37,7 +37,9 @@ from track_finding_metrics import (  # noqa: E402
     summarize_event_metrics,
     track_momentum_by_label,
 )
-from train.downstream.track_finding_contract import FINDING_METRICS_VERSION, validate_track_finding_modes
+from train.downstream.track_finding_contract import (
+    finding_evaluation_metadata, finding_eligibility_columns, validate_track_finding_modes,
+)
 from track_finding_trainer import DownstreamTrainer  # noqa: E402
 from train.downstream.input_representation import representation_input
 
@@ -400,6 +402,7 @@ def run_threshold_sweep(
 
     thresholds = normalize_thresholds(args.assignment_thresholds)
     validate_track_finding_modes(analysis, source="threshold sweep")
+    evaluation_metadata = finding_evaluation_metadata(trainer.val_data_loader.dataset)
     partitions = ("calibration", "heldout")
     adapter_accumulators = {
         threshold: {partition: EventMetricAccumulator() for partition in partitions}
@@ -535,7 +538,7 @@ def run_threshold_sweep(
         if selected_coatjava is not None else {}
     )
     provenance = {
-        "finding_metrics_version": FINDING_METRICS_VERSION,
+        **evaluation_metadata,
         "run_name": analysis.get("run_name"),
         "analysis_tag": analysis.get("analysis_tag"),
         "checkpoint": str(Path(analysis["checkpoint"]).resolve()),
@@ -553,6 +556,8 @@ def run_threshold_sweep(
         "selected_threshold": selected_threshold,
         "evaluate_coatjava": evaluate_coatjava,
     }
+    for row in rows:
+        row.update(finding_eligibility_columns(evaluation_metadata))
     write_csv(output_dir / "threshold_metrics.csv", rows)
     write_json(output_dir / "threshold_sweep.json", {
         **provenance,
@@ -641,6 +646,7 @@ def main() -> None:
     per_track_metric_rows: list[dict[str, Any]] = []
     try:
         trainer.launch()
+        evaluation_metadata = finding_evaluation_metadata(trainer.val_data_loader.dataset)
         load_checkpoint(trainer, checkpoint, use_pretrained)
         match_config = MatchConfig(
             background_label=int(analysis.get("background_label", getattr(params, "background_label", -1))),
@@ -648,6 +654,8 @@ def main() -> None:
             min_purity=float(analysis.get("match_min_purity", getattr(params, "match_min_purity", 0.5))),
             min_efficiency=float(analysis.get("match_min_efficiency", getattr(params, "match_min_efficiency", 0.5))),
         )
+        if match_config.background_label != evaluation_metadata["track_eligibility_contract"]["background_label"]:
+            raise ValueError("Match background_label differs from the evaluation dataset's eligibility contract")
         assignment_option = int(analysis.get("assignment_option", getattr(params, "assignment_option", 2)))
         assignment_threshold = float(analysis.get("assignment_threshold", getattr(params, "assignment_threshold", 0.0)))
         momentum_scale = float(analysis.get("target_momentum_scale_to_gev",
@@ -801,7 +809,7 @@ def main() -> None:
             binned_rows.extend(method_bins)
 
         summary = {
-            "finding_metrics_version": FINDING_METRICS_VERSION,
+            **evaluation_metadata,
             "run_name": analysis.get("run_name"),
             "analysis_tag": analysis.get("analysis_tag"),
             "model_yaml": os.path.abspath(analysis["model_yaml"]),
@@ -871,7 +879,7 @@ def main() -> None:
                         if isinstance(value, (int, float)) or value is None:
                             stream.write(json.dumps(json_safe({
                                 "run_name": analysis.get("run_name"),
-                                "finding_metrics_version": FINDING_METRICS_VERSION,
+                                **evaluation_metadata,
                                 "record_type": "track_finding_metric",
                                 "metric_view": metric_view,
                                 "method": method,
@@ -882,7 +890,7 @@ def main() -> None:
                 for key, value in deltas.items():
                     stream.write(json.dumps(json_safe({
                         "run_name": analysis.get("run_name"),
-                        "finding_metrics_version": FINDING_METRICS_VERSION,
+                        **evaluation_metadata,
                         "record_type": "track_finding_comparison",
                         "metric_view": metric_view,
                         "method": "adapter_minus_coatjava",

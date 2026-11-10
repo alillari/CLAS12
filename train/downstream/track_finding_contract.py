@@ -2,9 +2,39 @@
 
 from collections.abc import Mapping
 
+from fm4npp.datasets.track_eligibility import primary_track_eligibility_contract
+
 
 SIGNAL_ONLY = "signal_only"
 FINDING_METRICS_VERSION = 2
+
+
+def validate_finding_evaluation_summary(summary: Mapping, *, source: str = "evaluation") -> None:
+    """Require both the metric definition and the fixed four-cluster truth policy."""
+    if not isinstance(summary, Mapping) or summary.get("finding_metrics_version") != FINDING_METRICS_VERSION:
+        raise ValueError(f"Reevaluate {source}: incompatible or missing finding_metrics_version")
+    expected = primary_track_eligibility_contract()
+    if summary.get("track_eligibility_contract") != expected:
+        raise ValueError(
+            f"Reevaluate {source}: incompatible or missing track_eligibility_contract; "
+            f"expected {expected!r}, got {summary.get('track_eligibility_contract')!r}"
+        )
+
+
+def finding_evaluation_metadata(dataset) -> dict:
+    """Read effective evaluation truth from the loader, never infer it from weights."""
+    contract = getattr(dataset, "track_eligibility_contract", None)
+    metadata = {"finding_metrics_version": FINDING_METRICS_VERSION,
+                "track_eligibility_contract": contract}
+    validate_finding_evaluation_summary(metadata, source="evaluation dataset")
+    metadata["track_eligibility_contract"] = dict(contract)
+    return metadata
+
+
+def finding_eligibility_columns(summary: Mapping) -> dict:
+    """Flat, explicit policy fields for CSV outputs accompanying a validated summary."""
+    return {f"track_eligibility_{key}": value
+            for key, value in summary["track_eligibility_contract"].items()}
 
 
 def validate_track_finding_modes(config: Mapping, *, source: str = "configuration") -> None:

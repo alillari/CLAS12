@@ -1,0 +1,25 @@
+name: Finding analysis CPU regressions
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  finding-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU analysis dependencies
+        run: python -m pip install numpy scipy scikit-learn matplotlib h5py
+      - name: Check calibration, pairing and MC metric contracts
+        env:
+          MPLBACKEND: Agg
+        run: >-
+          python -m unittest
+          train.downstream.tests.test_finding_analysis_tools
+          train.downstream.tests.test_mc_reconstruction_metrics -v

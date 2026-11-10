@@ -94,6 +94,12 @@ reports the held-out partition separately. Inspect `threshold_metrics.csv`,
 `threshold_sweep.json` and `selected_heldout_summary.json`; selecting an operating
 point from final test performance would reuse the test labels.
 
+For validation-only **Dice or quality-efficiency calibration from saved raw
+predictions**, and paired failure-event selection/plots with arbitrary named
+models, see [Saved-prediction finding analysis](FINDING_ANALYSIS.md). Those CPU
+tools use the MC reconstruction evaluator, retain the native gate, verify paired
+point identities and keep held-out reporting separate from threshold selection.
+
 ## Track-finding background policy
 
 ### Phase 1 MC reconstruction evaluator

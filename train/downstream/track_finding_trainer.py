@@ -52,6 +52,7 @@ from downstream_util import get_early_stopping_config, require_single_process
 from track_finding_metrics import MatchConfig, EventMetricAccumulator, event_track_metrics, summarize_event_metrics
 from train.downstream.track_finding_contract import decoder_settings, validate_checkpoint_forward, validate_track_finding_modes
 from train.downstream.track_finding_history import ValidationHistory
+from fm4npp.datasets.track_eligibility import configure_primary_track_cut
 from track_finding_targets import (
     SIGNAL_ONLY,
     build_track_instance_targets,
@@ -83,6 +84,7 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
 
         self.params = params
+        configure_primary_track_cut(params)
         params.hilbert_angular_grid = validate_hilbert_grid(
             getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
         )

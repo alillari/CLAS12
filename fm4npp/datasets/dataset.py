@@ -22,6 +22,7 @@ except Exception:
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from .cvt_downstream import CVTDownstreamSource, downstream_split
+from .track_eligibility import EligibleTrackLabelView, EligibleNoiseLabelView
 
 #torch.manual_seed(42)
 
@@ -369,7 +370,8 @@ class TPCBatchDataset(Dataset):
                  input_representation='center_only',
                  hilbert_angular_grid=DEFAULT_HILBERT_GRID,
                  reader_type='ragged_mmap',
-                 compute_neighbors=True):
+                 compute_neighbors=True,
+                 apply_primary_track_cut=False):
 
         self.data_root = data_root
         self.split = split
@@ -377,7 +379,9 @@ class TPCBatchDataset(Dataset):
             raise ValueError(f"Unsupported downstream reader_type: {reader_type}")
         if reader_type == 'hdf5' and input_layout != 'xyz':
             raise ValueError('HDF5 clusters.xyz requires input_layout=xyz (coordinates in cm)')
-        self.hdf5_source = CVTDownstreamSource(data_root, split) if reader_type == 'hdf5' else None
+        self.apply_primary_track_cut = bool(apply_primary_track_cut)
+        self.hdf5_source = (CVTDownstreamSource(data_root, split,
+            apply_primary_track_cut=self.apply_primary_track_cut) if reader_type == 'hdf5' else None)
         self.compute_neighbors = bool(compute_neighbors or return_knn_target)
         self.memmap_feature = self._open_field('features')
         self.memmap_seg_target = self._open_field('seg_target')
@@ -413,6 +417,11 @@ class TPCBatchDataset(Dataset):
         self.memmap_noise_target, self.has_noise_target = self._open_optional_point_target(
             f'noise_target_{split}', require=require_noise_target
         )
+        if self.apply_primary_track_cut and self.hdf5_source is None:
+            raw_seg_target = self.memmap_seg_target
+            self.memmap_seg_target = EligibleTrackLabelView(raw_seg_target)
+            if self.has_noise_target:
+                self.memmap_noise_target = EligibleNoiseLabelView(raw_seg_target, self.memmap_noise_target)
         self.return_coatjava_seg_pred = bool(
             return_coatjava_seg_pred or require_coatjava_seg_pred
         )
@@ -1351,6 +1360,7 @@ def get_data_loader(params, distributed):
                                     version = params.data_version, 
                                     split = downstream_split(params, 'train'),
                                     reader_type=getattr(params, 'reader_type', 'ragged_mmap'),
+                                    apply_primary_track_cut=getattr(params, 'apply_primary_track_cut', False),
                                     compute_neighbors=getattr(params, 'compute_neighbors', True),
                                     group_size = params.group_size, 
                                     normalize = True, 
@@ -1387,6 +1397,7 @@ def get_data_loader(params, distributed):
                                    version = params.data_version, 
                                    split = downstream_split(params, 'validation'),
                                    reader_type=getattr(params, 'reader_type', 'ragged_mmap'),
+                                   apply_primary_track_cut=getattr(params, 'apply_primary_track_cut', False),
                                    compute_neighbors=getattr(params, 'compute_neighbors', True),
                                    num_pred_points = params.klen,
                                    group_size = params.group_size, 
@@ -1483,6 +1494,7 @@ def get_val_loader(params, distributed):
                                    version=params.data_version,
                                    split=downstream_split(params, 'test'),
                                    reader_type=getattr(params, 'reader_type', 'ragged_mmap'),
+                                   apply_primary_track_cut=getattr(params, 'apply_primary_track_cut', False),
                                    compute_neighbors=getattr(params, 'compute_neighbors', True),
                                    num_pred_points=params.klen,
                                    group_size=params.group_size,

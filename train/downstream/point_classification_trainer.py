@@ -23,6 +23,7 @@ from cosine_annealing_warmup import CosineAnnealingWarmupRestarts # pip install 
 sys.path.append('../..')
 
 from fm4npp.utils import *
+from fm4npp.datasets.track_eligibility import configure_primary_track_cut
 from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
 from train.downstream.input_representation import (
     input_config, representation_input, validate_input_representation, validate_checkpoint_inputs,
@@ -125,6 +126,7 @@ class DownstreamTrainer():
             # Noise is an event-level task: selecting a truth segment removes
             # precisely the negative examples this head needs to learn from.
             self.params["adapter_sample_mode"] = "event"
+            configure_primary_track_cut(self.params)
         print("running on rank {} with world size {}".format(self.world_rank, self.world_size))
 
 

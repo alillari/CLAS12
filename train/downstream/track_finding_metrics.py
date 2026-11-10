@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Any
 
 import numpy as np
@@ -322,3 +323,282 @@ def track_momentum_by_label(
         p = float(np.sqrt(np.dot(vec, vec)))
         out[int(label)] = {"p_gev": p, "pt_gev": pt}
     return out
+
+
+# Opt-in offline evaluation. The legacy functions above and their consumers
+# (including training/checkpoint selection) intentionally retain their contract.
+MC_RECONSTRUCTION_VERSION = "mc_reconstruction_v1"
+
+
+class ClusterProvenance(IntEnum):
+    """Cluster composition, independent of whether its MC track is eligible."""
+
+    UNKNOWN = 0
+    MC_ONLY = 1
+    OVERLAY_ONLY = 2
+    MIXED = 3  # verified MC and measured-overlay members
+    MC_PRESENT_UNRESOLVED = 4  # some MC; remaining member origins unresolved
+
+
+def _point_array(value, name, size=None, *, integer=False, boolean=False):
+    array = np.asarray(value)
+    if array.ndim != 1 or (size is not None and len(array) != size):
+        raise ValueError(f"{name} must be a one-dimensional aligned point array")
+    if integer and array.dtype.kind not in "iu":
+        raise ValueError(f"{name} must contain integer labels")
+    if boolean and not np.isin(array, [0, 1]).all():
+        raise ValueError(f"{name} must contain only booleans or 0/1")
+    return array.astype(bool) if boolean else array
+
+
+def cluster_provenance_from_hdf5(*, background_only, ownership=None,
+                                 origin_noise=None, purity=None):
+    """Conservatively interpret existing cvt-clusters-h5-v1 scalar sidecars.
+
+    Only background_only (or its checked ownership=0 equivalent) verifies pure
+    overlay. origin_noise=False establishes some MC, not MC-only composition.
+    A strict-primary purity of exactly one verifies MC-only composition. The
+    persisted scalars do not establish which other clusters are MC/overlay mixed.
+    No truth labels are created, removed, or modified here.
+    """
+    bg = _point_array(background_only, "background_only", boolean=True)
+    n = len(bg)
+    result = np.full(n, ClusterProvenance.UNKNOWN, dtype=np.int8)
+    if origin_noise is not None:
+        noise = _point_array(origin_noise, "origin_noise", n, boolean=True)
+        if np.any(bg & ~noise):
+            raise ValueError("background_only contradicts MC origin evidence")
+        result[~noise] = ClusterProvenance.MC_PRESENT_UNRESOLVED
+    if ownership is not None:
+        owner = _point_array(ownership, "ownership", n, integer=True)
+        if not np.isin(owner, [0, 1, 2, 3]).all() or np.any((owner == 0) != bg):
+            raise ValueError("ownership contradicts background_only or its schema")
+        mc_evidence = np.isin(owner, [1, 2])
+        if origin_noise is not None and np.any(mc_evidence & noise):
+            raise ValueError("primary ownership contradicts origin_noise")
+        result[mc_evidence] = ClusterProvenance.MC_PRESENT_UNRESOLVED
+        if purity is not None:
+            fraction = _point_array(purity, "purity", n)
+            if not np.isfinite(fraction).all() or np.any((fraction < 0) | (fraction > 1)):
+                raise ValueError("purity must be finite and in [0, 1]")
+            if np.any((owner == 1) & (fraction <= 0.5)) or np.any(bg & (fraction != 0)):
+                raise ValueError("purity contradicts ownership")
+            # Exact equality: rounding a nearly-pure cluster up would overclaim.
+            result[(owner == 1) & (fraction == 1)] = ClusterProvenance.MC_ONLY
+    elif purity is not None:
+        raise ValueError("purity requires ownership evidence")
+    result[bg] = ClusterProvenance.OVERLAY_ONLY
+    return result
+
+
+_MC_COUNT_NAMES = (
+    "n_mc_dice_matches", "n_mc_correct_points", "n_mc_associated_pred_points",
+    "n_mc_other_track_points", "n_mc_nontarget_points",
+    "n_split_true_tracks", "n_merged_pred_tracks", "n_non_target_only_pred_tracks",
+    "n_mc_overlap_unassociated_pred_tracks", "n_background_assigned_points",
+    "n_signal_unassigned_points", "n_truth_tracks_below_policy_min_clusters",
+    "n_events_with_provenance",
+) + tuple(f"n_{prefix}{kind}_points" for prefix in ("", "mc_associated_", "mc_nontarget_")
+          for kind in ("mc_only", "overlay_only", "mixed", "mc_present_unresolved", "unknown"))
+
+
+def _mc_ratios(counts):
+    c = counts
+    associated = c["n_mc_associated_pred_points"]
+    overlay = c["n_mc_associated_overlay_only_points"]
+    unknown = c["n_mc_associated_unknown_points"]
+    ratios = {
+        "mc_track_dice": _safe_div(c["mc_track_dice_sum"], c["n_true_tracks"]),
+        "mc_hit_completeness": _safe_div(c["n_mc_correct_points"], c["n_signal_points"]),
+        "mc_hit_purity": _safe_div(c["n_mc_correct_points"], associated),
+        "mc_hit_impurity": _safe_div(associated - c["n_mc_correct_points"], associated),
+        "mc_nontarget_contamination": _safe_div(c["n_mc_nontarget_points"], associated),
+        "mc_other_track_contamination": _safe_div(c["n_mc_other_track_points"], associated),
+        # These two metrics concern VERIFIED PURE overlay clusters, not all
+        # non-target labels or an estimated fraction of mixed-cluster members.
+        "mc_bg_contamination": None if unknown else _safe_div(overlay, associated),
+        "bg_leakage_to_mc": (None if c["n_unknown_points"] else
+                             _safe_div(overlay, c["n_overlay_only_points"])),
+        "mc_bg_contamination_lower_bound": _safe_div(overlay, associated),
+        "mc_provenance_coverage": _safe_div(associated - unknown, associated),
+        "provenance_coverage": _safe_div(c["n_points"] - c["n_unknown_points"], c["n_points"]),
+        "split_rate": _safe_div(c["n_split_true_tracks"], c["n_true_tracks"]),
+        "merge_rate": _safe_div(c["n_merged_pred_tracks"], c["n_pred_tracks"]),
+        "unmatched_predicted_fraction": _safe_div(c["n_pred_tracks"] - c["n_matched_tracks"], c["n_pred_tracks"]),
+        "miss_rate": _safe_div(c["n_true_tracks"] - c["n_matched_tracks"], c["n_true_tracks"]),
+        "non_target_only_predicted_fraction": _safe_div(c["n_non_target_only_pred_tracks"], c["n_pred_tracks"]),
+        "mc_overlap_unassociated_predicted_fraction": _safe_div(c["n_mc_overlap_unassociated_pred_tracks"], c["n_pred_tracks"]),
+        "background_contamination": _safe_div(c["n_background_assigned_points"],
+            c["n_signal_points"] - c["n_signal_unassigned_points"] + c["n_background_assigned_points"]),
+        "background_rejection": _safe_div(c["n_background_points"] - c["n_background_assigned_points"], c["n_background_points"]),
+        "signal_loss_to_background": _safe_div(c["n_signal_unassigned_points"], c["n_signal_points"]),
+    }
+    for kind in ("mc_only", "overlay_only", "mixed", "mc_present_unresolved", "unknown"):
+        ratios[f"mc_nontarget_{kind}_fraction"] = _safe_div(c[f"n_mc_nontarget_{kind}_points"], associated)
+        ratios[f"mc_associated_{kind}_fraction"] = _safe_div(c[f"n_mc_associated_{kind}_points"], associated)
+    return ratios
+
+
+def event_mc_reconstruction_metrics(
+    truth_labels, pred_labels, valid_mask=None, pred_signal_mask=None,
+    config: MatchConfig | None = None, *, provenance=None, point_ids=None,
+):
+    """Add Phase-1 metrics to an unchanged legacy event result.
+
+    Input is one complete event of FINAL disjoint prediction labels. Truth is
+    the existing eligible-track label array, never reselected in this function.
+    point_ids are unique original cluster indices, used only for reproducible
+    assignment ties. See docs/evaluation/mc_reconstruction_v1.tex for the contract.
+    """
+    config = config or MatchConfig()
+    truth = _point_array(truth_labels, "truth_labels", integer=True)
+    pred = _point_array(pred_labels, "pred_labels", len(truth), integer=True)
+    valid = (np.ones(len(truth), dtype=bool) if valid_mask is None else
+             _point_array(valid_mask, "valid_mask", len(truth), boolean=True))
+    selected = (pred >= 0 if pred_signal_mask is None else
+                _point_array(pred_signal_mask, "pred_signal_mask", len(truth), boolean=True) & (pred >= 0))
+    if np.any(valid & (truth < 0) & (truth != config.background_label)):
+        raise ValueError("Valid truth has an unknown negative label; mask padding explicitly")
+    points = (np.arange(len(truth)) if point_ids is None else
+              _point_array(point_ids, "point_ids", len(truth), integer=True))
+    if len(np.unique(points[valid])) != int(valid.sum()):
+        raise ValueError("point_ids must be unique within an event")
+    origins = (np.full(len(truth), ClusterProvenance.UNKNOWN, dtype=np.int8) if provenance is None else
+               _point_array(provenance, "provenance", len(truth), integer=True))
+    if not np.isin(origins[valid], list(ClusterProvenance)).all():
+        raise ValueError("Unknown provenance code")
+    signal = valid & (truth != config.background_label)
+    if np.any(signal & (origins == ClusterProvenance.OVERLAY_ONLY)):
+        raise ValueError("Eligible MC truth cannot be verified pure overlay")
+    selected = selected & valid
+    # Canonical order by the smallest ORIGINAL cluster index in each disjoint
+    # set. Independent of numerical track IDs and of input serialization when
+    # stable point_ids are supplied. No epsilon perturbation of Dice weights.
+    true_ids = sorted(np.unique(truth[signal]), key=lambda t: int(points[signal & (truth == t)].min()))
+    pred_ids = sorted(np.unique(pred[selected]), key=lambda p: int(points[selected & (pred == p)].min()))
+    tsets = [signal & (truth == t) for t in true_ids]
+    psets = [selected & (pred == p) for p in pred_ids]
+    tsizes = np.array([int(t.sum()) for t in tsets], dtype=np.int64)
+    psizes = np.array([int(p.sum()) for p in psets], dtype=np.int64)
+    intersections = np.zeros((len(psets), len(tsets)), dtype=np.int64)
+    for j, p in enumerate(psets):
+        for i, t in enumerate(tsets):
+            intersections[j, i] = np.count_nonzero(p & t)
+    dice = 2.0 * intersections / (psizes[:, None] + tsizes[None, :])
+    matches, associated = [], np.zeros(len(truth), dtype=bool)
+    if dice.size:
+        # Independent non-target predictions must not even influence tie order.
+        active = np.flatnonzero(intersections.sum(axis=1) > 0)
+        js, its = linear_sum_assignment(-dice[active])
+        for local_j, i in zip(js, its):
+            j = active[local_j]
+            if intersections[j, i] == 0:
+                continue  # zero-overlap solver pairs are NOT MC associations
+            associated |= psets[j]
+            matches.append({"true_id": int(true_ids[i]), "pred_id": int(pred_ids[j]),
+                "intersection": int(intersections[j, i]), "true_size": int(tsizes[i]),
+                "pred_size": int(psizes[j]), "dice": float(dice[j, i])})
+    # Independent eligible-first IoU matching, with its established thresholds.
+    row = event_track_metrics(truth, pred, valid, selected, config)
+    row.update({
+        "mc_reconstruction_version": MC_RECONSTRUCTION_VERSION,
+        "legacy_match_config": dict(vars(config)),
+        "dice_matches": matches,
+        "mc_track_dice_sum": float(sum(m["dice"] for m in matches)),
+        "n_mc_dice_matches": len(matches),
+        "n_mc_correct_points": sum(m["intersection"] for m in matches),
+        "n_mc_associated_pred_points": int(associated.sum()),
+        "n_mc_other_track_points": int((associated & signal).sum()) - sum(m["intersection"] for m in matches),
+        "n_mc_nontarget_points": int((associated & valid & ~signal).sum()),
+        "n_split_true_tracks": int(((intersections > 0).sum(axis=0) > 1).sum()),
+        "n_merged_pred_tracks": int(((intersections > 0).sum(axis=1) > 1).sum()),
+        "n_non_target_only_pred_tracks": int((intersections.sum(axis=1) == 0).sum()),
+        "n_mc_overlap_unassociated_pred_tracks": int((intersections.sum(axis=1) > 0).sum()) - len(matches),
+        "n_background_assigned_points": int((valid & ~signal & selected).sum()),
+        "n_signal_unassigned_points": int((signal & ~selected).sum()),
+        # Audit only: never silently impose a new eligibility cut on old labels.
+        "n_truth_tracks_below_policy_min_clusters": int((tsizes < 4).sum()),
+        "n_events_with_provenance": int(provenance is not None),
+    })
+    for prefix, mask in (("", valid), ("mc_associated_", associated),
+                         ("mc_nontarget_", associated & ~signal)):
+        for kind in ClusterProvenance:
+            row[f"n_{prefix}{kind.name.lower()}_points"] = int((mask & (origins == kind)).sum())
+    row["mc_event_metrics"] = _mc_ratios(row)
+    return row
+
+
+class MCReconstructionAccumulator:
+    """Pool sufficient counts, not batch means; retain all legacy summaries.
+
+    add() accepts complete-event results. merge() accepts another accumulator
+    with the same profile/accepted-match configuration (e.g. one per batch).
+    """
+
+    def __init__(self):
+        self.legacy = EventMetricAccumulator()
+        self.counts = {k: 0 for k in _MC_COUNT_NAMES}
+        self.dice_sum = 0.0
+        self.accepted_sums = {k: 0.0 for k in ("iou", "purity", "efficiency")}
+        self.macro_sums, self.macro_n = {}, {}
+        self.match_config = None
+
+    def _check_config(self, config):
+        if self.match_config is not None and self.match_config != config:
+            raise ValueError("Cannot combine different accepted-match configurations")
+        self.match_config = dict(config)
+
+    def add(self, row):
+        if row.get("mc_reconstruction_version") != MC_RECONSTRUCTION_VERSION:
+            raise ValueError("Expected a versioned MC reconstruction event row")
+        self._check_config(row["legacy_match_config"])
+        self.legacy.add(row)
+        for k in self.counts:
+            self.counts[k] += int(row[k])
+        self.dice_sum += row["mc_track_dice_sum"]
+        for k in self.accepted_sums:
+            self.accepted_sums[k] += sum(m[k] for m in row["matches"])
+        for k, value in row["mc_event_metrics"].items():
+            if value is not None:
+                self.macro_sums[k] = self.macro_sums.get(k, 0.0) + value
+                self.macro_n[k] = self.macro_n.get(k, 0) + 1
+
+    def merge(self, other):
+        if not isinstance(other, MCReconstructionAccumulator):
+            raise TypeError("Expected MCReconstructionAccumulator")
+        if other is self:
+            raise ValueError("Cannot merge an accumulator into itself")
+        if other.match_config is not None:
+            self._check_config(other.match_config)
+        self.legacy.n_events += other.legacy.n_events
+        for dest, source in ((self.legacy.counts, other.legacy.counts),
+                             (self.legacy.sums, other.legacy.sums),
+                             (self.legacy.observations, other.legacy.observations),
+                             (self.counts, other.counts), (self.accepted_sums, other.accepted_sums),
+                             (self.macro_sums, other.macro_sums), (self.macro_n, other.macro_n)):
+            for k, v in source.items():
+                dest[k] = dest.get(k, 0) + v
+        self.dice_sum += other.dice_sum
+
+    def summary(self):
+        result = self.legacy.summary()
+        # Explicit aliases: the historical unsuffixed values remain unchanged.
+        result.update({k + "_event_macro": result[k] for k in EVENT_MEAN_METRICS})
+        result.update(self.counts)
+        result["mc_track_dice_sum"] = self.dice_sum
+        for k, v in _mc_ratios(result).items():
+            result["mc_track_dice_mean" if k == "mc_track_dice" else k + "_global"] = v
+            result[k + "_event_macro"] = _safe_div(self.macro_sums.get(k, 0), self.macro_n.get(k, 0))
+        for k, v in self.accepted_sums.items():
+            result[f"matched_{k}_mean_global"] = _safe_div(v, result["n_matched_tracks"])
+        result.update({"mc_reconstruction_version": MC_RECONSTRUCTION_VERSION,
+                       "legacy_match_config": self.match_config,
+                       "mc_event_macro_observations": dict(self.macro_n)})
+        return result
+
+
+def summarize_mc_reconstruction_metrics(rows):
+    accumulator = MCReconstructionAccumulator()
+    for row in rows:
+        accumulator.add(row)
+    return accumulator.summary()

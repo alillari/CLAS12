@@ -202,6 +202,7 @@ def eval_command(run: dict[str, Any]) -> list[str]:
 def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_fraction: float = 0.8) -> dict[str, Any]:
     """Validate aligned event labels in the published product's splits."""
     from fm4npp.datasets.cvt_downstream import CVTDownstreamSource
+    from fm4npp.datasets.track_eligibility import eligible_primary_labels, PRIMARY_TRACK_POLICY
     hdf5 = (data_root / "manifest.json").is_file()
     split_rows: dict[str, dict[str, Any]] = {}
     for split in (("train", "validation", "test") if hdf5 else ("pretrain", "test")):
@@ -214,7 +215,7 @@ def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_f
         n = min(len(features), len(seg), len(coatjava), int(max_events))
         rows = []
         for idx in range(n):
-            labels = np.asarray(seg[idx])
+            labels = eligible_primary_labels(np.asarray(seg[idx]))
             coatjava_labels = np.asarray(coatjava[idx])
             signal = labels[labels != -1]
             rows.append({
@@ -226,6 +227,7 @@ def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_f
             })
         fraction = float(np.mean([row["n_signal_tracks"] > 1 for row in rows])) if rows else 0.0
         split_rows[split] = {
+            "track_eligibility_policy": PRIMARY_TRACK_POLICY,
             "feature_events": len(features), "seg_target_events": len(seg),
             "coatjava_seg_pred_events": len(coatjava), "sampled_events": n,
             "multitrack_fraction": fraction,

@@ -27,6 +27,23 @@ eta/phi/r, serialize with calibrated12 band-Hilbert ordering and construct
 outward-band coordinate targets. Point cuts and target construction affect the
 training population/objective; preserve them when comparing these recipes.
 
+The shared pretraining and downstream default is `hilbert_angular_grid: unit_v2`.
+It maps normalized phi and eta over the full 1,024-cell axes within each detector
+band. Input coordinates retain their full precision. Outward-neighbor targets
+are computed before the Hilbert permutation and follow their source clusters.
+
+To resume or evaluate a historical backbone or adapter, set the model recipe to
+`hilbert_angular_grid: legacy_v1`. This reproduces the original scaling by 10,000
+and clipping to 1,023. New checkpoints record their grid, and pretraining and
+downstream loading reject a grid mismatch. Unmarked historical checkpoints are
+interpreted as `legacy_v1`. Use the same setting when fitting an adapter to a
+frozen backbone and when evaluating that adapter.
+
+The v6 sweep includes explicit `scale_w64_d12_v602_legacy_v1` and
+`scale_w64_d12_v602_unit_v2` profiles with matching budgets. The base
+`scale_w64_d12_v602` profile uses the corrected default. Changing the default
+changes token order in existing recipes that omit this setting.
+
 Their required split trees are `features_{pretrain,test}` and `seg_target_{pretrain,test}`. The trainer uses the `test` trees for
 validation, so reserve separate source events for final downstream evaluation.
 `reader_type: ragged_mmap` selects RaggedMmap input; `ragged_npy` is the legacy
@@ -108,7 +125,12 @@ as explained in the recipe reference. Resume restores compatible optimizer and
 scheduler state, but follows epoch-based data iteration rather than an exact
 mid-epoch cursor. Optional W&B logging in this pretrainer is offline.
 
-Pass `ckpt_best.tar` to a downstream run with matching family, width, depth,
+New checkpoints include `backbone_config` with the factory's effective settings
+and the configured input contract. The shared [backbone resolver](../PRETRAINED_BACKBONES.md)
+uses it to configure downstream runs automatically. A portable catalog supplies
+missing metadata for historical checkpoints, including Mike's campaign 5.
+
+For legacy checkpoints selected by an explicit path, use matching family, width, depth,
 state, convolution/expand settings where applicable, `klen`, positional encoding
 and input representation. For supported four-column auxiliary inputs, match
 the length/pitch choice and use the regression `clas12_pos_plus_aux_v1` feature

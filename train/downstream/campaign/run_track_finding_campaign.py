@@ -14,11 +14,14 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from train.downstream.track_finding_contract import validate_track_finding_modes
+from train.downstream.track_finding_contract import (
+    validate_finding_evaluation_summary, finding_eligibility_columns, validate_track_finding_modes,
+)
 
 import numpy as np
 from mmap_ninja import RaggedMmap
 from fm4npp.utils import expand_config_string, expand_param_references
+from fm4npp.pretrained import apply_backbone_to_run
 
 from campaign_util import (
     command_env,
@@ -120,6 +123,7 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     })
     params.update(manifest.get("training_overrides", {}))
     params.update(run.get("training_overrides", {}))
+    apply_backbone_to_run(params, run, manifest.get("training_overrides", {}), run.get("training_overrides", {}))
     write_yaml(Path(run["model_yaml"]), {run["model_config"]: params})
 
 
@@ -129,6 +133,11 @@ def render_analysis_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
     validate_track_finding_modes(analysis, source="base analysis")
     validate_track_finding_modes(manifest.get("analysis_overrides", {}), source="manifest analysis_overrides")
     validate_track_finding_modes(run.get("analysis_overrides", {}), source="run analysis_overrides")
+    model = load_base_model_config(Path(run["model_yaml"]), run["model_config"])
+    if model.get("reader_type") == "hdf5":
+        # HDF5 targets are already in GeV/c. Read the rendered model so reader
+        # overrides are included; explicit analysis overrides still apply below.
+        analysis["target_momentum_scale_to_gev"] = 1.0
     final_evaluation_events = int(
         run.get(
             "final_evaluation_events",
@@ -193,16 +202,22 @@ def eval_command(run: dict[str, Any]) -> list[str]:
 
 
 def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_fraction: float = 0.8) -> dict[str, Any]:
-    """Validate aligned event sidecars for both supervised train and test splits."""
+    """Validate aligned event labels in the published product's splits."""
+    from fm4npp.datasets.cvt_downstream import CVTDownstreamSource
+    from fm4npp.datasets.track_eligibility import eligible_primary_labels, PRIMARY_TRACK_POLICY
+    hdf5 = (data_root / "manifest.json").is_file()
     split_rows: dict[str, dict[str, Any]] = {}
-    for split in ("pretrain", "test"):
-        features = RaggedMmap(str(data_root / f"features_{split}"))
-        seg = RaggedMmap(str(data_root / f"seg_target_{split}"))
-        coatjava = RaggedMmap(str(data_root / f"coatjava_seg_pred_{split}"))
+    for split in (("train", "validation", "test") if hdf5 else ("pretrain", "test")):
+        source = CVTDownstreamSource(data_root, split) if hdf5 else None
+        def field(name):
+            return source.view(name) if source else RaggedMmap(str(data_root / f"{name}_{split}"))
+        features = field("features")
+        seg = field("seg_target")
+        coatjava = field("coatjava_seg_pred")
         n = min(len(features), len(seg), len(coatjava), int(max_events))
         rows = []
         for idx in range(n):
-            labels = np.asarray(seg[idx])
+            labels = eligible_primary_labels(np.asarray(seg[idx]))
             coatjava_labels = np.asarray(coatjava[idx])
             signal = labels[labels != -1]
             rows.append({
@@ -214,6 +229,7 @@ def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_f
             })
         fraction = float(np.mean([row["n_signal_tracks"] > 1 for row in rows])) if rows else 0.0
         split_rows[split] = {
+            "track_eligibility_policy": PRIMARY_TRACK_POLICY,
             "feature_events": len(features), "seg_target_events": len(seg),
             "coatjava_seg_pred_events": len(coatjava), "sampled_events": n,
             "multitrack_fraction": fraction,
@@ -226,7 +242,9 @@ def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_f
                 and all(row["length_match"] and row["coatjava_length_match"] for row in rows)
                 and fraction >= min_multitrack_fraction,
         }
-    train = split_rows["pretrain"]
+        if source is not None:
+            source.close()
+    train = split_rows["train" if hdf5 else "pretrain"]
     summary = {
         "data_root": str(data_root),
         "feature_events": train["feature_events"], "seg_target_events": train["seg_target_events"],
@@ -239,9 +257,23 @@ def preflight_dataset(data_root: Path, max_events: int = 10000, min_multitrack_f
         "test_multitrack_fraction": split_rows["test"]["multitrack_fraction"],
         "test_passed": split_rows["test"]["passed"],
     }
-    summary["passed"] = train["passed"] and split_rows["test"]["passed"]
+    summary["splits"] = split_rows
+    summary["passed"] = all(row["passed"] for row in split_rows.values())
     if not summary["passed"]:
         raise ValueError(f"Track-finding preflight failed: {summary}")
+    return summary
+
+
+def validated_evaluation_summary(directory: Path) -> dict[str, Any]:
+    """Reject stale truth policies, including stale headline rows, before reuse."""
+    summary_path = directory / "summary.json"
+    summary = read_json(summary_path)
+    validate_finding_evaluation_summary(summary, source=str(summary_path))
+    headline = directory / "campaign_headline_metrics.jsonl"
+    if headline.is_file():
+        with headline.open() as stream:
+            for number, line in enumerate(stream, 1):
+                validate_finding_evaluation_summary(json.loads(line), source=f"{headline}:{number}")
     return summary
 
 
@@ -252,18 +284,24 @@ def collate_summary(
 ) -> None:
     base_dir = Path(manifest["campaign_dir"]).resolve()
     summary_dir = base_dir / str(summary_name)
+    evaluations = {}
+    summaries = {}
+    for run in manifest.get("runs", []):
+        directory = Path(run["evaluation_dir"])
+        if evaluation_suffix:
+            directory = directory.with_name(f"{directory.name}_{evaluation_suffix}")
+        evaluations[run["run_id"]] = directory
+        summary = directory / "summary.json"
+        if summary.is_file():
+            summaries[run["run_id"]] = validated_evaluation_summary(directory)
     summary_dir.mkdir(parents=True, exist_ok=True)
     table_rows = []
     with (summary_dir / "campaign_headline_metrics.jsonl").open("w") as headline_stream:
         for run in manifest.get("runs", []):
-            evaluation_dir = Path(run["evaluation_dir"])
-            if evaluation_suffix:
-                evaluation_dir = evaluation_dir.with_name(
-                    f"{evaluation_dir.name}_{evaluation_suffix}"
-                )
+            evaluation_dir = evaluations[run["run_id"]]
             headline = evaluation_dir / "campaign_headline_metrics.jsonl"
-            summary = evaluation_dir / "summary.json"
-            if headline.exists():
+            summary_data = summaries.get(run["run_id"])
+            if headline.exists() and summary_data is not None:
                 with headline.open() as stream:
                     shutil.copyfileobj(stream, headline_stream)
             table_row = {
@@ -284,16 +322,17 @@ def collate_summary(
                 "model_yaml": run["model_yaml"],
                 "model_config": run["model_config"],
                 "evaluation_dir": run["evaluation_dir"],
-                "summary_found": summary.exists(),
+                "summary_found": summary_data is not None,
             }
-            if summary.exists():
-                summary_data = read_json(summary)
+            if summary_data is not None:
                 metrics = summary_data.get("metrics", {})
                 coatjava_metrics = summary_data.get("baselines", {}).get("coatjava", {})
                 deltas = summary_data.get("comparisons", {}).get("adapter_minus_coatjava", {})
                 native_metrics = summary_data.get("native_metrics", {})
                 native_coatjava_metrics = summary_data.get("native_baselines", {}).get("coatjava", {})
                 native_deltas = summary_data.get("native_comparisons", {}).get("adapter_minus_coatjava", {})
+                table_row["finding_metrics_version"] = summary_data["finding_metrics_version"]
+                table_row.update(finding_eligibility_columns(summary_data))
                 table_row["metric_view"] = summary_data.get("metric_view", "canonical")
                 table_row["noise_attribution_mode"] = summary_data.get("noise_attribution_mode")
                 table_row["assignment_threshold"] = summary_data.get("assignment_threshold")
@@ -434,6 +473,16 @@ def print_status(manifest: dict, runs: list[dict], status_path: Path) -> None:
         print("Progress values are the latest completed validation point.")
 
 
+def has_selected_checkpoint(run):
+    checkpoint = Path(run["adapter_checkpoint"])
+    receipt = Path(run["artifact_summary"])
+    if not checkpoint.is_file() or not receipt.is_file():
+        return False
+    data = read_json(receipt)
+    return (data.get("best_step") is not None and data.get("checkpoint") is not None
+            and Path(data["checkpoint"]).resolve() == checkpoint.resolve())
+
+
 def train_if_needed(
     args: argparse.Namespace,
     manifest: dict[str, Any],
@@ -444,14 +493,14 @@ def train_if_needed(
     current_status = run_current_status(status_data, run)
     checkpoint = Path(run["adapter_checkpoint"])
     status_record = status_data.get("runs", {}).get(run["run_id"], {})
-    if not args.force_train and current_status in TRAIN_DONE_STATUSES and checkpoint.is_file():
+    if not args.force_train and current_status in TRAIN_DONE_STATUSES and has_selected_checkpoint(run):
         print(f"[{run['run_id']}] training already complete; skipping")
         return
     if (
         not args.force_train
         and current_status == "failed"
         and status_record.get("stage") == "eval"
-        and checkpoint.is_file()
+        and has_selected_checkpoint(run)
     ):
         print(f"[{run['run_id']}] prior evaluation failed; preserving existing training checkpoint")
         return
@@ -506,7 +555,7 @@ def train_if_needed(
         raise RuntimeError(
             f"Training failed for {run['run_id']} with exit code {code}. See {attempt_log}"
         )
-    if not checkpoint.is_file():
+    if not has_selected_checkpoint(run):
         update_status(
             status_path,
             run["run_id"],
@@ -540,8 +589,13 @@ def eval_if_needed(
     current_status = run_current_status(load_status(status_path), run)
     summary = Path(run["evaluation_dir"]) / "summary.json"
     if not args.force_eval and current_status in DONE_STATUSES and summary.is_file():
-        print(f"[{run['run_id']}] evaluation already complete; skipping")
-        return
+        try:
+            validated_evaluation_summary(summary.parent)
+        except ValueError as error:
+            print(f"[{run['run_id']}] cached evaluation is stale: {error}")
+        else:
+            print(f"[{run['run_id']}] evaluation already complete; skipping")
+            return
 
     command = eval_command(run)
     log_path = Path(run["eval_stdout"])
@@ -604,6 +658,12 @@ def eval_if_needed(
             cuda_preflight_log=str(preflight_log.resolve()),
         )
         raise FileNotFoundError(f"Evaluation finished but summary.json was not created: {summary}")
+    try:
+        validated_evaluation_summary(summary.parent)
+    except ValueError:
+        update_status(status_path, run["run_id"], "failed", stage="eval",
+                      reason="incompatible_evaluation_contract", log=str(attempt_log.resolve()))
+        raise
     update_status(
         status_path,
         run["run_id"],

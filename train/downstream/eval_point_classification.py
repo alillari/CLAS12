@@ -6,15 +6,17 @@ import os
 import sys
 import argparse
 import gc
+from pathlib import Path
 
 import torch
 
 # make sure the FM4NPP modules can be imported
-sys.path.append('../..')
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 from fm4npp.utils import YParams
-from point_classification_trainer import DownstreamTrainer
+from train.downstream.point_classification_trainer import DownstreamTrainer
+from train.downstream.noise_checkpoint import restore_evaluation_config, require_single_process
 
 def main():
     parser = argparse.ArgumentParser(
@@ -35,8 +37,8 @@ def main():
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default="",
-        help="Path to the trained checkpoint (optional; overrides default)",
+        required=True,
+        help="Path to the trained downstream checkpoint",
     )
     parser.add_argument(
         "--run_num",
@@ -47,7 +49,7 @@ def main():
     parser.add_argument(
         "--root_dir",
         type=str,
-        default="/home/shuhang/FM4NPP/downstream_eval/",
+        default="evaluation_output/point_classification",
         help="Root directory to store evaluation outputs",
     )
     parser.add_argument(
@@ -63,58 +65,37 @@ def main():
         help="Batch size for evaluation",
     )
     parser.add_argument("--global_log_dir", default='globallogs', type=str, help="Global dir to store logging only")
+    parser.add_argument("--pretrained_ckpt", help="Optional backbone checkpoint; omitted for AdapterOnly")
+    parser.add_argument("--task", choices=("pid", "nid"))
+    parser.add_argument("--validation_events", type=int, help="Override calibration cohort size")
     args = parser.parse_args()
 
-    # Default mapping from config to checkpoint if not provided via --checkpoint
-    model2ckpt = {
-        'd9_m5_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m5_k5.ckpt',
-        'd9_m1_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m1_k5.ckpt',
-        'd9_m3_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m3_k5.ckpt',
-        'd9_m4_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m4_k5.ckpt',
-        'd9_m4_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m4_k5.ckpt',
-        'd9_m5_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m5_k5.ckpt',
-        'd9_m1_k30_p20':'/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m1_k30.ckpt',
-        'd9_m3_k30_p20':'/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m3_k30.ckpt',
-        'd9_m4_k30_p20':'/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m4_k30.ckpt',
-        'd9_m5_k30_p20':'/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m5_k30.ckpt',
-        'd9_m64_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m64_k5_debugged.ckpt',
-        'd9_m64_k30_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m64_k30.ckpt',
-        'd9_m96_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m96_k5.ckpt',
-        'd9_m96_k30_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m96_k30.ckpt',
-        'd9_m128_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m128_k5.ckpt',   
-        'd9_m128_k30_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m128_k30.ckpt',
-        'd9_m192_k5_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m192_k5.ckpt',
-        'd9_m192_k30_p20': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m192_k30.ckpt',
-        'ablate_reference': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_reference.ckpt',
-        'ablate_pe_PROJ': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_pe_PROJ.ckpt',
-        'ablate_pe_FF': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_pe_FF.ckpt',
-        'ablate_pe_CPE': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_pe_CPE.ckpt',
-        'ablate_order_RPE': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_order_RPE.ckpt',
-        'ablate_order_REP': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_order_REP.ckpt',
-        'ablate_order_PER': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_order_PER.ckpt',
-        'ablate_embedconcat': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_embedconcat.ckpt',
-        'ablate_lossreweight': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_lossreweight.ckpt',
-        'ablate_space_filling_hilbert': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_space_filling_hilbert.ckpt',
-        'ablate_space_filling_z': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_space_filling_z.ckpt',
-        'ablate_novoxelize': '/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_novoxelize.ckpt',
-    }
-
-    # Determine which checkpoint to use
-    
-
-    # Prepare hyperparameters
     params = YParams(os.path.abspath(args.yaml_config), args.config)
-    params.limit_data = True
-    params.limit_size = args.eventnumber
-    params.batch_size = args.eval_batch_size
-    params.valid_batch_size = args.eval_batch_size
-    params.pretrained_ckpt = model2ckpt[args.config]
-    params.log_file_name = f"{args.config}_eval_{params.task}_d{params.limit_size}_{args.run_num}.log"
-    params.num_embedder_layers = 0
-    params.data_root_test = "/mldata/sli/sphenix_fm/pp_test_9k/"
-    checkpoint_name = f"{args.config}_nerf_{params.task}_d{params.limit_size}_{args.run_num}_checkpoint.pth"
-    checkpoint_base_dir = "/home/shuhang/FM4NPP/downstream_log/"
-    checkpoint_path = checkpoint_base_dir + checkpoint_name
+    params["task"] = args.task or getattr(params, "task", "pid")
+    require_single_process(params.task)
+    hdf5_noise = params.task == 'nid' and getattr(params, 'reader_type', None) == 'hdf5'
+    checkpoint_path = os.path.abspath(args.checkpoint)
+    if hdf5_noise:
+        # Restore training architecture, preprocessing and cohort selection. Only
+        # data locations and evaluation batch/worker counts may come from this YAML.
+        saved = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        restore_evaluation_config(params, saved, args.validation_events)
+    else:
+        params['limit_size'] = 1  # Unused training view for legacy inference.
+        params['limit_test_size'] = args.eventnumber
+        if getattr(params, 'reader_type', None) == 'hdf5':
+            params['validation_split'] = 'test'
+    params['num_output_classes'] = 2 if params.task == 'nid' else 5
+    params['limit_data'] = True
+    # Restore class weights from the checkpoint; do not re-estimate for inference.
+    params['noise_class_balance'] = 'none'
+    params['limit_test_data'] = True
+    params['drop_last_test'] = False
+    params['batch_size'] = args.eval_batch_size
+    params['valid_batch_size'] = args.eval_batch_size
+    params['pretrained_ckpt'] = args.pretrained_ckpt
+    params['continue_from_best'] = False
+    params['log_file_name'] = f'{args.config}_eval_{params.task}_{args.run_num}.log'
 
     # Ensure output directory exists
     log_dir = args.root_dir
@@ -123,13 +104,17 @@ def main():
 
     # Launch and run inference
     trainer = DownstreamTrainer(params, args)
-    trainer.launch()
-    trainer.inference(
-        checkpoint_path=checkpoint_path,
-        pretrain=True,                # evaluation uses downstream checkpoint
-        logfile=logfile
-    )
-    trainer.cleanup()
+    try:
+        trainer.launch()
+        if hdf5_noise:
+            from train.downstream.noise_evaluation import export_noise_evaluation
+            trainer.build_head()
+            export_noise_evaluation(trainer, log_dir, checkpoint_path, args.eventnumber)
+        else:
+            trainer.inference(checkpoint_path=checkpoint_path,
+                              pretrain=bool(args.pretrained_ckpt), logfile=logfile)
+    finally:
+        trainer.cleanup()
 
     # Free GPU memory
     torch.cuda.empty_cache()

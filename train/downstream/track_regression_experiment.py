@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DOWNSTREAM_DIR))
 
 from fm4npp.models.mamba_config import backbone_version, adapter_options
+from fm4npp.pretrained import configure_pretrained_backbone
 from fm4npp.utils import YParams
 from fm4npp.artifact_paths import artifact_path
 from train.downstream.regression_utils import validate_regression_training
@@ -34,38 +35,6 @@ except ImportError:
     from track_regression_trainer import DownstreamTrainer, require_single_process
 
 
-MODEL2CKPT = {
-    "d9_m5_k5_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m5_k5.ckpt",
-    "d9_m1_k5_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m1_k5.ckpt",
-    "d9_m3_k5_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m3_k5.ckpt",
-    "d9_m4_k5_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m4_k5.ckpt",
-    "d9_m1_k30_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m1_k30.ckpt",
-    "d9_m3_k30_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m3_k30.ckpt",
-    "d9_m4_k30_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m4_k30.ckpt",
-    "d9_m5_k30_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/pp_nerf_m5_k30.ckpt",
-    "d9_m64_k5_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m64_k5_debugged.ckpt",
-    "d9_m64_k30_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m64_k30.ckpt",
-    "d9_m96_k5_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m96_k5.ckpt",
-    "d9_m96_k30_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m96_k30.ckpt",
-    "d9_m128_k5_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m128_k5.ckpt",
-    "d9_m128_k30_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m128_k30.ckpt",
-    "d9_m192_k5_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m192_k5.ckpt",
-    "d9_m192_k30_p20": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/m192_k30.ckpt",
-    "ablate_reference": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_reference.ckpt",
-    "ablate_pe_PROJ": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_pe_PROJ.ckpt",
-    "ablate_pe_FF": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_pe_FF.ckpt",
-    "ablate_pe_CPE": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_pe_CPE.ckpt",
-    "ablate_order_RPE": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_order_RPE.ckpt",
-    "ablate_order_REP": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_order_REP.ckpt",
-    "ablate_order_PER": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_order_PER.ckpt",
-    "ablate_embedconcat": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_embedconcat.ckpt",
-    "ablate_lossreweight": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_lossreweight.ckpt",
-    "ablate_space_filling_hilbert": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_space_filling_hilbert.ckpt",
-    "ablate_space_filling_z": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_space_filling_z.ckpt",
-    "ablate_novoxelize": "/mldata/sli/sphenix_fm/pretrained_checkpoints/pretrained_models/ablate_novoxelize.ckpt",
-}
-
-
 @dataclass
 class TrackRegressionExperimentConfig:
     yaml_config: str
@@ -74,9 +43,12 @@ class TrackRegressionExperimentConfig:
     root_dir: str = field(default_factory=lambda: artifact_path("downstream_log"))
     global_log_dir: str = "globallogs"
     eventnumber: int = 50000
-    usepretrain: bool = False
+    usepretrain: bool | None = None
     train_batch_size: int = 32
     pretrained_ckpt: str | None = None
+    backbone: str | None = None
+    backbone_catalog: str | None = None
+    backbone_root: str | None = None
     checkpoint_dir: str | None = None
     log_file_name: str | None = None
     checkpoint_file_name: str | None = None
@@ -163,20 +135,10 @@ def resolve_params(config: TrackRegressionExperimentConfig) -> YParams:
     if config.seed is not None:
         params["seed"] = int(config.seed)
 
-    if config.usepretrain:
-        params["pretrained_ckpt"] = config.pretrained_ckpt or MODEL2CKPT.get(config.config)
-        if params.pretrained_ckpt is None:
-            raise ValueError(
-                "--usepretrain was set, but no checkpoint was provided and "
-                f"config={config.config!r} is not in MODEL2CKPT."
-            )
-        params["pretrained_ckpt"] = os.path.abspath(params.pretrained_ckpt)
-        if not os.path.isfile(params.pretrained_ckpt):
-            raise FileNotFoundError(
-                f"Pretrained checkpoint does not exist: {params.pretrained_ckpt}"
-            )
-    else:
-        params["pretrained_ckpt"] = None
+    configure_pretrained_backbone(
+        params, enabled=config.usepretrain, checkpoint=config.pretrained_ckpt,
+        backbone=config.backbone, catalog=config.backbone_catalog, root=config.backbone_root,
+    )
 
     params["log_file_name"] = config.log_file_name or (
         f"{config.config}_nerf_{params.task}_d{params.limit_size}_{config.run_num}.log"
@@ -217,7 +179,7 @@ def train_experiment(
     try:
         trainer.launch()
         trainer.train(
-            pretrain=config.usepretrain,
+            pretrain=bool(params.pretrained_ckpt),
             train_from_checkpoint=False,
             checkpoint_path=None,
             optuna_trial=optuna_trial,
@@ -241,8 +203,9 @@ def train_experiment(
             "config": config.config,
             "run_num": config.run_num,
             "yaml_config": os.path.abspath(config.yaml_config),
-            "usepretrain": bool(config.usepretrain),
+            "usepretrain": bool(params.pretrained_ckpt),
             "pretrained_ckpt": params.pretrained_ckpt,
+            "pretrained_backbone": getattr(params, "pretrained_backbone", None),
             "experiment_dir": getattr(params, "experiment_dir", None),
             "checkpoint_dir": os.path.abspath(params.checkpoint_dir),
             "log_file": getattr(params, "training_log_path", None),

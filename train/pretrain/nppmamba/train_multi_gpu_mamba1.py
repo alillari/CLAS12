@@ -19,6 +19,10 @@ from torch.nn.parallel import DistributedDataParallel
 import torch.distributed as dist
 
 from fm4npp.artifact_paths import artifact_path
+from fm4npp.pretrained import export_backbone_config
+from fm4npp.hilbert import (
+    DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
+)
 from fm4npp.models.mamba_config import (
     backbone_version, build_backbone, architecture_metadata,
     optimizer_parameters, validate_checkpoint_architecture,
@@ -63,6 +67,9 @@ def apply_bin_weights_torch(bin_list, weight_list, target):
 class Trainer():
     def __init__(self, params, args):
         self.params = params
+        params.hilbert_angular_grid = validate_hilbert_grid(
+            getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
+        )
         # The shared adapter/backbone contract uses continuous coordinate targets.
         # Mike's retired band-classification head is not part of this integration.
         if getattr(params, 'band_classification', False):
@@ -265,6 +272,7 @@ class Trainer():
                 print(f"Loading checkpoint from {self.checkpoint_path}")
 
             checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
+            validate_checkpoint_hilbert_grid(checkpoint, self.params)
             validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
 
             try:
@@ -307,7 +315,9 @@ class Trainer():
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
             'validation_metric': VALIDATION_METRIC,
+            'hilbert_angular_grid': self.params.hilbert_angular_grid,
             'backbone_architecture': architecture_metadata(self.model),
+            'backbone_config': export_backbone_config(self.params, self.model),
         }
         torch.save(payload, checkpoint_path)
 

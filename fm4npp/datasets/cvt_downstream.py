@@ -6,9 +6,11 @@ contested ownership) are background for finding and noise for binary tagging.
 """
 
 import numpy as np
+from .track_eligibility import eligible_primary_labels, PRIMARY_TRACK_MIN_CLUSTERS, PRIMARY_TRACK_POLICY
 
 NOISE_POLICY = "primary_unassigned_is_noise_v1"
 ENTRANCE_COLUMNS = ("cvt_benchmark_p", "cvt_benchmark_theta", "cvttraj_entrance_phi")
+MIN4_NOISE_POLICY = "primary_unassigned_or_lt4_is_noise_v2"
 
 
 def downstream_split(params, role):
@@ -36,9 +38,10 @@ class CVTDownstreamSource:
               "coatjava_seg_pred", "cluster_token_context_target",
               "cluster_geometry_context_target"}
 
-    def __init__(self, root, split):
+    def __init__(self, root, split, *, apply_primary_track_cut=False):
         from .cvt_hdf5 import CVTClusterEvents
         self.reader = CVTClusterEvents(root, split)
+        self.apply_primary_track_cut = bool(apply_primary_track_cut)
         self._index = None
         self._rows = {}
 
@@ -61,12 +64,20 @@ class CVTDownstreamSource:
 
     @property
     def contract(self):
-        return {"format": "cvt-clusters-h5-v1", "plan_id": self.reader.plan_id,
-                "split": self.reader.split, "noise_policy": NOISE_POLICY,
-                "momentum_unit": "GeV/c", "target": "observed_direct_primary_momentum"}
+        result = {"format": "cvt-clusters-h5-v1", "plan_id": self.reader.plan_id,
+                  "split": self.reader.split, "noise_policy": NOISE_POLICY,
+                  "momentum_unit": "GeV/c", "target": "observed_direct_primary_momentum"}
+        if self.apply_primary_track_cut:
+            result.update(noise_policy=MIN4_NOISE_POLICY,
+                          track_eligibility_policy=PRIMARY_TRACK_POLICY,
+                          primary_track_min_clusters=PRIMARY_TRACK_MIN_CLUSTERS)
+        return result
 
     def point_field(self, index, name):
-        direct = {"features": "clusters.xyz", "seg_target": "clusters.primary_segment",
+        if name == "seg_target":
+            labels = self.read(index, ["clusters.primary_segment"])[0]
+            return eligible_primary_labels(labels) if self.apply_primary_track_cut else labels
+        direct = {"features": "clusters.xyz",
                   "coatjava_seg_pred": "clusters.reco_segment"}
         if name in direct:
             return self.read(index, [direct[name]])[0]

@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.metrics import adjusted_rand_score
 import os, sys, time, shutil, random
+import tempfile
 import argparse
 import torch
 
@@ -24,11 +25,19 @@ from cosine_annealing_warmup import CosineAnnealingWarmupRestarts # pip install 
 sys.path.append('../..')
 
 from fm4npp.utils import *
+from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
+from train.downstream.input_representation import (
+    AUX_REPRESENTATION, input_config, representation_input,
+    validate_input_representation, validate_checkpoint_inputs,
+)
 from fm4npp.datasets.dataset import *
+from fm4npp.hilbert import (
+    DEFAULT_HILBERT_GRID, validate_hilbert_grid, validate_checkpoint_hilbert_grid,
+)
 from fm4npp.models.mamba_config import (
     adapter_options, backbone_version, build_backbone, architecture_metadata,
     legacy_initialization_parameters, optimizer_parameters,
-    uses_mamba3, validate_checkpoint_architecture,
+    validate_checkpoint_architecture,
 )
 from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
@@ -39,10 +48,11 @@ from fm4npp.models.linformer_gpt import LinformerGPT
 
 from trackinghead import *
 from loss import *
-from downstream_util import get_early_stopping_config
+from downstream_util import get_early_stopping_config, require_single_process
 from track_finding_metrics import MatchConfig, EventMetricAccumulator, event_track_metrics, summarize_event_metrics
-from train.downstream.track_finding_contract import validate_track_finding_modes
+from train.downstream.track_finding_contract import decoder_settings, validate_checkpoint_forward, validate_track_finding_modes
 from train.downstream.track_finding_history import ValidationHistory
+from fm4npp.datasets.track_eligibility import configure_primary_track_cut
 from track_finding_targets import (
     SIGNAL_ONLY,
     build_track_instance_targets,
@@ -52,53 +62,33 @@ from track_finding_targets import (
 
 class DownstreamTrainer():
     
-    def _find_available_gpu(self, max_memory_threshold=1000):
-        '''Find the first GPU with memory usage below a threshold (in MB).'''
-        for gpu_id in range(torch.cuda.device_count()):
-            allocated = torch.cuda.memory_allocated(gpu_id) / 1024**2  # Convert to MB
-            if allocated < max_memory_threshold:
-                return gpu_id
-        return None 
-
-
-    """ trainer class """
     def __init__(self, params, args):
+        require_single_process("Track finding")
         validate_track_finding_modes(vars(params), source="track-finding model")
-        ''' init vars for distributed training (ddp) and logging'''
+        configure_pretrained_backbone(params)
+        validate_input_representation(params)
+        if getattr(params, "input_representation", "center_only") == AUX_REPRESENTATION:
+            params["return_dict"] = True
         self.root_dir = args.root_dir
         self.global_log_dir = os.path.join(args.root_dir, args.global_log_dir)
-        self.config = args.config 
+        self.config = args.config
         self.run_num = args.run_num
         self.world_size = 1
-        
-        if 'WORLD_SIZE' in os.environ:
-            self.world_size = int(os.environ['WORLD_SIZE'])
-
-        self.local_rank = 0
-        self.world_rank = 0
-        
-        if self.world_size > 1: # multigpu, use DDP with standard NCCL backend for communication routines
-            dist.init_process_group(backend='nccl',
-                                    init_method='env://')
-            self.world_rank = dist.get_rank()
-            self.local_rank = int(os.environ["LOCAL_RANK"])
-
+        self.local_rank = self.world_rank = 0
+        self.log_to_screen = True
         if torch.cuda.is_available():
             torch.cuda.set_device(self.local_rank)
             torch.backends.cudnn.benchmark = True
-
-        self.log_to_screen = (self.world_rank==0)
-        if torch.cuda.is_available():
-            available_gpu = self._find_available_gpu()
-            if available_gpu is not None:
-                
-                torch.cuda.set_device(available_gpu)
-                print(f"Using GPU {available_gpu} with memory below threshold.")
             self.device = torch.cuda.current_device()
         else:
             self.device = torch.device('cpu')
-        
+
         self.params = params
+        configure_primary_track_cut(params)
+        params.hilbert_angular_grid = validate_hilbert_grid(
+            getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
+        )
+        self.backbone_sha256 = None
         self.use_lora = False
         self.use_amp = bool(getattr(self.params, 'use_amp', True))
         print("running on rank {} with world size {}".format(self.world_rank, self.world_size))
@@ -388,6 +378,9 @@ class DownstreamTrainer():
         self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
         self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
 
+    def _representation_input(self, grouped, batch):
+        return representation_input(grouped, batch, self.params)
+
     def _unpack_batch(self, batch):
         if isinstance(batch, dict):
             return (
@@ -411,18 +404,7 @@ class DownstreamTrainer():
             background_label=int(getattr(self.params, "background_label", -1)),
         )
 
-    def _batch_adjusted_rand(self, inverse_valid_list, assignments, mask):
-        mode = str(getattr(self.params, "validation_ari_mode", "signal"))
-        metric_name = validation_ari_metric(mode)
-        rows = self._batch_event_metrics(inverse_valid_list, assignments, mask)
-        scores = [row[metric_name] for row in rows if row.get(metric_name) is not None]
-        return float(np.mean(scores)) if scores else 0.0
-
-    def _batch_event_metrics(self, inverse_valid_list, assignments, mask, classes=None):
-        del inverse_valid_list
-        labels = getattr(self, "_last_labels_for_metrics", None)
-        if labels is None:
-            return []
+    def _batch_event_metrics(self, labels, assignments, mask, classes):
         config = MatchConfig(
             background_label=int(getattr(self.params, "background_label", -1)),
             iou_threshold=float(getattr(self.params, "match_iou_threshold", 0.5)),
@@ -431,16 +413,12 @@ class DownstreamTrainer():
         )
         rows = []
         for batch_idx in range(labels.size(0)):
-            pred_signal = None
-            if classes is not None:
-                pred_signal = classes[batch_idx] != 0
+            pred_signal = classes[batch_idx] != 0
             rows.append(event_track_metrics(
                 labels[batch_idx].detach().cpu().numpy(),
                 assignments[batch_idx].detach().cpu().numpy(),
                 valid_mask=mask[batch_idx].detach().cpu().numpy(),
-                pred_signal_mask=(
-                    pred_signal.detach().cpu().numpy() if pred_signal is not None else None
-                ),
+                pred_signal_mask=pred_signal.detach().cpu().numpy(),
                 config=config,
             ))
         return rows
@@ -520,11 +498,7 @@ class DownstreamTrainer():
         from ruamel.yaml.scalarfloat import ScalarFloat
         torch.serialization.add_safe_globals([ScalarFloat])
     
-        try:
-            self.load_checkpoint(checkpoint_path, inference=True)
-        except Exception as e:
-            print(f"❌ Checkpoint loading failed: {str(e)}")
-            return None
+        self.load_checkpoint(checkpoint_path, inference=True, use_pretrained_backbone=pretrain)
         
         self.down_model.eval()
         self.model.eval()
@@ -554,22 +528,22 @@ class DownstreamTrainer():
                 labels = label.to(self.device)
                 grouped = grouped.reshape(b, -1, c).to(self.device)  # B X N X C
                 mask = grouped[..., 0] != -100  # B X N
+                model_input = self._representation_input(grouped, batch)
                 # One-hot encode the labels using the inverse mapping
                 #one_hot_labels = F.one_hot(inverse_indices, num_classes=n_gt_classes).float().to(self.device) # B X N X C_gt
-                targets, inverse_valid_list = self._build_track_targets(labels, mask)
-                self._last_labels_for_metrics = labels
+                targets, _ = self._build_track_targets(labels, mask)
 
                 with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
                     if pretrain:
                         #print(grouped.size())
-                        _, pre_embed, _ = self.model(grouped, return_z=True)
+                        _, pre_embed, _ = self.model(model_input, return_z=True)
                         #feature = torch.stack(pre_embed).mean(0)
                         feature = torch.stack(pre_embed)
-                        pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
-                        #pred_logit = self.down_model(grouped, feature, pretrain=pretrain) #B X N X C_classes
+                        pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
+                        #pred_logit = self.down_model(model_input, feature, pretrain=pretrain) #B X N X C_classes
                     else:
-                        pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
-                        #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
+                        pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
+                        #pred_logit = self.down_model(model_input, feature=None) #B X N X C_classes
                     #softmax it to the prob
                     #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
                     pred_probs = pred_dict['mask_probs'] # (B, N, N_pred)
@@ -647,7 +621,7 @@ class DownstreamTrainer():
                 )
 
                 metric_rows = self._batch_event_metrics(
-                    inverse_valid_list,
+                    labels,
                     inference_result["assignments"],
                     mask,
                     classes=inference_result["classes"],
@@ -714,6 +688,9 @@ class DownstreamTrainer():
         optuna_trial=None,
         metrics_callback=None,
     ):
+        self.use_pretrained_backbone = bool(pretrain)
+        if pretrain and not self.backbone_sha256:
+            raise ValueError("Frozen track finding requires a loaded pretrained backbone checkpoint")
         ###%%%%%%%
         # Debugging
         self.fwd_hooks = register_fine_grained_forward_hooks(self.model)
@@ -815,16 +792,6 @@ class DownstreamTrainer():
         from ruamel.yaml.scalarfloat import ScalarFloat
         torch.serialization.add_safe_globals([ScalarFloat])
     
-        if train_from_checkpoint:
-            try:
-                self.load_checkpoint(checkpoint_path, inference=False)
-            except Exception as e:
-                print(f"❌ Checkpoint loading failed: {str(e)}")
-                return None
-            
-            self.down_model.eval()
-            print(f"✅ Model loaded from {checkpoint_path}")
-
         os.makedirs(self.params.checkpoint_dir, exist_ok=True)
         log_file_path = os.path.abspath(os.path.join(self.params.checkpoint_dir, self.params.log_file_name))
         self.params["training_log_path"] = log_file_path
@@ -834,10 +801,7 @@ class DownstreamTrainer():
             "checkpoint_file_name",
             self.params.log_file_name.split('.')[0] + '_checkpoint.pth',
         )
-        self.params["trained_checkpoint_path"] = os.path.abspath(
-            os.path.join(self.params.checkpoint_dir, checkpoint_file_name)
-        )
-        
+        self.params["trained_checkpoint_path"] = None
         if self.log_to_screen:
             print("Starting training loop...")
 
@@ -865,7 +829,7 @@ class DownstreamTrainer():
         self.best_step = None
         self.best_epoch = None
         self.global_step = 0
-        self.down_results = {'epoch': 0, 'train': [], 'val': [], 'ARI': [], 'ARI_2': [],  'loss_matched_ce': [], 'loss_unmatched_ce': [], 'loss_dice': [], 'loss_focal': []}
+        self.down_results = {'epoch': 0, 'train': []}
         
         # early stopping
         self.patience, self.min_delta, self.warmup_steps = get_early_stopping_config(
@@ -876,8 +840,18 @@ class DownstreamTrainer():
         )
         self.stagnation_counter = 0
         self._validation_history = None
+        self.last_validation_step = None
+        self.early_stopping_min_steps = int(getattr(self.params, "early_stopping_min_steps", self.warmup_steps))
 
         self._load_loss_reweight_stats()
+        if train_from_checkpoint:
+            self.load_checkpoint(checkpoint_path, inference=False, use_pretrained_backbone=pretrain)
+            # Score the restored weights on this invocation's cohort before
+            # comparing later updates, including for legacy batch-mean checkpoints.
+            self.best_step = None
+            loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
+            self._record_validation_result(loss, self._selection_ari(2), checkpoint_file_name,
+                                           self.startEpoch - 1, self.global_step)
 
         if getattr(self.params, "max_optimizer_steps", None) is not None:
             self._train_by_optimizer_step(
@@ -887,18 +861,12 @@ class DownstreamTrainer():
                 optuna_trial=optuna_trial,
                 metrics_callback=metrics_callback,
             )
+            self._require_selected_checkpoint()
             return
-        
+
         for epoch in range(self.startEpoch, self.params.max_epochs):
             self.down_results['epoch'] = epoch
             self.down_results['train'] = []
-            self.down_results['val'] = []
-            self.down_results['ARI'] = []
-            self.down_results['ARI_2'] = []
-            self.down_results['loss_matched_ce'] = []
-            self.down_results['loss_unmatched_ce'] = []
-            self.down_results['loss_dice'] = []
-            self.down_results['loss_focal'] = []
             self.epoch = epoch
             if dist.is_initialized():
                 # shuffles data before every epoch
@@ -909,21 +877,17 @@ class DownstreamTrainer():
             self.starttime = time.time()
             self.downstream_end_to_end_one_epoch(pretrain = pretrain)
             train_epoch_loss = np.mean(self.down_results['train'])
-            val_epoch_loss = 0
-
-            if epoch % 1 == 0:
-                val_epoch_loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
+            if not self.global_step:
+                raise RuntimeError("Track-finding training yielded no optimizer updates")
+            val_epoch_loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
             epoch_time = time.time() - self.starttime
-            avg_matched_ce = np.mean(self.down_results['loss_matched_ce'])
-            avg_unmatched_ce = np.mean(self.down_results['loss_unmatched_ce'])
-            avg_dice = np.mean(self.down_results['loss_dice'])
-            avg_focal = np.mean(self.down_results['loss_focal'])
-            avg_ari = np.mean(self.down_results['ARI'])
-            avg_ari_2 = np.mean(self.down_results['ARI_2'])
+            components = self._last_validation_loss_components
+            avg_matched_ce, avg_unmatched_ce = components['loss_matched_ce'], components['loss_unmatched_ce']
+            avg_dice, avg_focal = components['loss_dice'], components['loss_focal']
+            avg_ari, avg_ari_2 = self._selection_ari(1), self._selection_ari(2)
             # Log to file
             with open(log_file_path, "a") as f:  # Append mode
                 f.write(f"{epoch}\t{train_epoch_loss:.8f}\t{val_epoch_loss:.8f}\t{avg_ari:.8f}\t{avg_ari_2:.8f}\t{avg_matched_ce:.8f}\t{avg_unmatched_ce:.8f}\t{avg_dice:.8f}\t{avg_focal:.8f}\t{epoch_time:.2f}\n")
-            epoch_loss = val_epoch_loss
 
             # Print detailed metrics to screen
             if self.log_to_screen:
@@ -937,27 +901,10 @@ class DownstreamTrainer():
                 print(f"  Dice: {avg_dice:.6f} | Focal: {avg_focal:.6f}")
                 print(f"  Best Loss: {self.best_loss:.6f} | Best ARI: {self.best_ARI:.6f}")
                 print("-" * 80)
-            #if (epoch_loss < self.best_loss) or (avg_ari_2 > self.best_ARI):
-            improved = (avg_ari_2 > self.best_ARI + self.min_delta) or (
-                abs(avg_ari_2 - self.best_ARI) <= self.min_delta
-                and epoch_loss < (self.best_loss - self.min_delta)
-            )
-            if improved:
-                self.best_loss = epoch_loss
-                self.best_ARI = avg_ari_2
-                self.best_epoch = epoch
-                self.best_step = self.global_step
-                self._save_checkpoint(
-                    filename=checkpoint_file_name,
-                    epoch=epoch,
-                    is_best=True,
-                    loss=epoch_loss
-                )
-                self.stagnation_counter = 0
-            elif epoch>= self.warmup_steps:
-                self.stagnation_counter += 1
-            self._persist_validation(epoch, self.global_step, epoch_loss, avg_ari_2, improved, train_epoch_loss)
-            if not improved and epoch >= self.warmup_steps and self.stagnation_counter >= self.patience:
+            self._record_validation_result(val_epoch_loss, avg_ari_2, checkpoint_file_name, epoch,
+                                           self.global_step, train_loss=train_epoch_loss,
+                                           count_stagnation=epoch >= self.warmup_steps)
+            if self.stagnation_counter >= self.patience:
                 print(f"Early stopping triggered at epoch {epoch} after {self.patience} validations without improvement.")
                 break
             self.down_scheduler.step()
@@ -977,7 +924,11 @@ class DownstreamTrainer():
                     **self._validation_metric_callback(),
                 })
 
-            
+        self._require_selected_checkpoint()
+
+    def _require_selected_checkpoint(self):
+        if self.params.trained_checkpoint_path is None:
+            raise RuntimeError("Track-finding training produced no finite validation checkpoint")
 
     def _current_lr(self):
         return self.down_optimizer.param_groups[0]["lr"]
@@ -1019,7 +970,7 @@ class DownstreamTrainer():
             "val_loss_event_mean": getattr(self, "_last_validation_loss_event_mean", None),
             "selection_metric": validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal")),
             "selection_option": 2, "selection_score": val_ari,
-            "selection_aggregation": "mean_of_batch_event_means",
+            "selection_aggregation": "mean_of_eligible_events",
             "selected_best": bool(improved),
             "assignment_threshold": float(getattr(self.params, "assignment_threshold", 0.0)),
             "match_iou_threshold": float(getattr(self.params, "match_iou_threshold", 0.5)),
@@ -1049,19 +1000,19 @@ class DownstreamTrainer():
         labels = label.to(self.device)
         grouped = grouped.reshape(b, -1, c).to(self.device)
         mask = grouped[..., 0] != -100
-        targets, inverse_valid_list = self._build_track_targets(labels, mask)
-        self._last_labels_for_metrics = labels
+        model_input = self._representation_input(grouped, batch)
+        targets, _ = self._build_track_targets(labels, mask)
 
         if pretrain:
             if train and self.use_lora:
-                _, pre_embed, _ = self.model(grouped, return_z=True)
+                _, pre_embed, _ = self.model(model_input, return_z=True)
             else:
                 with torch.no_grad():
-                    _, pre_embed, _ = self.model(grouped, return_z=True)
+                    _, pre_embed, _ = self.model(model_input, return_z=True)
             feature = torch.stack(pre_embed)
-            pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+            pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
         else:
-            pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
+            pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
 
         outputs = {
             "pred_probs": pred_dict["class_probs"],
@@ -1105,7 +1056,7 @@ class DownstreamTrainer():
             threshold=float(getattr(self.params, "assignment_threshold", 0.0)),
         )
         metric_rows = self._batch_event_metrics(
-            inverse_valid_list,
+            labels,
             inference_result["assignments"],
             mask,
             classes=inference_result["classes"],
@@ -1122,7 +1073,11 @@ class DownstreamTrainer():
         step,
         optuna_trial=None,
         train_loss=None,
+        count_stagnation=None,
     ):
+        self.last_validation_step = step
+        if count_stagnation is None:
+            count_stagnation = step >= self.early_stopping_min_steps
         has_finite_validation = np.isfinite(val_loss) and np.isfinite(val_ari)
         improved = has_finite_validation and (
             self.best_step is None
@@ -1144,7 +1099,7 @@ class DownstreamTrainer():
                 loss=val_loss,
             )
             self.stagnation_counter = 0
-        elif step >= self.early_stopping_min_steps:
+        elif count_stagnation:
             self.stagnation_counter += 1
 
         self._persist_validation(epoch, step, val_loss, val_ari, improved, train_loss)
@@ -1157,6 +1112,43 @@ class DownstreamTrainer():
                 except ImportError as exc:
                     raise RuntimeError("Optuna pruning requested, but optuna is not installed") from exc
                 raise optuna.TrialPruned()
+
+    def _validate_training_step(self, pretrain, log_file_path, checkpoint_file_name, optuna_trial, metrics_callback):
+        validation_ari_mode = str(getattr(self.params, "validation_ari_mode", "signal"))
+        val_loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
+        val_ari_option1, val_ari_option2 = self._selection_ari(1), self._selection_ari(2)
+        train_loss = float(np.mean(self.down_results["train"]))
+        elapsed = time.time() - self.starttime
+        with open(log_file_path, "a") as f:
+            f.write(
+                f"{self.global_step}\t{self.epoch}\t{train_loss:.8f}\t"
+                f"{val_loss:.8f}\t{val_ari_option1:.8f}\t{val_ari_option2:.8f}\t"
+                f"{self._current_lr():.8e}\t{elapsed:.2f}\n"
+            )
+        self._record_validation_result(
+            val_loss,
+            val_ari_option2,
+            checkpoint_file_name,
+            epoch=self.epoch,
+            step=self.global_step,
+            optuna_trial=optuna_trial,
+            train_loss=train_loss,
+        )
+        if metrics_callback is not None:
+            metrics_callback({
+                "step": self.global_step,
+                "epoch": self.epoch,
+                "train/loss": train_loss,
+                "val/loss": float(val_loss),
+                "val/ari": val_ari_option2,
+                f"val/ari_{validation_ari_mode}_option1": val_ari_option1,
+                f"val/ari_{validation_ari_mode}_option2": val_ari_option2,
+                "lr": float(self._current_lr()),
+                "best/val_ari": float(self.best_ARI),
+                "best/val_loss": float(self.best_loss),
+                "best/step": self.best_step,
+                **self._validation_metric_callback(),
+            })
 
     def _train_by_optimizer_step(
         self,
@@ -1176,14 +1168,9 @@ class DownstreamTrainer():
             getattr(self.params, "early_stopping_warmup_steps", 0),
         ))
         max_epochs = int(getattr(self.params, "max_epochs", 10**9))
-        validation_ari_mode = str(getattr(self.params, "validation_ari_mode", "signal"))
-
         for epoch in range(self.startEpoch, max_epochs):
             self.down_results['epoch'] = epoch
             self.down_results['train'] = []
-            self.down_results['val'] = []
-            self.down_results['ARI'] = []
-            self.down_results['ARI_2'] = []
             self.epoch = epoch
             if dist.is_initialized():
                 self.train_sampler.set_epoch(epoch)
@@ -1226,43 +1213,7 @@ class DownstreamTrainer():
                     or self.global_step >= max_optimizer_steps
                 )
                 if should_validate:
-                    val_loss = self.validate_end_to_end_one_epoch(pretrain=pretrain)
-                    # Both columns use validation_ari_mode; their suffixes
-                    # identify assignment policies, not signal/inclusive ARI.
-                    val_ari_option1 = float(np.mean(self.down_results["ARI"])) if self.down_results["ARI"] else 0.0
-                    val_ari_option2 = float(np.mean(self.down_results["ARI_2"])) if self.down_results["ARI_2"] else 0.0
-                    train_loss = float(np.mean(self.down_results["train"]))
-                    elapsed = time.time() - self.starttime
-                    with open(log_file_path, "a") as f:
-                        f.write(
-                            f"{self.global_step}\t{epoch}\t{train_loss:.8f}\t"
-                            f"{val_loss:.8f}\t{val_ari_option1:.8f}\t{val_ari_option2:.8f}\t"
-                            f"{self._current_lr():.8e}\t{elapsed:.2f}\n"
-                        )
-                    self._record_validation_result(
-                        val_loss,
-                        val_ari_option2,
-                        checkpoint_file_name,
-                        epoch=epoch,
-                        step=self.global_step,
-                        optuna_trial=optuna_trial,
-                        train_loss=train_loss,
-                    )
-                    if metrics_callback is not None:
-                        metrics_callback({
-                            "step": self.global_step,
-                            "epoch": epoch,
-                            "train/loss": train_loss,
-                            "val/loss": float(val_loss),
-                            "val/ari": val_ari_option2,
-                            f"val/ari_{validation_ari_mode}_option1": val_ari_option1,
-                            f"val/ari_{validation_ari_mode}_option2": val_ari_option2,
-                            "lr": float(self._current_lr()),
-                            "best/val_ari": float(self.best_ARI),
-                            "best/val_loss": float(self.best_loss),
-                            "best/step": self.best_step,
-                            **self._validation_metric_callback(),
-                        })
+                    self._validate_training_step(pretrain, log_file_path, checkpoint_file_name, optuna_trial, metrics_callback)
                     if self.stagnation_counter >= self.patience:
                         print(
                             "Early stopping triggered at step "
@@ -1270,14 +1221,13 @@ class DownstreamTrainer():
                         )
                         return
                     self.down_results['train'] = []
-                    self.down_results['val'] = []
-                    self.down_results['ARI'] = []
-                    self.down_results['ARI_2'] = []
                     self.starttime = time.time()
 
             if self.global_step >= max_optimizer_steps:
                 return
 
+        if self.global_step > 0 and self.last_validation_step != self.global_step:
+            self._validate_training_step(pretrain, log_file_path, checkpoint_file_name, optuna_trial, metrics_callback)
         print(f"Reached max_epochs={max_epochs} before max_optimizer_steps={max_optimizer_steps}.")
 
 
@@ -1303,9 +1253,9 @@ class DownstreamTrainer():
             labels = label.to(self.device)# B X N
             grouped = grouped.reshape(b, -1, c).to(self.device) # B X N X C
             mask = grouped[..., 0] != -100 # B X N
+            model_input = self._representation_input(grouped, batch)
 
             targets, _ = self._build_track_targets(labels, mask)
-            self._last_labels_for_metrics = labels
             
 
             if self.use_lora:
@@ -1316,17 +1266,17 @@ class DownstreamTrainer():
                 if pretrain:
                     if not self.use_lora:
                         with torch.no_grad():
-                            _, pre_embed, _ = self.model(grouped, return_z=True)
+                            _, pre_embed, _ = self.model(model_input, return_z=True)
                     else:
-                        _, pre_embed, _ = self.model(grouped, return_z=True)
+                        _, pre_embed, _ = self.model(model_input, return_z=True)
                     #feature = torch.stack(pre_embed).mean(0)
                     feature = torch.stack(pre_embed)
                     #print('feature: ', feature.size())
-                    pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
+                    pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
-                    pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
-                    #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
+                    pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
+                    #pred_logit = self.down_model(model_input, feature=None) #B X N X C_classes
                 #softmax it to the prob
                 #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
                 pred_probs = pred_dict['mask_probs'] # (B, N, N_pred)
@@ -1390,164 +1340,80 @@ class DownstreamTrainer():
             self.down_results['train'].append(loss.item())
 
     def validate_end_to_end_one_epoch(self, pretrain=False):
-        self.model.eval()  # Set backbone model to eval mode
-        self.down_model.eval()  # Set downstream head to eval mode
-        val_loss = 0.0
-        total_samples = 0
-        amp_enabled = torch.cuda.is_available() and self.use_amp
+        backbone_training, head_training = self.model.training, self.down_model.training
+        try:
+            self.model.eval()
+            self.down_model.eval()
+            return self._validate_events(pretrain)
+        finally:
+            self.down_model.train(head_training)
+            self.model.train(backbone_training)
 
-        max_validation_events = getattr(self.params, "max_validation_events", None)
-        if max_validation_events is not None:
-            max_validation_events = int(max_validation_events)
-            if max_validation_events < 1:
-                raise ValueError("max_validation_events must be positive or None")
-        validated_events = 0
+    @torch.no_grad()
+    def _validate_events(self, pretrain):
+        limit = getattr(self.params, "max_validation_events", None)
+        if limit is not None and int(limit) < 1:
+            raise ValueError("max_validation_events must be positive or None")
+        max_batches = getattr(self.params, "max_val_batches", 1001)
+        threshold = float(getattr(self.params, "assignment_threshold", 0.0))
         accumulators = {option: EventMetricAccumulator() for option in (1, 2)}
-        loss_totals = {key: 0.0 for key in ("loss_matched_ce", "loss_unmatched_ce", "loss_dice", "loss_focal")}
-        total_event_loss = 0.0
-        self._last_validation_metrics = {}
-
-        with torch.no_grad():  # Disable gradient calculation
-            for i, batch in enumerate(tqdm(self.val_data_loader)):
-                if (
-                    max_validation_events is not None
-                    and validated_events >= max_validation_events
-                ):
-                    break
-                grouped, label, knearest, _ = self._unpack_batch(batch)
-                max_val_batches = getattr(self.params, "max_val_batches", 1001)
-                if max_val_batches is not None and i >= int(max_val_batches):
-                    break
-                b, c = grouped.size(0), grouped.size(-1)
-                if max_validation_events is not None:
-                    remaining = max_validation_events - validated_events
-                    if remaining < b:
-                        # All collated fields are batch-major tensors.  Slice
-                        # the final partial batch before its forward pass so
-                        # validation is an exact event count, independent of
-                        # batch size.
-                        if isinstance(batch, dict):
-                            batch = {
-                                key: (value[:remaining] if torch.is_tensor(value) and value.ndim > 0 and value.size(0) == b else value)
-                                for key, value in batch.items()
-                            }
-                        else:
-                            batch = tuple(
-                                value[:remaining] if torch.is_tensor(value) and value.ndim > 0 and value.size(0) == b else value
-                                for value in batch
-                            )
-                        grouped, label, knearest, _ = self._unpack_batch(batch)
-                        b, c = grouped.size(0), grouped.size(-1)
-                labels = label.to(self.device)
-                grouped = grouped.reshape(b, -1, c).to(self.device)  # B X N X C
-                mask = grouped[..., 0] != -100  # B X N
-                # One-hot encode the labels using the inverse mapping
-                targets, inverse_valid_list = self._build_track_targets(labels, mask)
-                self._last_labels_for_metrics = labels
-
-                with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
-                    if pretrain:
-                        #print(grouped.size())
-                        _, pre_embed, _ = self.model(grouped, return_z=True)
-                        #feature = torch.stack(pre_embed).mean(0)
-                        feature = torch.stack(pre_embed)
-                        pred_dict = self.down_model(grouped, feature, pretrain=pretrain, padding_mask=mask)
-                        #pred_logit = self.down_model(grouped, feature, pretrain=pretrain) #B X N X C_classes
-                    else:
-                        pred_dict = self.down_model(grouped, feature=None, padding_mask=mask)
-                        #pred_logit = self.down_model(grouped, feature=None) #B X N X C_classes
-                    #softmax it to the prob
-                    #pred_probs = F.softmax(pred_logit, dim=-1) # B X N X C_classes
-                    pred_probs = pred_dict['mask_probs'] # (B, N, N_pred)
-                    class_probs = pred_dict['class_probs'] # (B, N_pred, 2)
-        
-                outputs = {
-                    "pred_probs": class_probs,  
-                    "pred_masks": pred_probs.permute(0, 2, 1) 
-                }
-    
-                losses = compute_point_loss(
-                    outputs=outputs,
-                    targets=targets,
-                    mask=mask,
-                    matcher=self.matcher,
-                    no_object_class=0
-                )
-                # Checkpoint selection must use the same assignment policy as
-                # final evaluation.  In particular, assignment_threshold is
-                # applied *after* the query masks/classes are predicted: it
-                # turns low-confidence point assignments into background.  If
-                # validation silently used 0.0 here while evaluation reported
-                # (for example) 0.2, "best checkpoint" and reported metrics
-                # would describe different operating points.
-                assignment_threshold = float(
-                    getattr(self.params, "assignment_threshold", 0.0)
-                )
-                inference_result = assign_points_to_masks(
-                    outputs,
-                    option=1,
-                    threshold=assignment_threshold,
-                )
-                segmentation_result = inference_result["assignments"]
-                
-                infrence_result_opt2 = assign_points_to_masks(
-                    outputs,
-                    option=2,
-                    threshold=assignment_threshold,
-                )
-                segmentation_result_opt2 = infrence_result_opt2["assignments"]
-                #calculate adjust rand score between segmentation result and label
-                
-                ari_metric = validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal"))
-                batch_ari = {}
-                for option, assignments in ((1, segmentation_result), (2, segmentation_result_opt2)):
-                    # Preserve the existing assignment-policy diagnostic and
-                    # checkpoint-selection aggregation; accumulate full event
-                    # metrics separately, without re-running inference/matching.
-                    rows = self._batch_event_metrics(inverse_valid_list, assignments, mask)
-                    scores = [row[ari_metric] for row in rows if row.get(ari_metric) is not None]
-                    batch_ari[option] = float(np.mean(scores)) if scores else 0.0
-                    for row in rows:
-                        accumulators[option].add(row)
-                adjusted_rand_index = batch_ari[1]
-                adjusted_rand_index_opt2 = batch_ari[2]
-                #print(adjusted_rand_index)
-                # Compute loss and get matching indices
-                loss = losses["loss_matched_ce"] * self.loss_matched_ce_weight + losses["loss_unmatched_ce"] * self.loss_unmatched_ce_weight + losses["loss_dice"] * self.loss_dice_weight + losses["loss_focal"] * self.loss_focal_weight
-
-                #loss = (loss * mask.unsqueeze(-1)).sum(-1).sum(-1) / mask.sum(-1).sum(-1)
-                #print(loss)
-                #loss = loss.mean()
-                self.down_results['val'].append(loss.item())
-                self.down_results['ARI'].append(adjusted_rand_index)
-                self.down_results['ARI_2'].append(adjusted_rand_index_opt2)
-                self.down_results['loss_matched_ce'].append(losses["loss_matched_ce"].item())
-                self.down_results['loss_unmatched_ce'].append(losses["loss_unmatched_ce"].item())
-                self.down_results['loss_dice'].append(losses["loss_dice"].item())
-                self.down_results['loss_focal'].append(losses["loss_focal"].item())
-                validated_events += b
-                total_event_loss += float(loss.item()) * b
-                for key in loss_totals:
-                    loss_totals[key] += float(losses[key].item()) * b
-
-
-
-        # Final validation metrics
-        avg_loss = np.mean(self.down_results['val'])
-        self._last_validation_metrics = {option: accumulator.summary() for option, accumulator in accumulators.items()}
-        self._last_validation_loss_components = {
-            key: value / validated_events if validated_events else None for key, value in loss_totals.items()
+        weights = {
+            "loss_matched_ce": self.loss_matched_ce_weight,
+            "loss_unmatched_ce": self.loss_unmatched_ce_weight,
+            "loss_dice": self.loss_dice_weight,
+            "loss_focal": self.loss_focal_weight,
         }
-        self._last_validation_loss_event_mean = total_event_loss / validated_events if validated_events else None
+        loss_totals = dict.fromkeys(weights, 0.0)
+        count = 0
+        for i, batch in enumerate(tqdm(self.val_data_loader)):
+            if max_batches is not None and i >= int(max_batches):
+                break
+            if limit is not None and count >= int(limit):
+                break
+            points, labels, _, _ = self._unpack_batch(batch)
+            points = points.reshape(points.size(0), -1, points.size(-1)).to(self.device)
+            model_input = self._representation_input(points, batch)
+            if limit is not None:
+                remaining = int(limit) - count
+                points, labels = points[:remaining], labels[:remaining]
+                model_input = model_input[:remaining]
+            mask = points[..., 0] != -100
+            labels = labels.to(self.device)
+            targets, _ = self._build_track_targets(labels, mask)
+            with autocast("cuda", dtype=torch.bfloat16) if torch.cuda.is_available() and self.use_amp else nullcontext():
+                features = None
+                if pretrain:
+                    _, embeddings, _ = self.model(model_input, return_z=True)
+                    features = torch.stack(embeddings)
+                pred = self.down_model(model_input, feature=features, pretrain=pretrain, padding_mask=mask)
+            outputs = {"pred_probs": pred["class_probs"], "pred_masks": pred["mask_probs"].permute(0, 2, 1)}
+            losses = compute_point_loss(outputs, targets, mask, self.matcher, no_object_class=0)
+            for key in weights:
+                loss_totals[key] += losses[key].item() * len(points)
+            for option, accumulator in accumulators.items():
+                inferred = assign_points_to_masks(outputs, option=option, threshold=threshold)
+                rows = self._batch_event_metrics(labels, inferred["assignments"], mask, classes=inferred["classes"])
+                for row in rows:
+                    accumulator.add(row)
+            count += len(points)
+        if not count:
+            raise RuntimeError("Track-finding validation yielded no events; cannot select a checkpoint")
+        self._last_validation_metrics = {option: acc.summary() for option, acc in accumulators.items()}
+        if self._selection_ari(2) is None:
+            raise RuntimeError("Track-finding validation has no events eligible for the configured ARI")
+        self._last_validation_loss_components = {key: total / count for key, total in loss_totals.items()}
+        self._last_validation_loss_event_mean = sum(
+            self._last_validation_loss_components[key] * weight for key, weight in weights.items()
+        )
+        return self._last_validation_loss_event_mean
 
-        # Print validation results
-        if self.log_to_screen:
-            print(f"\nValidation Loss: {avg_loss:.4f}")
-
-        return avg_loss
+    def _selection_ari(self, option):
+        metric = validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal"))
+        return self._last_validation_metrics[option][metric]
 
     def _checkpoint_payload(self, epoch, loss, inference_only=False):
         checkpoint = {
+            'input_config': input_config(self.params),
             'epoch': epoch,
             'model_state_dict': self.down_model.state_dict(),
             'backbone_architecture': architecture_metadata(self.model),
@@ -1558,8 +1424,14 @@ class DownstreamTrainer():
             'best_epoch': getattr(self, "best_epoch", None),
             'global_step': getattr(self, "global_step", None),
             'current_loss': loss,
+            'forward_config': {
+                'use_pretrained_backbone': self.use_pretrained_backbone,
+                'backbone_sha256': self.backbone_sha256 if self.use_pretrained_backbone else None,
+                'decoder': decoder_settings(vars(self.params), self.down_model),
+            },
             'track_target_mode': getattr(self.params, "track_target_mode", SIGNAL_ONLY),
             'validation_ari_mode': getattr(self.params, "validation_ari_mode", "signal"),
+            'hilbert_angular_grid': getattr(self.params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
             'params': vars(self.params)  # Save all hyperparameters
         }
         checkpoint['inference_only'] = inference_only
@@ -1584,12 +1456,19 @@ class DownstreamTrainer():
     def _save_checkpoint(self, filename, epoch, is_best, loss):
         checkpoint = self._checkpoint_payload(epoch, loss)
 
-        torch.save(checkpoint, os.path.join(self.params.checkpoint_dir, filename))
+        path = os.path.abspath(os.path.join(self.params.checkpoint_dir, filename))
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(path)) as staging:
+            temporary_path = os.path.join(staging, os.path.basename(path))
+            torch.save(checkpoint, temporary_path)
+            if os.path.isfile(path):
+                shutil.copymode(path, temporary_path)
+            os.replace(temporary_path, path)
+        self.params.trained_checkpoint_path = path
 
         msg = f"Saved {'best ' if is_best else ''}checkpoint at epoch {epoch} with loss {loss:.4f}"
         #print(msg) if self.log_to_screen else None
 
-    def load_checkpoint(self, checkpoint_path, inference=False):
+    def load_checkpoint(self, checkpoint_path, inference=False, *, use_pretrained_backbone=None):
         """Load checkpoint with proper device mapping and DDP handling.
            If inference=True, only loads the model weights."""
 
@@ -1602,26 +1481,26 @@ class DownstreamTrainer():
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
         validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
+        validate_checkpoint_inputs(checkpoint, self.params)
         if checkpoint.get('inference_only', False) and not inference:
             raise ValueError("Validation snapshots are for inference/selection; resume training from a full checkpoint.")
 
-        # 3. Handle DDP keys
+        if use_pretrained_backbone is None:
+            use_pretrained_backbone = getattr(self.params, "pretrained_ckpt", None) is not None
+        decoder = decoder_settings(vars(self.params), self.down_model)
+        validate_checkpoint_forward(checkpoint, decoder, use_pretrained_backbone, self.backbone_sha256)
         validate_checkpoint_architecture(
-            checkpoint, self.down_model, 'adapter',
-            backbone=self.model if getattr(self.params, 'pretrained_ckpt', None) else None,
+            checkpoint, self.down_model, 'adapter', backbone=self.model if use_pretrained_backbone else None,
         )
-        state_dict = checkpoint['model_state_dict']
-        new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-
-        # 4. Load model weights
-        if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
-            self.down_model.module.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
-        else:
-            self.down_model.load_state_dict(new_state_dict, strict=uses_mamba3(self.down_model))
-
-        # Load LoRA weights if present
-        if self.use_lora and 'lora_state_dict' in checkpoint:
-            self.model.load_state_dict(checkpoint['lora_state_dict'], strict=False)
+        state = {k.removeprefix('module.'): v for k, v in checkpoint['model_state_dict'].items()}
+        self.down_model.load_state_dict(state, strict=True)
+        if self.use_lora:
+            saved_lora = checkpoint.get('lora_state_dict', {})
+            expected = {k for k in self.model.state_dict() if 'lora_A' in k or 'lora_B' in k}
+            if not expected or saved_lora.keys() != expected:
+                raise ValueError("Track-finding checkpoint LoRA weights do not match configured backbone adapters")
+            self.model.load_state_dict(saved_lora, strict=False)
 
         # 5. If not inference mode, load optimizer/scheduler states
         if not inference:
@@ -1675,13 +1554,15 @@ class DownstreamTrainer():
             device_str = f'cuda:{self.device}' if torch.cuda.is_available() else 'cpu'
         else:
             device_str = str(self.device)
-        checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
+        checkpoint, sha256 = load_pretrained_checkpoint(checkpoint_path, getattr(self, "params", None), map_location=device_str)
         validate_track_finding_modes(checkpoint, source=f"checkpoint {checkpoint_path}")
+        validate_checkpoint_hilbert_grid(checkpoint, self.params)
         validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state'].items()}
         #try:
             #self.model.load_state_dict(checkpoint['model_state'])
         self.model.load_state_dict(new_state_dict)
+        self.backbone_sha256 = sha256
         #except:
         #    new_state_dict = OrderedDict()
         #    for key, val in checkpoint['model_state'].items():

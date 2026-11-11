@@ -98,7 +98,7 @@ default: &default
   grad_clip_value: 0.1
   total_steps: 30000
 
-  # === Pretrained backbone architecture: MUST match the checkpoint ===
+  # === Legacy backbone defaults; --backbone resolves these from metadata ===
   embed_dim: 256
   num_layers_backbone: 12
   d_state: 16

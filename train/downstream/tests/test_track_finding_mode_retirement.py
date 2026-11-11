@@ -12,6 +12,7 @@ from unittest.mock import patch
 import torch
 
 from train.downstream.eval import evaluate_track_finding as evaluator
+from fm4npp.datasets.track_eligibility import primary_track_eligibility_contract
 
 with patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "campaign"), *sys.path]):
     from train.downstream.campaign import build_track_finding_manifest as builder
@@ -68,19 +69,24 @@ class TrackFindingRetirementTest(unittest.TestCase):
                 train.assert_not_called()
 
     def test_native_evaluation_and_threshold_sweep_outputs(self):
-        labels = torch.tensor([[0, 0, 1, 1, -1, -100]]).repeat(20, 1)
-        points = torch.zeros(20, 6, 3)
+        labels = torch.tensor([[0, 0, 0, 0, 1, 1, 1, 1, -1, -100]]).repeat(20, 1)
+        points = torch.zeros(20, 10, 3)
         points[:, -1] = -100
         batch = {"points": points, "labels": labels, "coatjava_seg_pred": labels}
-        masks = torch.tensor([[[.95, .02], [.95, .02], [.02, .95], [.02, .95],
-                               [.1, .1], [.1, .1]]]).repeat(20, 1, 1)
+        masks = torch.tensor([[[.95, .02]] * 4 + [[.02, .95]] * 4 +
+                              [[.1, .1], [.1, .1]]]).repeat(20, 1, 1)
         classes = torch.tensor([[[.05, .95], [.05, .95]]]).repeat(20, 1, 1)
+
+        class FakeLoader(list):
+            dataset = SimpleNamespace(track_eligibility_contract=primary_track_eligibility_contract())
 
         class FakeTrainer:
             def __init__(self, params, args):
                 self.params = params
+                # The effective dataset contract must win over stale saved settings.
+                self.params.track_eligibility_contract = {"policy": "stale_checkpoint"}
                 self.device = "cpu"
-                self.val_data_loader = [batch]
+                self.val_data_loader = FakeLoader([batch])
                 self.down_model = lambda *a, **kw: {"class_probs": classes, "mask_probs": masks}
                 self.output_dir = Path(args.root_dir).parent
 
@@ -116,6 +122,7 @@ class TrackFindingRetirementTest(unittest.TestCase):
                          patch.object(evaluator, "load_checkpoint"):
                         evaluator.main()
                     result = json.loads((out / ("selected_heldout_summary.json" if sweep else "summary.json")).read_text())
+                    self.assertEqual(result['track_eligibility_contract'], primary_track_eligibility_contract())
                     self.assertEqual(result["metrics"]["ari_signal"], 1.0)
                     self.assertEqual(result["metrics"]["background_rejection"], 1.0)
                     self.assertEqual(result["metrics"], result["native_metrics"])
@@ -129,6 +136,15 @@ class TrackFindingRetirementTest(unittest.TestCase):
                     self.assertEqual(len(rows), 8 if sweep else 40)
                     if sweep:
                         self.assertEqual(result["selected_threshold"], .2)
+                        sweep_result = json.loads((out / 'threshold_sweep.json').read_text())
+                        self.assertEqual(sweep_result['track_eligibility_contract'], primary_track_eligibility_contract())
+                        self.assertEqual({r['track_eligibility_min_clusters'] for r in rows}, {'4'})
+                    else:
+                        headlines = [json.loads(line) for line in
+                                     (out / 'campaign_headline_metrics.jsonl').read_text().splitlines()]
+                        self.assertTrue(headlines)
+                        for headline in headlines:
+                            self.assertEqual(headline['track_eligibility_contract'], primary_track_eligibility_contract())
 
 
 if __name__ == "__main__":

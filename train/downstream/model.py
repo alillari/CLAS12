@@ -698,7 +698,7 @@ MambaRegressionHead = MambaTrackRegressionHead
 class AttentionHead(nn.Module):
     def __init__(self, input_dim, embed_dim=256, num_layers=3, num_heads = 4, 
                  num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
-                 num_feature_layers=15, num_output_dim=5, return_embedding=False, embed_method='add', pe_method = 'nerf', dropout=0.0, ffn_dim=512, adapter_FFN = True, *, adapter_version="mamba2", adapter_block_kwargs=None):
+                 num_feature_layers=15, num_output_dim=5, return_embedding=False, embed_method='add', pe_method = 'nerf', dropout=0.0, ffn_dim=512, adapter_FFN = True, *, adapter_version="mamba2", adapter_block_kwargs=None, pos_dim=3, aux_dim=4):
         super().__init__()
         self.adapter_version = adapter_version
         if adapter_version == "transformer" and num_layers < 1:
@@ -711,6 +711,8 @@ class AttentionHead(nn.Module):
             Embedder = EmbedderConcat
         elif embed_method == 'pos_only':
             Embedder = EmbedderPosOnly
+        elif embed_method == 'pos_plus_aux':
+            Embedder = EmbedderPosPlusAux
         elif embed_method == 'add':
             Embedder = EmbedderAdd
         else:
@@ -757,7 +759,11 @@ class AttentionHead(nn.Module):
         # Noise prediction head go from point embedding
         self.out_mlp = MLPHead(embed_dim, num_output_dim, dropout=dropout)
 
-        self.embedder = Embedder(pe_method = 'nerf', embed_dim=input_dim)
+        # Historical attention-head checkpoints always used NeRF. Preserve that
+        # topology for existing embeddings; auxiliary backbones declare theirs.
+        embedding_pe_method = pe_method if embed_method == "pos_plus_aux" else "nerf"
+        self.embedder = Embedder(pe_method=embedding_pe_method, embed_dim=input_dim,
+                                 **(dict(pos_dim=pos_dim, aux_dim=aux_dim) if embed_method == "pos_plus_aux" else {}))
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
 

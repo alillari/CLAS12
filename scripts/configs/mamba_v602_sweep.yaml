@@ -1,4 +1,5 @@
 default: &default
+  hilbert_angular_grid: unit_v2
   # === Data Paths (UPDATE THESE) ===
   data_root: /global/cfs/cdirs/m4722/NPFM/data/pp_12M_mmap  # Directory containing features_train, features_test
   stat_dir:  /global/homes/d/dpark1/NPFN/PP_collision/fm4npp/datasets/stats         # Directory with normalization statistics
@@ -67,7 +68,7 @@ default: &default
 # config -- only data_root, checkpoint_dir, and save_version differ.
 # ============================================================================
 
-scale_w64_d12_v602:
+scale_w64_d12_v602: &w64_v602
   <<: *default
   data_root: /workspace/PP_collision/mmap_canonical_loose_truthseg_event_v6_02
   reader_type: ragged_mmap
@@ -103,6 +104,17 @@ scale_w64_d12_v602:
   max_val_batches: 1000
   use_wandb: true
   save_version: scale_w64_d12_v602
+
+# Explicit v6_02 ordering profiles with matching budgets.
+scale_w64_d12_v602_legacy_v1:
+  <<: *w64_v602
+  hilbert_angular_grid: legacy_v1
+  save_version: scale_w64_d12_v602_legacy_v1
+
+scale_w64_d12_v602_unit_v2:
+  <<: *w64_v602
+  hilbert_angular_grid: unit_v2
+  save_version: scale_w64_d12_v602_unit_v2
 
 scale_w128_d12_v602:
   <<: *default

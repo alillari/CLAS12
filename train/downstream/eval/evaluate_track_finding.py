@@ -37,8 +37,11 @@ from track_finding_metrics import (  # noqa: E402
     summarize_event_metrics,
     track_momentum_by_label,
 )
-from train.downstream.track_finding_contract import validate_track_finding_modes
+from train.downstream.track_finding_contract import (
+    finding_evaluation_metadata, finding_eligibility_columns, validate_track_finding_modes,
+)
 from track_finding_trainer import DownstreamTrainer  # noqa: E402
+from train.downstream.input_representation import representation_input
 
 
 ENV_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
@@ -196,19 +199,13 @@ def init_down_model(params, device):
     ).to(device)
 
 
-def load_checkpoint(trainer: DownstreamTrainer, checkpoint_path: Path) -> None:
+def load_checkpoint(trainer: DownstreamTrainer, checkpoint_path: Path, use_pretrained: bool) -> None:
     trainer.down_model = init_down_model(trainer.params, trainer.device)
     trainer.down_optimizer = torch.optim.AdamW(trainer.down_model.parameters(), lr=trainer.params.max_lr)
     trainer.down_scheduler = None
-    trainer.load_checkpoint(str(checkpoint_path), inference=True)
+    trainer.load_checkpoint(str(checkpoint_path), inference=True, use_pretrained_backbone=use_pretrained)
     trainer.down_model.eval()
     trainer.model.eval()
-
-
-def event_momentum_summary(labels: np.ndarray, reg: np.ndarray | None, scale: float) -> dict[int, dict[str, float]]:
-    if reg is None:
-        return {}
-    return track_momentum_by_label(labels, reg, momentum_scale=scale)
 
 
 def bin_track_rows(
@@ -278,10 +275,14 @@ def _event_rows_for_result(
         for match in result["matches"]
     ]
 
-    momentum = event_momentum_summary(truth, reg, momentum_scale)
+    valid_truth = truth[valid]
+    momentum = (track_momentum_by_label(valid_truth, reg[valid], match_config.background_label, momentum_scale)
+                if reg is not None else {})
+    true_ids = np.unique(valid_truth[valid_truth != match_config.background_label])
     matches_by_truth = {int(match["true_id"]): match for match in result["matches"]}
     truth_track_rows = []
-    for true_id, true_info in momentum.items():
+    for true_id in true_ids:
+        true_info = momentum.get(true_id, {})
         match = matches_by_truth.get(int(true_id))
         truth_track_rows.append({
             "method": method,
@@ -401,6 +402,7 @@ def run_threshold_sweep(
 
     thresholds = normalize_thresholds(args.assignment_thresholds)
     validate_track_finding_modes(analysis, source="threshold sweep")
+    evaluation_metadata = finding_evaluation_metadata(trainer.val_data_loader.dataset)
     partitions = ("calibration", "heldout")
     adapter_accumulators = {
         threshold: {partition: EventMetricAccumulator() for partition in partitions}
@@ -427,14 +429,15 @@ def run_threshold_sweep(
             batch_size, channels = grouped.size(0), grouped.size(-1)
             grouped = grouped.reshape(batch_size, -1, channels)
             valid_mask = grouped[..., 0] != -100
+            model_input = representation_input(grouped, batch, trainer.params)
             if bool(analysis.get("use_pretrained_backbone", False)):
-                _, pre_embed, _ = trainer.model(grouped, return_z=True)
+                _, pre_embed, _ = trainer.model(model_input, return_z=True)
                 feature = torch.stack(pre_embed)
                 pred_dict = trainer.down_model(
-                    grouped, feature, pretrain=True, padding_mask=valid_mask
+                    model_input, feature, pretrain=True, padding_mask=valid_mask
                 )
             else:
-                pred_dict = trainer.down_model(grouped, feature=None, padding_mask=valid_mask)
+                pred_dict = trainer.down_model(model_input, feature=None, padding_mask=valid_mask)
             outputs = {
                 "pred_probs": pred_dict["class_probs"],
                 "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1),
@@ -535,6 +538,7 @@ def run_threshold_sweep(
         if selected_coatjava is not None else {}
     )
     provenance = {
+        **evaluation_metadata,
         "run_name": analysis.get("run_name"),
         "analysis_tag": analysis.get("analysis_tag"),
         "checkpoint": str(Path(analysis["checkpoint"]).resolve()),
@@ -552,6 +556,8 @@ def run_threshold_sweep(
         "selected_threshold": selected_threshold,
         "evaluate_coatjava": evaluate_coatjava,
     }
+    for row in rows:
+        row.update(finding_eligibility_columns(evaluation_metadata))
     write_csv(output_dir / "threshold_metrics.csv", rows)
     write_json(output_dir / "threshold_sweep.json", {
         **provenance,
@@ -595,6 +601,8 @@ def main() -> None:
 
     validate_track_finding_modes(analysis, source="evaluation analysis")
     params = YParams(os.path.abspath(analysis["model_yaml"]), analysis["model_config"])
+    if getattr(params, "reader_type", None) == "hdf5":
+        params.validation_split = analysis.get("evaluation_split", "test")
     validate_track_finding_modes(vars(params), source="evaluation model")
     evaluate_coatjava = bool(analysis.get("evaluate_coatjava", True))
     params.limit_data = True
@@ -613,10 +621,14 @@ def main() -> None:
     params.adapter_sample_mode = "track_legacy"
     params.return_coatjava_seg_pred_test = evaluate_coatjava
     params.require_coatjava_seg_pred_test = evaluate_coatjava
-    params.pretrained_ckpt = (
-        analysis.get("pretrained_checkpoint")
-        if bool(analysis.get("use_pretrained_backbone", False))
-        else None
+    use_pretrained = analysis.get("use_pretrained_backbone", False)
+    if not isinstance(use_pretrained, bool):
+        raise ValueError("use_pretrained_backbone must be a boolean")
+    from fm4npp.pretrained import configure_pretrained_backbone
+    configure_pretrained_backbone(
+        params, enabled=use_pretrained, checkpoint=analysis.get("pretrained_checkpoint"),
+        backbone=analysis.get("pretrained_backbone"), catalog=analysis.get("backbone_catalog"),
+        root=analysis.get("backbone_root"),
     )
 
     trainer_args = SimpleNamespace(
@@ -634,16 +646,22 @@ def main() -> None:
     per_track_metric_rows: list[dict[str, Any]] = []
     try:
         trainer.launch()
-        load_checkpoint(trainer, checkpoint)
+        evaluation_metadata = finding_evaluation_metadata(trainer.val_data_loader.dataset)
+        load_checkpoint(trainer, checkpoint, use_pretrained)
         match_config = MatchConfig(
             background_label=int(analysis.get("background_label", getattr(params, "background_label", -1))),
             iou_threshold=float(analysis.get("match_iou_threshold", getattr(params, "match_iou_threshold", 0.5))),
             min_purity=float(analysis.get("match_min_purity", getattr(params, "match_min_purity", 0.5))),
             min_efficiency=float(analysis.get("match_min_efficiency", getattr(params, "match_min_efficiency", 0.5))),
         )
+        if match_config.background_label != evaluation_metadata["track_eligibility_contract"]["background_label"]:
+            raise ValueError("Match background_label differs from the evaluation dataset's eligibility contract")
         assignment_option = int(analysis.get("assignment_option", getattr(params, "assignment_option", 2)))
         assignment_threshold = float(analysis.get("assignment_threshold", getattr(params, "assignment_threshold", 0.0)))
-        momentum_scale = float(analysis.get("target_momentum_scale_to_gev", 0.001))
+        momentum_scale = float(analysis.get("target_momentum_scale_to_gev",
+                                           1.0 if getattr(params, "reader_type", None) == "hdf5" else 0.001))
+        if getattr(params, "reader_type", None) == "hdf5" and momentum_scale != 1.0:
+            raise ValueError("HDF5 momentum targets are already in GeV/c")
         save_points = bool(analysis.get("save_per_point_predictions", False)) or args.save_per_point_predictions
 
         if args.assignment_thresholds is not None:
@@ -678,12 +696,13 @@ def main() -> None:
                 b, c = grouped.size(0), grouped.size(-1)
                 grouped = grouped.reshape(b, -1, c)
                 valid_mask = grouped[..., 0] != -100
+                model_input = representation_input(grouped, batch, trainer.params)
                 if bool(analysis.get("use_pretrained_backbone", False)):
-                    _, pre_embed, _ = trainer.model(grouped, return_z=True)
+                    _, pre_embed, _ = trainer.model(model_input, return_z=True)
                     feature = torch.stack(pre_embed)
-                    pred_dict = trainer.down_model(grouped, feature, pretrain=True, padding_mask=valid_mask)
+                    pred_dict = trainer.down_model(model_input, feature, pretrain=True, padding_mask=valid_mask)
                 else:
-                    pred_dict = trainer.down_model(grouped, feature=None, padding_mask=valid_mask)
+                    pred_dict = trainer.down_model(model_input, feature=None, padding_mask=valid_mask)
                 outputs = {
                     "pred_probs": pred_dict["class_probs"],
                     "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1),
@@ -701,7 +720,7 @@ def main() -> None:
                     pred = inferred["assignments"][sample_index].detach().cpu().numpy()
                     pred_signal = (inferred["classes"][sample_index] != 0).detach().cpu().numpy()
                     reg_np = None
-                    if reg is not None:
+                    if reg is not None and trainer.val_data_loader.dataset.has_reg_target:
                         reg_np = reg[sample_index].detach().cpu().numpy()
                     event_id = event_offset + sample_index
                     method_predictions = {
@@ -731,6 +750,11 @@ def main() -> None:
                             momentum_scale=momentum_scale,
                         )
                         event_row, matches, truth_tracks = evaluated["rows"]
+                        if getattr(params, "reader_type", None) == "hdf5":
+                            identity = {key: int(batch[key][sample_index]) for key in
+                                        ("source_event_index", "source_id", "original_ordinal")}
+                            for row in (event_row, *matches, *truth_tracks):
+                                row.update(identity)
                         event_rows.append(event_row)
                         track_rows.extend(matches)
                         per_track_metric_rows.extend(truth_tracks)
@@ -785,6 +809,7 @@ def main() -> None:
             binned_rows.extend(method_bins)
 
         summary = {
+            **evaluation_metadata,
             "run_name": analysis.get("run_name"),
             "analysis_tag": analysis.get("analysis_tag"),
             "model_yaml": os.path.abspath(analysis["model_yaml"]),
@@ -812,7 +837,7 @@ def main() -> None:
             "native_comparisons": ({"adapter_minus_coatjava": metric_deltas} if metric_deltas else {}),
             "evaluate_coatjava": evaluate_coatjava,
             "coatjava_background_label": int(analysis.get("coatjava_background_label", -1)),
-            "momentum_binned_metrics_available": bool(per_track_metric_rows),
+            "momentum_binned_metrics_available": any(row["p_gev"] is not None for row in per_track_metric_rows),
         }
         write_json(output_dir / "summary.json", summary)
         write_csv(output_dir / "per_event_metrics.csv", event_rows)
@@ -854,6 +879,7 @@ def main() -> None:
                         if isinstance(value, (int, float)) or value is None:
                             stream.write(json.dumps(json_safe({
                                 "run_name": analysis.get("run_name"),
+                                **evaluation_metadata,
                                 "record_type": "track_finding_metric",
                                 "metric_view": metric_view,
                                 "method": method,
@@ -864,6 +890,7 @@ def main() -> None:
                 for key, value in deltas.items():
                     stream.write(json.dumps(json_safe({
                         "run_name": analysis.get("run_name"),
+                        **evaluation_metadata,
                         "record_type": "track_finding_comparison",
                         "metric_view": metric_view,
                         "method": "adapter_minus_coatjava",

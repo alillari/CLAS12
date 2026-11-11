@@ -2003,6 +2003,14 @@ def main():
         # carry MeV defaults which do not apply to this product.
         config["target_momentum_scale_to_gev"] = 1.0
         config["auxiliary_momentum_scale_to_gev"] = 1.0
+    from fm4npp.pretrained import configure_pretrained_backbone
+    configure_pretrained_backbone(
+        params, enabled=bool(config.get("use_pretrained_backbone")),
+        checkpoint=(str(resolve_path(config["pretrained_checkpoint"], config["analysis_config"].parent))
+                    if config.get("pretrained_checkpoint") else None),
+        backbone=config.get("pretrained_backbone"), catalog=config.get("backbone_catalog"),
+        root=config.get("backbone_root"),
+    )
     from fm4npp.models.mamba_config import backbone_version
     transformer_only = (getattr(params, "adapter_version", "mamba2") == "transformer"
                         and (not config.get("use_pretrained_backbone")
@@ -2024,10 +2032,6 @@ def main():
     params["drop_last_test"] = False
     if getattr(params, "adapter_version", "mamba2") != "transformer":
         params["num_embedder_layers"] = 0
-    params["pretrained_ckpt"] = (
-        str(resolve_path(config.get("pretrained_checkpoint"), config["analysis_config"].parent))
-        if config.get("use_pretrained_backbone") else None
-    )
 
     trainer_args = SimpleNamespace(
         root_dir=str(output_dir / "runtime"),

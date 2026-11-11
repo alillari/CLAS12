@@ -1,0 +1,838 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=0.85in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,microtype,amsmath,amssymb,booktabs,longtable,array}
+\usepackage{enumitem,fancyvrb,fancyhdr,xcolor}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue!45!black]{hyperref}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\setlength{\emergencystretch}{3em}
+\setlist{nosep,leftmargin=*}
+\renewcommand{\arraystretch}{1.18}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small CLAS12 track finding}
+\fancyhead[R]{\small Evaluation specification v1}
+\fancyfoot[C]{\thepage}
+\setlength{\headheight}{14pt}
+\newcommand{\metric}[1]{\texttt{\small\detokenize{#1}}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\NA}{\text{undefined}}
+\newcommand{\ratio}[2]{\frac{#1}{#2}}
+\newcommand{\file}[1]{\texttt{\small\path{#1}}}
+\DefineVerbatimEnvironment{Code}{Verbatim}{fontsize=\small}
+
+\begin{document}
+\begin{center}
+{\LARGE\bfseries Evaluating eligible MC track reconstruction}\par
+\vspace{6pt}
+{\large Metric definitions, provenance, aggregation and validation}\par
+\vspace{5pt}
+\code{mc_reconstruction_v1}\quad |\quad 10 November 2026\par
+Phase 1: shared offline evaluator
+\end{center}
+
+\textbf{Benchmark objective.} Reconstruct the eligible simulated particle tracks
+as completely and cleanly as possible. Clusters from other eligible tracks,
+excluded MC particles and measured overlay reduce the score when they enter an
+eligible track's associated prediction. Independently reconstructed predictions
+containing only non-target clusters do not reduce the primary score. Their
+physical validity is not established by the available target labels.
+
+\textbf{Primary metric.} \metric{mc_track_dice_mean} is the sum of event-local,
+one-to-one matched Dice scores divided by the number of eligible truth tracks
+across the dataset. Unmatched truth tracks contribute zero. It is not a
+track-count F1 score, an event average, or a training loss.
+
+\textbf{Scope.} This specification defines an opt-in evaluation API and a saved-label
+CPU scorer. The independent accepted matcher, loss formulas, model architecture,
+checkpoint-selection rules and prediction thresholds are unchanged. A subsequent,
+explicitly authorized downstream eligibility patch is described in Section~\ref{sec:cut};
+it changes supervision without rewriting the skimmer product.
+
+\textbf{Provenance boundary.} A non-target label does not establish measured
+overlay. The overlay metrics in this version count \emph{verified pure-overlay
+clusters}. Mixed and unresolved clusters are reported separately; the stored
+scalar provenance does not support a complete member-level overlay fraction.
+
+\tableofcontents
+\newpage
+
+\section{Eligibility is a fixed scientific policy}
+
+The benchmark targets are primary MC tracks satisfying the established ownership
+requirements and having at least four CVT clusters. Secondary particles, decay
+products, and tracks with fewer than four qualifying clusters are not additional
+targets. This policy is not reconsidered by the matching algorithm.
+
+The evaluator consumes the existing segmentation labels. A valid cluster with a
+non-background label belongs to the corresponding supplied target track. The
+default background label is $-1$. It means \emph{not assigned to an eligible target
+in this label contract}; it is not a statement that the cluster has no MC origin.
+The evaluator does not convert an excluded MC particle into a target, revise
+ownership, impose a new size cut, or alter any training labels.
+
+\subsection{Ownership and eligibility are distinct from provenance}
+
+In the inspected HDF5 producer, direct primary membership uses the simulation
+condition $\mathrm{tid}=\mathrm{otid}$. The compact ownership rule requires an
+unambiguous direct-primary contributor with strictly more than half of the
+observed cluster members. Contested ownership is unassigned. The persisted
+\code{primary_segment} is a compact label derived from the resulting positive
+primary owner IDs. The raw source view preserves it; the two adapters now apply
+the downstream eligibility projection in Section~\ref{sec:cut}.
+
+Cluster provenance answers a different question: which observed members came
+from MC, measured overlay, or unresolved sources? A primary-owned cluster can
+contain other members. A non-target cluster can contain excluded MC. Neither
+observation changes eligibility.
+
+\subsection{Policy compliance must be audited without relabeling}
+
+The HDF5 projection at the time of the initial Phase-1 audit did not apply a four-cluster track cut.
+The locally available qualification HDF5 sample contains positive
+\code{primary_segment} labels with fewer than four clusters: the first 1,000
+events inspected contained 125 such labels among 1,900 labelled tracks. This is
+evidence about that qualification sample, not a claim about every campaign input.
+
+The shared scoring API preserves supplied metric inputs exactly. It records the
+short-track count in \metric{n_truth_tracks_below_policy_min_clusters}.
+It does not drop those tracks.
+A nonzero count flags an input that cannot yet be described as satisfying the
+four-cluster policy on the evaluated support. Such an input can be rescored for
+historical parity, but its result must be described as conditional on its supplied
+labels. The authorized downstream fix is separate from the metric computation.
+Toy tests can deliberately supply short tracks to
+verify this non-relabeling guarantee.
+
+The scorer must see complete events. Cropping an eligible track can both shrink
+its denominator and produce a short-track flag; it does not justify redefining
+the eligibility rule. Filtering difficult events or excluding missed targets
+after inference would change the benchmark population.
+
+\subsection{Authorized downstream eligibility enforcement}\label{sec:cut}
+
+The downstream label policy \code{primary_mc_min4_v1} now enforces the existing
+four-cluster requirement for both CLAS12 track-finding and noise-tagging adapters.
+For each complete event, the shared \code{eligible_primary_labels} projection
+counts the existing nonnegative primary-segment labels and maps every set of
+size one, two or three to $-1$. Sets of size four or more retain their original
+IDs. No clusters, physical owner IDs or provenance fields are removed or rewritten.
+
+This happens before serialization, chunking and padding in training, validation
+and test loaders, for both HDF5 and legacy ragged inputs. Noise tagging marks
+newly excluded clusters as class 1; finding treats them as non-target members,
+negative in every eligible-track mask. Noise class-balance counts use the same
+projected targets. The corrected labels change gradients while leaving the loss
+formula unchanged. Generic source views, momentum/PID targets and original TPC
+tasks retain their existing behavior.
+
+The effective HDF5 contract records the policy and a minimum of four. Its noise
+policy is \code{primary_unassigned_or_lt4_is_noise_v2}.
+Existing running jobs retain their
+frozen source and original targets. The noise checkpoint loader continues to
+reject an unacknowledged data-contract mismatch; old checkpoint metadata is not
+silently migrated.
+
+Saved prediction scoring remains historical by default. Selecting
+\code{--truth-policy primary_mc_min4_v1} explicitly projects each full event's
+truth in memory and records the policy, implementation hash and relabelled-cluster
+count. Predictions and saved input archives are unchanged. The metric profile
+is still \code{mc_reconstruction_v1}; the truth policy is a separate required
+comparison identity. Operational details and tests are documented in
+\file{docs/evaluation/primary_mc_min4_v1.md}.
+
+\section{Inputs, notation and units}
+
+For an event $e$, let $V_e$ be the valid cluster indices after removing padding.
+One ``hit'' in the metric names means one retained CVT \emph{cluster token}, not a
+strip, ADC row, energy deposit, or generated particle. All clusters have unit
+weight, regardless of their member count or energy.
+
+Let $y_e(h)$ and $p_e(h)$ be the truth and final prediction labels. Define
+\begin{align}
+ T_{ei} &= \{h\in V_e:y_e(h)=i\}, & i&\ne b,\\
+ S_e &= \bigcup_i T_{ei}, & U_e&=V_e\setminus S_e,\\
+ P_{ej} &= \{h\in V_e:p_e(h)=j\text{ and prediction gate is true}\}, & j&\ge0.
+\end{align}
+Here $b=-1$ by default. $S_e$ is eligible truth support and $U_e$ is non-target
+support. Truth track IDs and predicted track IDs are unrelated event-local
+identifiers. Padding must be excluded by the validity mask; a negative truth
+label other than $b$ on valid support is rejected by the new API.
+
+Each valid cluster has at most one predicted label, so predicted sets are
+disjoint. Negative predicted labels and a false prediction gate mean unassigned.
+The scorer accepts final reconstruction assignments, not overlapping candidate
+masks or raw query probabilities. Prediction thresholding is performed upstream
+without truth assistance and is held fixed for comparisons.
+
+Define $n_e$ and $m_e$ as the number of nonempty truth and prediction sets. For
+each possible pair, write
+\begin{align}
+ a_{eij}&=|T_{ei}\cap P_{ej}|,& t_{ei}&=|T_{ei}|,& q_{ej}&=|P_{ej}|,\\
+ c_{eij}&=\ratio{a_{eij}}{t_{ei}},& r_{eij}&=\ratio{a_{eij}}{q_{ej}},&
+ J_{eij}&=\ratio{a_{eij}}{t_{ei}+q_{ej}-a_{eij}}.
+\end{align}
+$c$ is pair completeness, $r$ is pair purity and $J$ is intersection-over-union
+(IoU). Their denominators contain \emph{all} members of the respective sets.
+In particular, non-target clusters are not removed from prediction sizes.
+
+\section{Two independent matching procedures}
+
+\subsection{Dice assignment for the new reconstruction metrics}
+
+The pair Dice score is
+\begin{equation}
+ D_{eij}=\frac{2a_{eij}}{t_{ei}+q_{ej}}
+        =\frac{2c_{eij}r_{eij}}{c_{eij}+r_{eij}}
+        =\frac{2J_{eij}}{1+J_{eij}}.
+\end{equation}
+The harmonic-mean expression is zero when the intersection is zero. Nonempty
+sets make the first expression well defined. Scores lie in $[0,1]$.
+
+Let $\mathcal M_e$ be a one-to-one set of pairs maximizing
+\begin{equation}
+ \max_{\mathcal M_e}\sum_{(i,j)\in\mathcal M_e}D_{eij}.
+\end{equation}
+The implementation uses SciPy's Hungarian assignment solver on negative Dice
+weights. No IoU, purity, completeness or minimum-Dice acceptance cut is applied.
+Only positive-overlap assigned pairs are retained. Solver pairs with zero
+intersection are discarded and do not make a prediction ``MC-associated''.
+Rows containing no target overlap are removed before solving; independent
+non-target predictions therefore cannot influence assignment tie order.
+
+Each truth and prediction can appear in at most one retained pair. A missed
+truth track receives score zero. In a split, at most one fragment can supply its
+truth track's Dice score. In a merge, at most one truth track can claim that
+prediction. Other eligible track clusters still count in the prediction size.
+Assignment is always event-local. Tracks from different events never compete.
+
+\subsection{Assignment ties}
+
+The primary total is the same for all exact maximizing assignments, but secondary
+intersection and prediction-size totals can differ. The implementation orders
+disjoint sets by their smallest original cluster index, then uses the solver's
+deterministic result with the recorded SciPy version. It adds no epsilon weights
+that could perturb the primary objective.
+
+Provide stable, unique \code{point_ids} when comparing different serializations.
+Without them, the input positions define the order. Relabeling track IDs does not
+change the Dice assignment order. Exact tie-sensitive secondary results should
+be reproduced with the same point identity and software versions. The legacy
+matcher continues to use its original numerical label order for compatibility.
+
+\subsection{Accepted matches for existing track efficiency}
+
+Independently form the accepted-edge indicator
+\begin{equation}
+ A_{eij}=\mathbf1[J_{eij}\ge0.5\ \land\ r_{eij}\ge0.5\ \land\ c_{eij}\ge0.5].
+\end{equation}
+These are inclusive inequalities. The IoU cut remains mandatory. The legacy
+solver maximizes the sum of weights
+\begin{equation}
+ W_{eij}=A_{eij}\bigl(\min(n_e,m_e)+1+J_{eij}\bigr),
+\end{equation}
+then retains accepted pairs only. The bonus first maximizes the number of
+accepted matches and then their total IoU. Denote this result $\mathcal E_e$ and
+its size $k_e$. It is not derived by thresholding $\mathcal M_e$.
+
+The public \code{MatchConfig} continues to support explicitly configured legacy
+cuts. Default Phase-1 scoring uses the values above; outputs record the config,
+and accumulators reject different configs within a pooled result. No metric
+change modifies the training loss's own Hungarian assignment.
+
+\section{Primary and secondary reconstruction metrics}
+
+Unless stated otherwise, sums below run over all events and their Dice pairs.
+Define the sufficient totals
+\begin{align}
+ N_T&=\sum_e n_e,& N_S&=\sum_e|S_e|,\\
+ Q_D&=\sum_e\sum_{(i,j)\in\mathcal M_e}D_{eij},&
+ C&=\sum_e\sum_{(i,j)\in\mathcal M_e}a_{eij},\\
+ H_A&=\sum_e\sum_{(i,j)\in\mathcal M_e}q_{ej}.&&
+\end{align}
+The associated support $R_e=\bigcup_{(i,j)\in\mathcal M_e}P_{ej}$ has
+$\sum_e|R_e|=H_A$ because predictions are disjoint and matching is one-to-one.
+
+\subsection{Primary truth-track mean Dice}
+\begin{equation}
+ \boxed{\metric{mc_track_dice_mean}=\frac{Q_D}{N_T}}
+\end{equation}
+Every supplied eligible truth track has one vote, including unrecovered tracks.
+Events with many truth tracks contribute more votes than events with one track.
+Empty-target events do not add primary denominator weight, but their diagnostic
+counts and provenance still contribute where applicable.
+
+\subsection{Hit completeness, purity and total impurity}
+\begin{align}
+ \metric{mc_hit_completeness_global}&=C/N_S,\\
+ \metric{mc_hit_purity_global}&=C/H_A,\\
+ \metric{mc_hit_impurity_global}&=(H_A-C)/H_A.
+\end{align}
+Completeness counts all eligible truth clusters in its denominator, including
+clusters of missed tracks, unassigned clusters and fragments not claimed by the
+one-to-one assignment. Purity uses only Dice-associated predictions in its
+denominator, but every cluster in those predictions counts.
+
+These are ratios of dataset totals, not means of pair purities or completenesses.
+Their harmonic mean $2C/(N_S+H_A)$ generally differs from mean track Dice.
+Maximizing total Dice also need not maximize $C$ by itself. All three quantities
+describe the same Dice assignment; a second hit-count-maximizing association
+would be a different metric.
+
+Let $X$ count clusters from \emph{other eligible} tracks in associated predictions,
+and let $U_A=\sum_e|R_e\cap U_e|$. Then
+\begin{equation}
+ H_A=C+X+U_A.
+\end{equation}
+The additional diagnostics are
+\begin{align}
+ \metric{mc_other_track_contamination_global}&=X/H_A,\\
+ \metric{mc_nontarget_contamination_global}&=U_A/H_A.
+\end{align}
+Their sum is total impurity. Excluded MC and overlay are both in $U_A$ if they
+contaminate an associated prediction. Their independent predictions contribute
+to neither $H_A$ nor $C$.
+
+\subsection{Verified overlay contamination and leakage}
+
+Let $B_e\subseteq U_e$ be clusters verified to consist entirely of measured
+overlay members. Define
+\begin{equation}
+ H_B=\sum_e|B_e|,\qquad B_A=\sum_e|R_e\cap B_e|.
+\end{equation}
+With adequate provenance on the relevant support,
+\begin{align}
+ \metric{mc_bg_contamination_global}&=B_A/H_A,\\
+ \metric{bg_leakage_to_mc_global}&=B_A/H_B.
+\end{align}
+The first asks how much of the associated prediction support is verified pure
+overlay. The second asks how much of the dataset's verified pure overlay entered
+those associated predictions. It includes overlay in empty-target events in
+$H_B$, so the latter statistic depends on event-cohort composition.
+
+Both names refer to the pure-overlay cluster definition in this version. They do
+not count every cluster containing even one overlay member, and do not estimate
+the fraction of member strips from overlay. Mixed-cluster fractions are reported
+separately. A mixed eligible cluster is still a whole eligible cluster for the
+track score under the existing ownership rule; provenance does not fractionally
+reweight or relabel it.
+
+When some associated clusters have \code{UNKNOWN} provenance, contamination is
+\code{null}. When any valid cluster in the dataset has \code{UNKNOWN} provenance,
+leakage is \code{null}, because its overlay denominator cannot be fully classified.
+The separate \metric{mc_bg_contamination_lower_bound_global} always reports
+$B_A/H_A$ when $H_A>0$. Unknown clusters are never counted as verified overlay.
+This lower bound can be zero without establishing that contamination is zero.
+
+\subsection{Accepted-match efficiency and signal ARI}
+\begin{equation}
+ \metric{track_efficiency_global}=\frac{\sum_e k_e}{N_T}.
+\end{equation}
+This retained metric uses $\mathcal E_e$, not $\mathcal M_e$.
+\metric{ari_signal} retains its event-macro legacy definition, described below.
+Neither diagnostic becomes a new checkpoint-selection rule in Phase 1.
+
+\section{Provenance representation and accounting}
+
+\begin{longtable}{p{0.06\linewidth}p{0.31\linewidth}p{0.55\linewidth}}
+\toprule Code & Category & Established information\\\midrule\endhead
+0 & \code{UNKNOWN} & Composition is unavailable or cannot be classified by the supplied evidence.\\
+1 & \code{MC_ONLY} & All observed members are known MC; track eligibility is a separate label decision.\\
+2 & \code{OVERLAY_ONLY} & All observed members are verified measured overlay.\\
+3 & \code{MIXED} & Both MC and measured-overlay members are explicitly established.\\
+4 & \code{MC_PRESENT_UNRESOLVED} & Some MC is established; whether remaining members are other MC or overlay is unresolved. The cluster cannot be pure overlay.\\
+\bottomrule
+\end{longtable}
+
+These categories partition valid clusters. \code{MC_ONLY} on a non-target cluster
+means MC outside the supplied eligible support; the evaluator does not infer its
+particle identity or the reason for exclusion. \code{MC_PRESENT_UNRESOLVED} must
+not be described as verified mixed or pure excluded MC.
+
+\subsection{Conservative mapping of existing HDF5 fields}
+
+\code{cluster_provenance_from_hdf5} consumes aligned cluster arrays:
+\begin{itemize}
+\item \code{background_only=true} establishes \code{OVERLAY_ONLY}.
+\item If supplied, \code{ownership=0} must agree exactly with that flag.
+      Ownership 1 is strict primary majority, 2 contested, and 3 other nonprimary.
+\item \code{origin_noise=false} establishes some MC contribution, hence
+      \code{MC_PRESENT_UNRESOLVED}; it does not establish pure MC composition.
+\item Ownership 1 or 2 also establishes primary MC evidence. Contradictory
+      \code{origin_noise=true} is rejected.
+\item Ownership 1 with direct-primary \code{purity=1} establishes \code{MC_ONLY}.
+      The comparison is exact and uses no tolerance that could promote a
+      nearly-pure cluster to pure MC.
+\item Remaining cases are \code{UNKNOWN}. In particular, no simulated origin
+      contributor is not sufficient evidence of measured overlay.
+\end{itemize}
+
+The compact HDF5 fields cannot, in general, distinguish all-MC mixtures from
+MC/overlay mixtures. The helper therefore never invents \code{MIXED}. Callers
+with an existing, explicit member-provenance sidecar may supply that category
+directly. No producer change or new truth-track inference is required.
+
+Supplying pure-overlay provenance for a cluster labelled eligible MC is a
+contradiction and raises an error. Missing provenance defaults to
+\code{UNKNOWN}; primary Dice, completeness, total purity, efficiency and legacy
+metrics remain computable.
+
+\subsection{Counts, coverage and exact decompositions}
+
+For each lower-case category name $g$, the output includes
+\begin{itemize}
+\item \code{n_<g>_points}: category count on all valid support;
+\item \code{n_mc_associated_<g>_points}: category count on $R_e$;
+\item \code{n_mc_nontarget_<g>_points}: category count on $R_e\cap U_e$.
+\end{itemize}
+Let $Z_A$ be the associated \code{UNKNOWN} count and $Z$ the dataset unknown count.
+Then
+\begin{align}
+ \metric{mc_provenance_coverage_global}&=(H_A-Z_A)/H_A,\\
+ \metric{provenance_coverage_global}&=(|V|-Z)/|V|.
+\end{align}
+This is coverage of the categorical classification, not the fraction of clusters
+whose every member origin is known. Unresolved MC presence is a classified
+category, and its fraction remains visible separately.
+
+The \code{mc_associated_<g>_fraction_global} family divides associated category
+counts by $H_A$; the five values sum to one when $H_A>0$.
+The \code{mc_nontarget_<g>_fraction_global} family divides non-target associated
+category counts by $H_A$; its sum is non-target contamination. Thus
+\begin{equation}
+ \frac{C}{H_A}+\frac{X}{H_A}+\sum_g\frac{U_{A,g}}{H_A}=1.
+\end{equation}
+Associated composition includes correct and wrong eligible clusters as well as
+non-target clusters. It must not be added to the impurity decomposition again.
+
+\subsection{Exported sufficient counts}
+
+These fields are sums of event counts in a dataset summary. They are not
+averages; \code{mc_track_dice_sum} is the one score total in this table.
+\begin{longtable}{p{0.54\linewidth}p{0.39\linewidth}}
+\toprule Output field & Meaning\\\midrule\endhead
+\metric{n_events} & Number of complete events scored.\\
+\metric{n_points} & Total valid clusters, $|V|$.\\
+\metric{n_signal_points} & Eligible truth clusters, $N_S$.\\
+\metric{n_background_points} & All non-target clusters, $|U|$.\\
+\metric{n_true_tracks} & Supplied eligible truth tracks, $N_T$.\\
+\metric{n_pred_tracks} & Nonempty final predictions, $\sum m_e$.\\
+\metric{n_matched_tracks} & Accepted matches, $\sum k_e$.\\
+\metric{n_mc_dice_matches} & Positive-overlap Dice associations.\\
+\metric{mc_track_dice_sum} & Sum of Dice scores, $Q_D$.\\
+\metric{n_mc_correct_points} & Assigned pair intersections, $C$.\\
+\metric{n_mc_associated_pred_points} & Associated prediction support, $H_A$.\\
+\metric{n_mc_other_track_points} & Other eligible clusters in that support, $X$.\\
+\metric{n_mc_nontarget_points} & Non-target clusters in that support, $U_A$.\\
+\metric{n_split_true_tracks} & Truth sets with more than one positive prediction overlap.\\
+\metric{n_merged_pred_tracks} & Predictions with more than one positive truth overlap.\\
+\metric{n_non_target_only_pred_tracks} & Predictions with no eligible truth overlap.\\
+\metric{n_mc_overlap_unassociated_pred_tracks} & Positive-overlap predictions not in the Dice assignment.\\
+\metric{n_background_assigned_points} & Non-target clusters assigned to any prediction.\\
+\metric{n_signal_unassigned_points} & Eligible clusters left unassigned.\\
+\metric{n_truth_tracks_below_policy_min_clusters} & Supplied truth sets with fewer than four clusters; audit only.\\
+\metric{n_events_with_provenance} & Events supplied a provenance array, even if some or all entries are unknown.\\
+\bottomrule
+\end{longtable}
+
+\section{Aggregation and undefined values}
+
+\subsection{Dataset-global ratios}
+
+For a per-event ratio $r_e=x_e/d_e$, its global variant is
+\begin{equation}
+ r_{\mathrm{global}}=\frac{\sum_e x_e}{\sum_e d_e}.
+\end{equation}
+When all defined denominators are positive, this is a denominator-weighted event
+average. The weight is truth tracks for mean Dice, truth clusters for global
+completeness, associated predicted clusters for global purity, and verified pure
+overlay clusters for leakage. These are different weighting choices.
+
+Accumulators sum integer counts and float64 score totals across complete events.
+They may merge batch accumulators. They never average batch means. Integer totals
+are exactly batch invariant; floating sums may differ at roundoff level due to
+addition order. Tests require agreement to $10^{-12}$ on fixed predictions.
+This guarantee does not imply that changing a GPU inference batch size produces
+bit-identical predictions.
+
+\subsection{Event-macro diagnostics}
+
+For a metric defined on event subset $F$, the macro mean is
+\begin{equation}
+ r_{\mathrm{event\ macro}}=\frac{1}{|F|}\sum_{e\in F}r_e.
+\end{equation}
+The explicit primary companion is \metric{mc_track_dice_event_macro}. New ratio
+families have \code{_event_macro} companions. Historical macro fields retain
+their old unsuffixed names and also have explicit aliases. The new macro
+observation counts are recorded in \code{mc_event_macro_observations}.
+
+Macro overlay values exclude events where required provenance is unknown. A
+pooled global value can therefore be undefined even when an available-event
+macro value is defined. Always report the coverage and counts; these are not
+interchangeable populations.
+
+\subsection{Zero denominators}
+
+All undefined ratios are Python \code{None}/JSON \code{null}, never NaN, infinity,
+or an invented zero or one. Important cases are:
+\begin{longtable}{p{0.43\linewidth}p{0.50\linewidth}}
+\toprule Condition & Result\\\midrule\endhead
+No eligible truth tracks & Mean Dice, track efficiency and hit completeness undefined.\\
+Truth exists, all tracks missed & Mean Dice and hit completeness zero.\\
+No positive-overlap Dice associations & Associated purity, impurity, contamination and coverage undefined.\\
+No verified pure overlay, complete provenance & Overlay contamination zero if associated support exists; leakage undefined.\\
+Unknown associated provenance & Overlay contamination undefined; its separately named lower bound remains available.\\
+Unknown provenance anywhere & Overlay leakage undefined.\\
+Empty input dataset & Zero counts and undefined ratios; no empty-dataset perfect score.\\
+\bottomrule
+\end{longtable}
+
+\section{Historical metrics retained exactly}
+
+The original event scorer \code{event_track_metrics} retains its definition.
+So do \code{summarize_event_metrics} and the streaming accumulator
+\code{EventMetricAccumulator}. Their accepted matcher is the current version-2
+eligible-first matcher. Older reports made with a different matcher must retain
+their own version/provenance; they must not be relabelled as equivalent.
+
+For this section, let $F_e$ count truth tracks overlapping more than one
+prediction, and $G_e$ count predictions overlapping more than one truth track.
+Any positive cluster overlap counts; there is no significant-overlap cut.
+Let $L_e$ be eligible clusters left unassigned, $U^+_e$ non-target clusters
+assigned to any prediction, and $H^+_e=\sum_jq_{ej}$ all assigned clusters.
+
+\begin{longtable}{p{0.40\linewidth}p{0.53\linewidth}}
+\toprule Historical field & Event definition and interpretation\\\midrule\endhead
+\metric{track_efficiency} & $k_e/n_e$: fraction of truth tracks with accepted matches.\\
+\metric{track_purity} & $k_e/m_e$: fraction of predictions with accepted matches; not hit purity.\\
+\metric{matched_iou_mean} & Mean $J_{eij}$ over $\mathcal E_e$.\\
+\metric{matched_purity_mean} & Mean $r_{eij}$ over $\mathcal E_e$.\\
+\metric{matched_efficiency_mean} & Mean $c_{eij}$ over $\mathcal E_e$.\\
+\metric{fake_rate} & $(m_e-k_e)/m_e$. Historical name: unmatched predictions are not established physical fakes.\\
+\metric{miss_rate} & $(n_e-k_e)/n_e$.\\
+\metric{split_rate} & $F_e/n_e$, using positive target overlaps.\\
+\metric{merge_rate} & $G_e/m_e$, using positive target overlaps.\\
+\metric{background_rejection} & $(|U_e|-U^+_e)/|U_e|$: non-target clusters left unassigned. Not overlay-only rejection.\\
+\metric{background_contamination} & $U^+_e/H^+_e$: non-target clusters in all predictions, including independent non-target predictions.\\
+\metric{signal_loss_to_background} & $L_e/|S_e|$: eligible clusters left unassigned. Does not count wrong-track assignment.\\
+\metric{ari_signal} & Adjusted Rand index on eligible support, with the legacy degenerate-case convention below.\\
+\metric{ari_with_background} & Adjusted Rand index on valid support, treating all non-target truth as one class.\\
+\bottomrule
+\end{longtable}
+
+Dataset values of these unsuffixed fields are means across events where the
+quantity is defined. In particular, a historical matched-quality mean first
+averages accepted pairs within an event, then averages defined events equally.
+It is not a dataset-pooled accepted-track average.
+
+The existing \metric{track_efficiency_global} and
+\metric{track_purity_global} are $\sum k_e/\sum n_e$ and $\sum k_e/\sum m_e$.
+They remain unchanged. The former shares the primary truth-track denominator
+but has a different matching objective and thresholded numerator.
+
+\subsection{ARI equations and edge conventions}
+
+On the chosen support, let $n_{ij}$ be the truth/prediction contingency table,
+$a_i=\sum_j n_{ij}$, $b_j=\sum_i n_{ij}$, and $n=\sum_{ij}n_{ij}$. Write
+\begin{equation}
+ I=\sum_{ij}\binom{n_{ij}}2,\quad A=\sum_i\binom{a_i}2,\quad
+ B=\sum_j\binom{b_j}2,\quad Q=\binom n2.
+\end{equation}
+The adjusted Rand index is
+\begin{equation}
+ \mathrm{ARI}=\frac{I-AB/Q}{(A+B)/2-AB/Q},
+\end{equation}
+with the library's conventions for degenerate partitions. The legacy wrapper
+uses sklearn's ARI on eligible support only when there are more than one
+eligible cluster and more than one truth track. Otherwise, with any eligible
+support, it returns 1 if that support has at most one predicted label and 0 if
+it has multiple predicted labels. With no eligible support it returns undefined.
+
+Consequently, an entirely missed single-track event can have
+\metric{ari_signal}=1 because all its clusters share the unassigned label.
+Signal ARI also ignores contaminating non-target clusters. These are reasons to
+retain ARI as a partition diagnostic rather than interpreting it as complete
+reconstruction quality. No historical convention is silently corrected here.
+
+Inclusive ARI is computed only when there are more than one valid cluster and
+more than one distinct truth label on valid support; otherwise it is undefined.
+All unassigned predictions share label $-1$. Grouping all non-target truth into
+one class can penalize independent non-target reconstructions, so inclusive ARI
+does not express the primary benchmark objective.
+
+\subsection{Additional global diagnostics and aliases}
+
+New global variants divide summed numerators by summed denominators from the
+table. These cover split, merge and miss rates, background rejection, background
+contamination and signal loss to background. Each uses its existing field name
+with the explicit \code{_global} suffix.
+\code{matched_<quality>_mean_global} pools all
+accepted pairs across the dataset, for qualities IoU, purity and efficiency.
+
+\metric{unmatched_predicted_fraction_global} is
+$(\sum m_e-\sum k_e)/\sum m_e$; its macro companion has exactly the historical
+\code{fake_rate} meaning without asserting physical fakeness. No old field is
+removed or silently renamed.
+
+\metric{non_target_only_predicted_fraction_global} counts predictions with
+\emph{zero} eligible truth overlap divided by all predictions. It does not
+establish that these predictions are valid tracks or fakes.
+\metric{mc_overlap_unassociated_predicted_fraction_global} counts predictions
+with positive eligible overlap that were not selected by the Dice assignment,
+divided by all predictions. These can include split fragments or competing mixed
+predictions. Their macro companions use the corresponding per-event ratios.
+
+No dataset-global ARI is made by concatenating event-local IDs; doing so would
+identify unrelated track labels across events. The preserved ARI aggregation
+is explicitly event macro.
+
+\section{Worked examples}
+
+All examples use final disjoint assignments and unit-weight clusters. Unless
+stated otherwise, there is complete MC-only provenance for target clusters.
+
+\subsection{Perfect reconstruction plus independent non-target tracks}
+Two truth tracks each have four clusters. Predictions recover each exactly and
+also form a separate four-cluster overlay-only track. Mean Dice, completeness,
+purity and track efficiency are all 1. Overlay contamination and leakage to the
+associated predictions are 0. The historical prediction purity is $2/3$ and
+the historical fake rate is $1/3$. That disagreement is intentional: the extra
+prediction's physical validity is outside the primary truth contract.
+
+\subsection{One four-cluster track split into two equal fragments}
+Each fragment has two correct clusters. One can be associated; its Dice is
+$2(2)/(4+2)=2/3$. Mean Dice is $2/3$, completeness is $1/2$, purity is 1, and
+split rate is 1. The legacy matcher accepts one fragment exactly at IoU and
+completeness $0.5$, so track efficiency is 1. Continuous quality and thresholded
+efficiency reveal different aspects of this reconstruction.
+
+\subsection{Two four-cluster tracks merged into one prediction}
+The eight-cluster prediction can be associated to only one truth track. Its
+Dice is $2(4)/(4+8)=2/3$, while the other truth track contributes zero. Mean Dice
+is therefore $1/3$, completeness and purity are each $1/2$, and merge rate is 1.
+The other truth track's four clusters contribute to other-track impurity.
+One legacy accepted match gives track efficiency $1/2$.
+
+\subsection{Different impurity sources}
+Start with two perfectly recovered four-cluster targets. Add four non-target
+clusters to the first prediction: one MC-only, one pure overlay, one explicitly
+mixed, and one MC-present unresolved. A second pure-overlay cluster forms an
+independent prediction. Then
+\begin{align}
+ N_T&=2,&N_S&=8,&C&=8,&H_A&=12,&H_B&=2,&B_A&=1,\\
+ \overline D&=\frac{2/3+1}{2}=\frac56,&
+ \text{completeness}&=1,&\text{purity}&=\frac23.
+\end{align}
+Total impurity is $4/12$, but verified pure-overlay contamination is $1/12$ and
+leakage is $1/2$. Each of the four non-target provenance categories contributes
+$1/12$ to the impurity decomposition. None is promoted to a truth target.
+
+\subsection{Truth-track mean versus event macro versus hit completeness}
+One event has a perfectly recovered four-cluster track. Another has three
+eight-cluster tracks, all missed. Mean Dice is $1/4$, event-macro Dice is $1/2$,
+and global hit completeness is $4/(4+24)=1/7$. Averaging the two event scores or
+the two batch scores would produce the wrong primary result.
+
+\subsection{Dice and accepted matching can disagree}
+Take two truth tracks with sizes 12 and 4, and predictions with sizes 12 and 4,
+whose intersection table is
+\begin{equation}
+ \begin{pmatrix}8&4\\4&0\end{pmatrix}_{\text{prediction}\times\text{truth}}.
+\end{equation}
+The Dice matrix is
+$\left(\begin{smallmatrix}2/3&1/2\\1/2&0\end{smallmatrix}\right)$.
+Maximum-total-Dice matching selects the off-diagonal pairs for total 1 and mean
+$1/2$. Only the upper-left edge meets the IoU threshold; the independent legacy
+matcher accepts that edge. Thresholding the Dice assignment would incorrectly
+report zero accepted matches.
+
+\section{Implementation and saved-prediction contract}
+
+\subsection{Shared API}
+The implementation is self-contained in
+\file{train/downstream/track_finding_metrics.py}, retaining its NumPy, SciPy and
+sklearn dependencies. The opt-in interface is:
+\begin{Code}
+row = event_mc_reconstruction_metrics(
+    truth, pred, valid_mask=valid, pred_signal_mask=gate,
+    provenance=provenance, point_ids=original_cluster_index,
+)
+accumulator = MCReconstructionAccumulator()
+accumulator.add(row)          # one complete event
+accumulator.merge(other)      # optional disjoint batch/shard
+summary = accumulator.summary()
+\end{Code}
+An event row contains every historical field, unchanged, plus
+\code{dice_matches}, the new counts, \code{mc_track_dice_sum} and a
+\code{mc_event_metrics} dictionary. The historical \code{matches} list remains
+the accepted-match list. Each Dice pair records truth ID, prediction ID,
+intersection, both sizes and Dice. One-to-one uniqueness and positive overlap
+can be audited directly.
+
+The summary includes old outputs, explicit macro aliases, new global metrics,
+new macro metrics, counts, profile version and accepted-match configuration.
+It does not change \code{FINDING_METRICS_VERSION=2}, which belongs to the legacy
+training/checkpoint contract. Mixing legacy-only rows into the new accumulator
+raises an error rather than fabricating missing counts.
+
+\subsection{Offline NPZ scorer}
+Run from the repository root:
+\begin{Code}
+python -m train.downstream.eval.rescore_track_finding \
+  --input /path/to/predictions.npz \
+  --prediction-key pred coatjava \
+  --output /path/to/new_summary.json \
+  --events-output /path/to/new_events.jsonl
+\end{Code}
+The archive must contain:
+\begin{itemize}
+\item \code{offsets}: integer array of length events plus one, beginning at zero,
+      nondecreasing, ending at the flat point count;
+\item \code{truth}: flat integer supplied target labels;
+\item one flat final-prediction label array per \code{--prediction-key};
+\item optional aligned \code{point_ids}, and either provenance codes or raw
+      \code{background_only}, \code{ownership}, \code{origin_noise}, \code{purity};
+\item optional event arrays \code{source_event_index}, \code{source_id},
+      \code{original_ordinal}; duplicate available identities are rejected.
+\end{itemize}
+Stored labels must already incorporate the native assignment gate and threshold.
+They must not contain padding or duplicated overlapping event chunks. Empty
+events may have repeated consecutive offsets. Pickled/object arrays are not used.
+
+\code{--events-per-batch} controls CPU aggregation batches only. It cannot change
+the saved predictions. Output files must be new; historical reports are never
+overwritten. A successful summary contains input and scorer hashes, dependency
+versions, profile/config, provenance source and the full-event verification flag.
+The optional event JSONL is a streaming diagnostic; if scoring fails, it may be
+partial and is not a completed summary.
+
+Without an HDF5 join, the caller is responsible for full-event support and
+truth/provenance alignment. The receipt explicitly records that full-event
+membership was not independently verified. An old archive lacking provenance
+can still yield the primary score and non-overlay metrics; it cannot establish
+overlay contamination from $-1$ truth labels alone.
+
+\subsection{Joining existing HDF5 provenance safely}
+Supply all of:
+\begin{Code}
+  --hdf5-root /path/to/published/dataset \
+  --split validation --plan-id EXACT_PUBLISHED_PLAN_ID
+\end{Code}
+The archive must also contain all three event identity arrays and original
+\code{point_ids}. For every event the scorer checks the published plan ID,
+physical source ID and original ordinal, and a complete permutation of the HDF5
+cluster indices. By default, stored truth must exactly match the corresponding
+HDF5 \code{primary_segment}. With the explicit minimum-four policy, stored truth
+may equal either the original labels or their exact projected labels. The scorer
+then applies that projection and permutes the existing provenance into prediction
+order. Other mismatches fail; no coordinate-based alignment or arbitrary truth
+repair is attempted.
+
+This path deliberately refuses archives whose HDF5 origin or cluster ordering
+cannot be proved. Existing checkpoints remain usable, but inference/export
+must provide those identities before overlay-aware rescoring can be trusted.
+The evaluator does not add provenance to model inputs. The separate loader patch
+enforces eligibility as described in Section~\ref{sec:cut}.
+
+\section{Validation requirements and evidence}
+
+The CPU-only test module is
+\file{train/downstream/tests/test_mc_reconstruction_metrics.py}. It checks:
+\begin{enumerate}
+\item Perfect targets, independent non-target predictions, and retained
+      unmatched-prediction diagnostics.
+\item Splits, merges, fully missed tracks and exact legacy threshold boundaries.
+\item Different Dice and accepted assignments, including the counterexample above.
+\item Exhaustive small-matrix assignment oracles, positive intersections and
+      one-to-one uniqueness.
+\item Truth-track weighting versus event macro and cluster weighting.
+\item Full impurity/provenance decompositions, excluded MC, verified overlay,
+      explicitly mixed clusters and missing provenance.
+\item Empty datasets/events, zero denominators, padding, prediction gates,
+      malformed arrays, immutable labels and short-track auditing.
+\item Reproducible ties under label renaming and point serialization with
+      stable original indices.
+\item Batch sizes 1, 2, 7, 16, 64 and 100, with reverse-order accumulator merging.
+\item Exact per-event legacy-field parity and numerical summary parity.
+\item Saved-archive round trips and HDF5 event/point identity join failures.
+\end{enumerate}
+
+Run the focused suite with
+\begin{Code}
+python -m unittest \
+  train.downstream.tests.test_mc_reconstruction_metrics -v
+\end{Code}
+Existing metric, validation-history and HDF5 downstream tests additionally
+exercise compatibility. Some campaign tests require
+\code{PYTHONPATH=.:train/downstream/campaign} under the repository's existing
+import layout. A source-AST comparison verifies that pre-existing metric
+functions/classes are unchanged, rather than relying only on shared-code parity.
+
+A bounded real-data validation uses the locally available qualification HDF5
+pilot, saved native COATJAVA assignments, deliberately permuted original cluster
+indices, and CPU scoring batches 1 and 64. It checks the full provenance join and
+pooled metric agreement. This is evaluator validation, not a new model ranking,
+campaign test result or confirmation that every input satisfies eligibility.
+Dated evidence belongs under
+\file{research_reports/mc_reconstruction_phase1_20261110/}; it is not the normative
+definition of the metrics.
+
+\section{Versioning and future integration boundary}
+
+The profile identifier \code{mc_reconstruction_v1} fixes the truth-label contract,
+Dice objective, association rule, tie convention, weighting, provenance mapping,
+undefined-value rules and field meanings in this specification. A scientific
+definition change requires a new profile version. An implementation correction
+must be accompanied by tests and a recorded source hash; prior artifacts retain
+their original receipts. Changing aggregation requires a distinctly named field.
+
+The Phase-1 code does not call the new metric from training, change the model
+selection callback, reschedule jobs, rewrite checkpoints, or rank all saved
+checkpoints. Later integration should use this same tested API, preserve fixed
+validation event identities and final assignment settings, and export the
+original point/provenance identities needed for reproducibility. Any later
+checkpoint-selection change must be explicit and use validation data; final
+test results remain a separate evaluation.
+
+The intended four-cluster policy remains fixed. If an input's short-track audit
+is nonzero, explain the input-contract discrepancy before claiming a
+policy-compliant benchmark result. This is an input audit, not permission to
+silently change the scientific target population.
+
+\section{Implementation sources and reproducible document build}
+
+Normative implementation entry points:
+\begin{itemize}
+\item \file{train/downstream/track_finding_metrics.py}: legacy metrics, new
+      matching, provenance conversion and accumulators.
+\item \file{train/downstream/eval/rescore_track_finding.py}: saved-label scorer,
+      optional HDF5 join and receipt.
+\item \file{fm4npp/datasets/cvt_downstream.py}: HDF5 projection, with the authorized
+      cut for adapter supervision; raw views preserve stored labels.
+\item \file{fm4npp/datasets/track_eligibility.py}: shared full-event cut, version
+      and legacy ragged label views.
+\item \file{fm4npp/datasets/cvt_hdf5.py}: existing published-manifest reader.
+\item \file{train/downstream/track_finding_contract.py}: retains the legacy
+      metric version and checkpoint guards.
+\end{itemize}
+
+The provenance mapping was checked against the existing
+\code{cvt-clusters-h5-v1} schema and producer functions
+\code{strict_ownership}, \code{clusters}, and \code{compact_primary_summary} in
+the local \code{cvt-cluster-skim} package. Persisted fields, not inferred particle
+identities, inform the new diagnostic categories.
+
+This LaTeX file is the versioned source of the accompanying PDF. Build from the
+repository root using
+\begin{Code}
+mkdir -p /tmp/mc-reconstruction-spec
+latexmk -pdf -interaction=nonstopmode -halt-on-error \
+  -outdir=/tmp/mc-reconstruction-spec \
+  docs/evaluation/mc_reconstruction_v1.tex
+\end{Code}
+Render the resulting PDF to images for visual verification before publishing a
+revised document. Equations and explanatory text must remain consistent with
+the executable tests.
+
+\end{document}

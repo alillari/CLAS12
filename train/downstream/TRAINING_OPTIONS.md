@@ -17,7 +17,8 @@ root and use absolute paths for data, checkpoints and external configs.
 | --- | --- |
 | `--eventnumber` | Overrides `limit_size` and enables a training sample limit. Default 50k; events for finding, accepted tracks for event-segment regression. |
 | `--train_batch_size` | Overrides YAML training batch. Default **32** for both CLIs; pass 128 for the momentum starting recipe. Finding also replaces validation/local batch sizes; regression retains its independently configured validation batch. |
-| `--usepretrain`, `--pretrained_ckpt` | Train the head on pretrained features. Supply the checkpoint explicitly; its architecture must match the YAML. Without the flag, AdapterOnly uses raw-coordinate embeddings. |
+| `--backbone`, `--backbone-catalog`, `--backbone-root` | Select a catalog ID and resolve checkpoint architecture/input metadata; see [Pretrained backbones](../PRETRAINED_BACKBONES.md). Catalog and root flags are optional. |
+| `--usepretrain`, `--pretrained_ckpt`, `--no-pretrain` | An explicit path or catalog selection enables pretrained features. `--usepretrain` requires a selection/path in CLI or YAML. `--no-pretrain` clears the selection and uses AdapterOnly. Historical checkpoints without full metadata need a matching recipe or catalog config. |
 | `--seed` | Overrides the YAML seed for initialization and supported loader randomization. A seed does not select a random training subset; ordinary loaders use accepted-sample prefixes. |
 | `--run_num` | Run identifier used in default paths/log names; does not change optimization. |
 | `--checkpoint_dir` | Overrides the YAML checkpoint/log directory. Give every fit a separate directory. |
@@ -94,6 +95,8 @@ limit and task filters.
 | Option | Meaning |
 | --- | --- |
 | `backbone_version` | `mamba1`, `mamba2`, `mamba3`, `transformer` (plus Longformer/Linformer compatibility paths); takes precedence over legacy `mambaversion`. Match the checkpoint. |
+| `pretrained_backbone`, `backbone_catalog`, `backbone_root` | YAML equivalents of the catalog selection flags. Resolved backbone metadata replaces recipe backbone defaults before constructing datasets or models; adapter settings remain independent. |
+| `backbone_output_dim`, `use_sincos_target` | Preserve the pretraining head shape; by default `klen * 3`, or `klen * 4` for sine/cosine targets. Campaign 5 resolves to 20 outputs. These do not select the downstream task/head output dimension. |
 | `embed_dim`, `num_layers_backbone`, `d_state`, `d_conv`, `expand` | Backbone width/depth/block dimensions. Must match pretrained weights; input width also sizes the AdapterOnly coordinate branch. |
 | `klen` | Number of coordinate triples in the backbone's next-point output (`3*klen`). Required for checkpoint compatibility even when only layer features are used. |
 | `backbone_*` | Overrides shared block options for the backbone. See [Mamba support](../MAMBA_SUPPORT.md). |

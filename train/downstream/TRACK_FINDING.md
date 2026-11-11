@@ -14,6 +14,10 @@ then follow the task-specific route below. Technical settings are defined in
 - Signal segment IDs define instances; `-1` denotes background. With
   `track_target_mode: signal_only`, background is negative in each signal mask
   and is not an additional query target.
+- Before serialization or chunking, the adapter marks MC segments with fewer
+  than four owned clusters in the complete event as `-1`. It retains every
+  cluster and leaves physical MC provenance unchanged. Noise tagging uses the
+  same [versioned eligibility policy](../../docs/evaluation/primary_mc_min4_v1.md).
 - Samples and `--eventnumber` count **events**. The starting profile accepts
   1–512 clusters/event, uses 16 queries and a width-256 attention decoder,
   two prototype-attention refinement layers and zero Mamba input/refinement layers.
@@ -28,6 +32,12 @@ position-only NeRF embedding and calibrated12 band-Hilbert serialization.
 Other checkpoints require their matching configuration. For AdapterOnly,
 omit `--usepretrain`; for frozen features, supply both `--usepretrain` and
 `--pretrained_ckpt`. Track finding needs **no target-standardization JSON**.
+
+Run the trainer with one process and select the GPU with `CUDA_VISIBLE_DEVICES`.
+Frozen-feature evaluation requires the original backbone weights. New adapter
+checkpoints record the backbone file's SHA-256 digest, input mode, and decoder
+settings. Older checkpoints use their saved training parameters to validate
+the input mode and decoder, and lack a backbone digest.
 
 ## Run and evaluate
 
@@ -44,12 +54,21 @@ omit `--usepretrain`; for frozen features, supply both `--usepretrain` and
 
 Checkpoint selection uses **assignment-option-2 ARI** in the configured
 `validation_ari_mode`, with a validation-loss tie-break. The preset uses signal
-ARI. Option 2 combines mask probability with query-class confidence and excludes
+ARI. Selection averages eligible events across the full validation cohort.
+No-object assignments count as background for both options. A run that reaches
+its update or epoch cap validates the last update and must produce a finite
+selected checkpoint to succeed. Option 2 combines mask probability with query-class confidence and excludes
 no-object queries. Its point-assignment threshold is 0.2; IoU, purity and
-efficiency matching cuts are each 0.5. Keep those definitions fixed when comparing
+efficiency matching cuts are each 0.5. Matching maximizes the number of pairs that pass all three
+cuts, then their total IoU. Keep those definitions fixed when comparing
 runs. Changing the threshold changes the efficiency/background operating point.
 
 ## Inspect behavior
+
+The two-page [metric reference](../../docs/evaluation/metrics_cheat_sheet_v1.pdf)
+defines track efficiency, hit completeness, hit purity and prediction-level purity
+using explicit set equations. It also defines efficiency at specified purity and
+completeness cuts.
 
 | Output | Use |
 | --- | --- |
@@ -76,3 +95,32 @@ Use [From single runs to campaigns](campaign/GETTING_STARTED.md) to repeat the
 validated recipe across backbones, label counts or seeds. For both tasks on the
 same backbone, use [the worked example](../WORKED_EXAMPLE.md). Reserve source
 events explicitly for a final test: sample limits alone do not create a split.
+
+## HDF5 AdapterOnly benchmark
+
+This branch integrates track finding with the published HDF5 cluster product.
+The shared data support is a separate ancestor commit; the other adapter
+integrations are independent sibling branches.
+
+```bash
+python -m train.downstream.benchmark_hdf5_finding \
+  --data-root /absolute/path/to/cvt-clusters-h5 \
+  --output-dir /absolute/path/to/new/finding-run
+```
+
+Defaults: 5,000 accepted training samples, 3,000 updates, 1,000 validation
+samples and 2,000 test samples, seed 42. Cohorts use accepted prefixes. The
+runner checks disjoint source-event identities, reloads the validation-selected
+checkpoint and writes configurations, cohort IDs, predictions and `summary.json`.
+For a smoke test add `--train-size 32 --steps 2 --validation-size 16 --test-size 16`.
+The configuration is `hdf5_finding_5k` in `scripts/configs/clas12_adapter_recipes.yaml`.
+
+Samples are whole events. `primary_segment == -1`, including contested clusters,
+remains background. The model, Hungarian targets and losses are unchanged.
+Both methods use identical truth/masks; COATJAVA groups come from first-pass
+`reco_segment`. Checkpoint selection uses validation signal ARI with a loss
+tie-break; inference remains option 2 at threshold 0.2. Standalone evaluation
+uses `test` by default and requires a target momentum scale of 1 for GeV/c.
+Campaign analysis rendering selects this scale from the effective HDF5 reader,
+including manifest and run training overrides. Explicit analysis overrides take
+precedence; incompatible HDF5 momentum units are rejected by evaluation.

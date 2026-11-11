@@ -70,6 +70,34 @@ def loaders_params(root, workers=0):
 
 
 class HDF5PretrainingTest(unittest.TestCase):
+    def test_grid_choice_preserves_full_event_targets_and_auxiliary_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            radii = np.repeat([6.8, 9.3, 12.2, 16.], 24)
+            phi = np.tile(np.linspace(-2.8, 2.9, 24), 4)
+            row = event(96, 0)
+            row['clusters/xyz'] = np.column_stack((radii * np.cos(phi), radii * np.sin(phi), np.arange(96) / 10)).astype('f4')
+            row['clusters/primary_segment'] = np.arange(96, dtype=np.int32)
+            row['clusters/direction'] = np.tile(np.array([1., 0., 0.], dtype='f4'), (96, 1))
+            row['clusters/length'] = np.arange(96, dtype='f4') / 3
+            row['clusters/pitch'] = np.full(96, .1, dtype='f4')
+            publish_fixture(root, {'train': [[row]], 'validation': [[row]]})
+            results = []
+            for grid in ('legacy_v1', 'unit_v2'):
+                p = loaders_params(root)
+                p.hilbert_angular_grid = grid
+                p.use_aux_features = True
+                train, _, valid, _ = get_data_loader(p, False)
+                results.append(train.dataset[0])
+                self.assertEqual(len(results[-1][0]), 96)
+                for a, b in zip(results[-1], valid.dataset[0]):
+                    torch.testing.assert_close(a, b, rtol=0, atol=0)
+                for a, b in zip(results[-1], get_val_loader(p, False).dataset[0]):
+                    torch.testing.assert_close(a, b, rtol=0, atol=0)
+            self.assertFalse(torch.equal(results[0][1], results[1][1]))
+            for a, b in zip(results[0], results[1]):
+                torch.testing.assert_close(a[results[0][1].argsort()], b[results[1][1].argsort()], rtol=0, atol=0)
+
     def test_legacy_readers_keep_their_splits_and_cap(self):
         with tempfile.TemporaryDirectory() as tmp:
             for reader_type in ("ragged_mmap", "ragged_npy"):

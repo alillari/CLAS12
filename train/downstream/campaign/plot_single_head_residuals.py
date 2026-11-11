@@ -21,6 +21,8 @@ import numpy as np
 
 IDENTITY = ('source_file', 'event', 'source_event_index', 'segment_label',
             'truth_segment_label', 'adapter_sample_mode')
+HDF5_IDENTITY = ('data_plan_id', 'data_split', 'source_id', 'original_ordinal',
+                 'segment_label', 'truth_segment_label', 'adapter_sample_mode')
 CONTRACT = 'clas12_momentum_entrance_v1'
 
 
@@ -36,11 +38,13 @@ def load_evaluation(directory, task):
     keys, truth, prediction, hits = [], [], [], []
     with gzip.open(path, 'rt') as stream:
         reader = csv.DictReader(stream)
-        required = {*IDENTITY, 'n_hits', f'true_{variable}', f'adapter_{variable}'}
+        columns = set(reader.fieldnames or [])
+        identity = HDF5_IDENTITY if {'source_id', 'original_ordinal'} & columns else IDENTITY
+        required = {*identity, 'n_hits', f'true_{variable}', f'adapter_{variable}'}
         if not required.issubset(reader.fieldnames or []):
             raise ValueError(f'{path}: missing columns {required - set(reader.fieldnames or [])}')
         for row in reader:
-            key = tuple(row[k] for k in IDENTITY)
+            key = tuple(row[k] for k in identity)
             if any(not value for value in key):
                 raise ValueError(f'{path}: incomplete event/segment identity {key}')
             keys.append(key)
@@ -56,11 +60,14 @@ def load_evaluation(directory, task):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
     return dict(directory=str(directory.resolve()), summary=summary, physics=physics,
+                identity_columns=identity,
                 keys=keys, truth=np.array(truth), prediction=np.array(prediction),
                 hits=np.array(hits), sha256=digest.hexdigest())
 
 
 def align_reference(primary, reference):
+    if primary.get('identity_columns', IDENTITY) != reference.get('identity_columns', IDENTITY):
+        raise ValueError('Evaluations use different event identity contracts')
     lookup = {key: i for i, key in enumerate(reference['keys'])}
     if (len(lookup) != len(reference['keys']) or
             len(set(primary['keys'])) != len(primary['keys'])):
@@ -124,10 +131,14 @@ def residual_maps(data, x, edges, xlabel, tables, output):
         finite = np.isfinite(x) & np.isfinite(residual)
         in_x = finite & (x >= edges[0]) & (x <= edges[-1])
         shown = in_x & (abs(residual) <= limit)
-        _, _, _, mesh = ax.hist2d(x[shown], residual[shown],
-            bins=[np.linspace(edges[0], edges[-1], 111), np.linspace(-limit, limit, 151)],
-            norm=LogNorm(), cmap='viridis', cmin=1)
-        fig.colorbar(mesh, ax=ax, label='Tracks per cell (log scale)')
+        if shown.any():
+            _, _, _, mesh = ax.hist2d(x[shown], residual[shown],
+                bins=[np.linspace(edges[0], edges[-1], 111), np.linspace(-limit, limit, 151)],
+                norm=LogNorm(), cmap='viridis', cmin=1)
+            fig.colorbar(mesh, ax=ax, label='Tracks per cell (log scale)')
+        else:
+            ax.text(.5, .5, 'No tracks in the displayed range',
+                    ha='center', va='center', transform=ax.transAxes)
         for key, color, style, label in [('q16', 'white', '--', '16th / 84th percentiles'),
                                         ('q84', 'white', '--', None),
                                         ('median', '#ff7035', '-', 'Median')]:
@@ -253,7 +264,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     p_edges = np.arange(.25, 3.01, .25)
     theta_edges = np.arange(30., 150.1, 5.)
-    tables, angular_tables, report = {}, {}, dict(n_matched=len(p), identity_columns=IDENTITY, heads={})
+    tables, angular_tables, report = {}, {}, dict(n_matched=len(p), identity_columns=data['p']['identity_columns'], heads={})
     for task, d in data.items():
         residual = d['prediction'] - d['truth']
         if task == 'p':
@@ -272,7 +283,7 @@ def main():
             tail_counts=tails, tail_threshold=threshold, physics_summary=d['physics'],
             by_true_momentum=tables[task], by_true_theta=angular_tables[task])
         worst = np.argsort(np.where(np.isfinite(d['residual']), abs(d['residual']), np.inf))[-30:][::-1]
-        write_csv(output / f'{task}_largest_errors.csv', [dict(zip(IDENTITY, d['keys'][i]),
+        write_csv(output / f'{task}_largest_errors.csv', [dict(zip(d['identity_columns'], d['keys'][i]),
             true_p_gev=p[i], true_theta_deg=theta[i], residual=d['residual'][i],
             residual_unit=d['unit'], n_hits=int(d['hits'][i])) for i in worst])
     residual_maps(data, p, p_edges, 'True momentum [GeV]', tables, output / 'residuals_vs_true_momentum')

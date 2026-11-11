@@ -23,6 +23,18 @@ import plot_track_regression_campaign as plotter
 
 
 class CampaignPhysicsTest(unittest.TestCase):
+    def test_hdf5_campaign_override_resolves_gev_before_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.manifest(root)
+            row = build_adapter_only_run_row(root,32,8,17)
+            for overrides, expected in (({}, .001), ({'reader_type':'hdf5'},1.),
+                    ({'reader_type':'hdf5','physics_checkpoint':{'momentum_scale_to_gev':.001}},.001)):
+                manifest['training_overrides'] = overrides
+                render_model_yaml(manifest,row)
+                config = read_yaml(Path(row['model_yaml']))[row['model_config']]
+                self.assertEqual(config['physics_checkpoint']['momentum_scale_to_gev'],expected)
+
     def args(self, overrides):
         return SimpleNamespace(max_epochs=None, early_stopping_patience=None, early_stopping_warmup_steps=None,
                                max_train_batches=None, max_val_batches=None, training_override=overrides)

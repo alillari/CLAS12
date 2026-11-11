@@ -14,6 +14,19 @@ sys.path.append('../..')
 from fm4npp.utils import YParams
 from track_regression_trainer import DownstreamTrainer
 
+
+def configure_evaluation_data(params, samples, batch_size, split=None):
+    """Select the reporting cohort, independently of the training-size limit."""
+    if samples < 1 or batch_size < 1:
+        raise ValueError('Evaluation samples and batch size must be positive')
+    for key, value in dict(limit_data=True, limit_size=samples, batch_size=batch_size,
+            valid_batch_size=batch_size, limit_test_data=True, limit_test_size=samples,
+            drop_last_test=False).items():
+        params[key] = value
+    if split is not None or getattr(params, 'reader_type', 'ragged_mmap') == 'hdf5':
+        params['validation_split'] = split or getattr(params, 'test_split', 'test')
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluation script for track-property regression downstream tasks"
@@ -60,6 +73,8 @@ def main():
         default=1,
         help="Batch size for evaluation",
     )
+    parser.add_argument('--evaluation-split', default=None,
+                        help='Reporting split; defaults to the HDF5 test split. Use validation to reproduce validation loss.')
     parser.add_argument(
         "--usepretrain",
         action="store_true",
@@ -109,10 +124,7 @@ def main():
 
     # Prepare hyperparameters
     params = YParams(os.path.abspath(args.yaml_config), args.config)
-    params.limit_data = True
-    params.limit_size = args.eventnumber
-    params.batch_size = args.eval_batch_size
-    params.valid_batch_size = args.eval_batch_size
+    configure_evaluation_data(params, args.eventnumber, args.eval_batch_size, args.evaluation_split)
     if args.usepretrain:
         params.pretrained_ckpt = args.pretrained_ckpt or model2ckpt.get(args.config)
         if params.pretrained_ckpt is None:

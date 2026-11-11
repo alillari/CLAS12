@@ -117,6 +117,16 @@ class CVTDownstreamSource:
             raise ValueError(f"Segment {segment_label} has no unique primary ID in event {index}")
         return int(selected[0])
 
+    def particle_metadata(self, index, truth_segment):
+        """Use the selected truth track, including for impure COATJAVA groups."""
+        from fm4npp.particle_metadata import metadata_from_pdg
+        labels, pids, valid = self.read(index, ["clusters.primary_segment",
+            "clusters.primary_pid", "clusters.primary_pid_valid"])
+        selected = np.unique(pids[(labels == truth_segment) & valid])
+        if len(selected) > 1:
+            raise ValueError(f"Conflicting PDG IDs for truth segment {truth_segment} in event {index}")
+        return metadata_from_pdg(selected[0] if len(selected) else None)
+
     def benchmark(self, index, truth_segment, candidate_segment=None):
         """First-pass CVT entrance reference; never choose arbitrarily among clones.
 

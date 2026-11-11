@@ -61,7 +61,8 @@ def evaluate(trainer, loader, output):
             reference = loader.dataset.hdf5_source.benchmark(identity['source_event_index'], truth_label)
             p, theta, phi = reference.pop('values')
             vector = p * np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)])
-            records.append(dict(identity, truth_segment_label=truth_label, truth_valid=bool(valid_target[i]), truth=truth[i], adapter=prediction[i], coatjava=vector, association=reference))
+            metadata = loader.dataset.hdf5_source.particle_metadata(identity['source_event_index'], truth_label)
+            records.append(dict(identity, **metadata, truth_segment_label=truth_label, truth_valid=bool(valid_target[i]), truth=truth[i], adapter=prediction[i], coatjava=vector, association=reference))
     truth = np.asarray([r['truth'] for r in records])
     truth[~np.asarray([r['truth_valid'] for r in records])] = np.nan
     adapter = np.asarray([r['adapter'] for r in records])

@@ -115,3 +115,19 @@ reference uses same-pass p, theta and entrance phi rather than the DOCA vector.
 The adapter uses truth cluster groups, so the paired momentum result is not an
 end-to-end reconstructed-track comparison. All accepted truth tracks are also
 reported for the adapter. Standalone evaluation defaults to the `test` split.
+
+HDF5 evaluation infers particle class and electric charge from the selected truth
+track's signed PDG ID using `fm4npp.particle_metadata.metadata_from_pdg`. It uses
+valid PID fields on that truth segment, including when the input is an impure
+COATJAVA group. Conflicting valid PIDs are rejected. Unknown IDs retain an unknown
+charge and are counted separately, rather than becoming positive particles.
+The helper covers the usual leptons/light hadrons and PDG nuclear codes; it is
+not a complete particle database. Evaluation class indices remain pion=0,
+kaon=1, proton=2, electron=3 and other=4, distinct from training classifier indices.
+It can also be used directly: `python -m fm4npp.particle_metadata 211 -211 11 -11`.
+
+Prediction rows retain dataset plan, split, source ID and original event ordinal.
+The historical scalar residual plotter accepts these HDF5 identities as well as
+legacy mmap metadata, and rejects cross-plan or cross-split joins. The compatibility
+`eval_momentum_regression.py` CLI also defaults to held-out HDF5 test data; pass
+`--evaluation-split validation` explicitly to reproduce a validation result.

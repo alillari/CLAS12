@@ -131,3 +131,10 @@ The historical scalar residual plotter accepts these HDF5 identities as well as
 legacy mmap metadata, and rejects cross-plan or cross-split joins. The compatibility
 `eval_momentum_regression.py` CLI also defaults to held-out HDF5 test data; pass
 `--evaluation-split validation` explicitly to reproduce a validation result.
+
+Both evaluation CLIs validate checkpoint momentum units before loading weights.
+HDF5 requires a checkpoint whose saved data contract or physics settings explicitly
+declare GeV/c, with no conflicting unit declarations. MeV checkpoints and checkpoints
+with unknown units are rejected, even when the current YAML points to GeV statistics.
+Evaluate legacy MeV checkpoints with their original mmap configuration; changing the
+stats file does not convert their saved normalizer or log-momentum output units.

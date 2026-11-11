@@ -34,4 +34,5 @@ jobs:
           train.downstream.tests.test_finding_analysis_edge_cases
           train.downstream.tests.test_mc_reconstruction_metrics
           train.downstream.tests.test_particle_metadata
+          train.downstream.tests.test_checkpoint_units
           train.downstream.tests.test_single_head_residual_plots -v

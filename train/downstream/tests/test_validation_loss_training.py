@@ -212,6 +212,29 @@ class ValidationLossTrainingTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Cannot resume width-selected training'):
                 trainer.load_checkpoint(path, inference=False)
 
+    def test_checkpoint_retains_training_units_and_rejects_before_replacing_buffers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            contract = dict(format='cvt-clusters-h5-v1', plan_id='fixture', split='train', momentum_unit='GeV/c')
+            trainer.params['reader_type'] = 'hdf5'
+            trainer.regression_target_stats['data_contract'] = contract
+            trainer.physics_config = resolve_config('mom', {'momentum_scale_to_gev': 1.})
+            path = trainer._save_checkpoint('units.pth', 0, 0.)
+            checkpoint = torch.load(path, weights_only=False)
+            self.assertEqual(checkpoint['data_contract'], contract)
+            trainer.load_checkpoint(path, inference=True)
+            checkpoint['physics_checkpoint_config']['momentum_scale_to_gev'] = .001
+            checkpoint['model_state_dict']['target_normalizer.mean'].fill_(1000.)
+            torch.save(checkpoint, path)
+            for inference in (True, False):
+                with self.subTest(inference=inference), self.assertRaisesRegex(ValueError, 'unit mismatch'):
+                    trainer.load_checkpoint(path, inference=inference)
+                torch.testing.assert_close(trainer.down_model.target_normalizer.mean, torch.zeros(3))
+            # Existing mmap inference continues using its original native units.
+            trainer.params['reader_type'] = 'ragged_mmap'
+            trainer.load_checkpoint(path, inference=True)
+            torch.testing.assert_close(trainer.down_model.target_normalizer.mean, torch.full((3,), 1000.))
+
     @staticmethod
     def regression_head(pooling):
         return MambaTrackRegressionHead(

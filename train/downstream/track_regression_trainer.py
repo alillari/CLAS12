@@ -57,6 +57,7 @@ from physics_checkpoints import (
     MOMENTUM_TASKS, resolve_config as resolve_physics_config,
     selection_mode, write_evaluation_summary,
 )
+from train.downstream.checkpoint_units import validate_hdf5_momentum_checkpoint_units
 
 VALIDATION_LOSS_REDUCTION = "mean_over_valid_terms"
 
@@ -1159,6 +1160,7 @@ class DownstreamTrainer():
             'regression_task': self.regression_target_stats["task"],
             'regression_target_columns': self.regression_target_stats["columns"],
             'regression_target_stats': self.regression_target_stats["path"],
+            'data_contract': self.regression_target_stats.get("data_contract"),
             'input_representation': getattr(self.params, 'input_representation', 'center_only'),
             'hilbert_angular_grid': getattr(self.params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
             'params': vars(self.params)  # Save all hyperparameters
@@ -1199,6 +1201,8 @@ class DownstreamTrainer():
                 f"configuration: checkpoint has {checkpoint_task!r}, config has "
                 f"{current_task!r}. Use the matching model YAML/task and stats file."
             )
+        if getattr(self.params, "reader_type", "ragged_mmap") == "hdf5" and current_task in MOMENTUM_TASKS:
+            validate_hdf5_momentum_checkpoint_units(checkpoint)
         checkpoint_representation = checkpoint.get('input_representation')
         current_representation = getattr(self.params, 'input_representation', 'center_only')
         if checkpoint_representation is not None and checkpoint_representation != current_representation:

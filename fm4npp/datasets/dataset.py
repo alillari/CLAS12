@@ -1451,6 +1451,13 @@ def get_data_loader(params, distributed):
         setattr(params, 'data_contract', contract)
         if hasattr(params, 'params'):
             params.params['data_contract'] = contract
+        stats_path = getattr(params, 'regression_target_stats', None)
+        if getattr(params, 'require_reg_target', False) and stats_path:
+            import json
+            with open(stats_path) as stream:
+                stats_contract = json.load(stream).get('data_contract') or {}
+            if stats_contract.get('plan_id') != contract['plan_id']:
+                raise ValueError('Regression statistics belong to a different HDF5 dataset plan')
 
     seed = getattr(params, "seed", None)
     seed = int(seed) if seed is not None else None

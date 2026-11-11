@@ -80,11 +80,21 @@ def _finite_segment_target(values, task):
 def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, task=None,
                   adapter_sample_mode="event_segment", segment_target_source="mctrue",
                   segment_min_clusters=12, segment_exact_clusters=False,
-                  segment_min_truth_purity=1.0):
+                  segment_min_truth_purity=1.0, reader_type="ragged_mmap"):
     if limit_size is not None and limit_size < 1:
         raise ValueError("limit_size must be positive")
-    reg = RaggedMmap(data_root / f"reg_target_{split}")
-    features = RaggedMmap(data_root / f"features_{split}")
+    source = None
+    if reader_type == "hdf5":
+        from fm4npp.datasets.cvt_downstream import CVTDownstreamSource
+        if split != "train":
+            raise ValueError("HDF5 target statistics must use the training split")
+        source = CVTDownstreamSource(data_root, split)
+    elif reader_type != "ragged_mmap":
+        raise ValueError(f"Unsupported reader_type: {reader_type}")
+    def open_field(stem):
+        return source.view(stem) if source is not None else RaggedMmap(data_root / f"{stem}_{split}")
+    reg = open_field("reg_target")
+    features = open_field("features")
     if len(reg) != len(features):
         raise ValueError(f"reg_target has {len(reg)} events but features has {len(features)}")
 
@@ -111,12 +121,12 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
             raise ValueError("event_segment statistics require --task")
         if segment_target_source not in {"mctrue", "seg_target", "coatjava"}:
             raise ValueError("Unknown segment_target_source")
-        seg = RaggedMmap(data_root / f"seg_target_{split}")
+        seg = open_field("seg_target")
         if len(seg) != len(features):
             raise ValueError(f"seg_target has {len(seg)} events but features has {len(features)}")
         coat = None
         if segment_target_source == "coatjava":
-            coat = RaggedMmap(data_root / f"coatjava_seg_pred_{split}")
+            coat = open_field("coatjava_seg_pred")
             if len(coat) != len(features):
                 raise ValueError(f"coatjava_seg_pred has {len(coat)} events but features has {len(features)}")
         selected_count = 0
@@ -171,10 +181,15 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
     if missing:
         raise ValueError(f"No finite training targets in the selected cohort for: {', '.join(missing)}")
     variance = m2 / count
+    contract = source.contract if source is not None else None
+    if source is not None:
+        source.close()
     return {
         "version": 3,
         "data_root": str(data_root.resolve()),
         "split": split,
+        "reader_type": reader_type,
+        "data_contract": contract,
         "task": task or "raw",
         "columns": output_columns,
         "filters": {
@@ -196,7 +211,8 @@ def compute_stats(data_root, split, low_thr, high_thr, limit_size, chunk_size, t
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, required=True)
-    parser.add_argument("--split", default="pretrain")
+    parser.add_argument("--split")
+    parser.add_argument("--reader-type", choices=("ragged_mmap", "hdf5"), default="ragged_mmap")
     parser.add_argument("--low-thr", type=int, default=1)
     parser.add_argument("--high-thr", type=int, default=100)
     parser.add_argument("--limit-size", type=int)
@@ -235,7 +251,7 @@ def main():
 
     stats = compute_stats(
         args.data_root,
-        args.split,
+        args.split or ("train" if args.reader_type == "hdf5" else "pretrain"),
         args.low_thr,
         args.high_thr,
         args.limit_size,
@@ -246,6 +262,7 @@ def main():
         segment_min_clusters=args.segment_min_clusters,
         segment_exact_clusters=args.segment_exact_clusters,
         segment_min_truth_purity=args.segment_min_truth_purity,
+        reader_type=args.reader_type,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as stream:

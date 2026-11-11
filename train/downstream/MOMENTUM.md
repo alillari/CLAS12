@@ -86,3 +86,55 @@ working recipe and collate comparisons. [Optuna tuning](tuning/GETTING_STARTED.m
 separate optional search workflow; [probes](probes/README.md) diagnose frozen
 representations and layer mixing. For the complete backbone plus both-adapters
 sequence, use [the worked example](../WORKED_EXAMPLE.md).
+
+## HDF5 AdapterOnly benchmark
+
+This branch integrates momentum regression with the published HDF5 cluster product.
+The shared data support is a separate ancestor commit; the other adapter
+integrations are independent sibling branches.
+
+```bash
+python -m train.downstream.benchmark_hdf5_momentum \
+  --data-root /absolute/path/to/cvt-clusters-h5 \
+  --output-dir /absolute/path/to/new/momentum-run
+```
+
+Defaults: 5,000 accepted training samples, 3,000 updates, 1,000 validation
+samples and 2,000 test samples, seed 42. Cohorts use accepted prefixes. The
+runner checks disjoint source-event identities, reloads the validation-selected
+checkpoint and writes configurations, cohort IDs, predictions and `summary.json`.
+For a smoke test add `--train-size 32 --steps 2 --validation-size 16 --test-size 16`.
+The configuration is `hdf5_momentum_5k` in `scripts/configs/clas12_adapter_recipes.yaml`.
+
+Samples are truth segments with at least 12 clusters. Training-only statistics
+join primary particle IDs explicitly and use GeV/c; legacy MeV statistics or a
+different dataset plan are rejected. Checkpoints use validation loss. COATJAVA
+matches require a unique valid owner and exactly one first-pass candidate;
+missing, ambiguous and invalid-entrance cases are recorded separately. The
+reference uses same-pass p, theta and entrance phi rather than the DOCA vector.
+The adapter uses truth cluster groups, so the paired momentum result is not an
+end-to-end reconstructed-track comparison. All accepted truth tracks are also
+reported for the adapter. Standalone evaluation defaults to the `test` split.
+
+HDF5 evaluation infers particle class and electric charge from the selected truth
+track's signed PDG ID using `fm4npp.particle_metadata.metadata_from_pdg`. It uses
+valid PID fields on that truth segment, including when the input is an impure
+COATJAVA group. Conflicting valid PIDs are rejected. Unknown IDs retain an unknown
+charge and are counted separately, rather than becoming positive particles.
+The helper covers the usual leptons/light hadrons and PDG nuclear codes; it is
+not a complete particle database. Evaluation class indices remain pion=0,
+kaon=1, proton=2, electron=3 and other=4, distinct from training classifier indices.
+It can also be used directly: `python -m fm4npp.particle_metadata 211 -211 11 -11`.
+
+Prediction rows retain dataset plan, split, source ID and original event ordinal.
+The historical scalar residual plotter accepts these HDF5 identities as well as
+legacy mmap metadata, and rejects cross-plan or cross-split joins. The compatibility
+`eval_momentum_regression.py` CLI also defaults to held-out HDF5 test data; pass
+`--evaluation-split validation` explicitly to reproduce a validation result.
+
+Both evaluation CLIs validate checkpoint momentum units before loading weights.
+HDF5 requires a checkpoint whose saved data contract or physics settings explicitly
+declare GeV/c, with no conflicting unit declarations. MeV checkpoints and checkpoints
+with unknown units are rejected, even when the current YAML points to GeV statistics.
+Evaluate legacy MeV checkpoints with their original mmap configuration; changing the
+stats file does not convert their saved normalizer or log-momentum output units.

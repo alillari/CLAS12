@@ -28,6 +28,7 @@ sys.path.insert(0, str(DOWNSTREAM_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
 from fm4npp.utils import YParams  # noqa: E402
+from fm4npp.particle_metadata import metadata_from_pdg  # noqa: E402
 from evaluation_contract import (  # noqa: E402
     EVALUATION_CONTRACT, CVT_REFERENCE_DEFINITION, configure_entrance_evaluation,
 )
@@ -892,10 +893,8 @@ def write_predictions(path, records):
 
 
 def pdg_charge(pdg):
-    """Return charge sign for the charged species represented in this dataset."""
-    if pdg == 0:
-        return 0
-    return -int(np.sign(pdg)) if abs(pdg) == 11 else int(np.sign(pdg))
+    """Return a known PDG charge, or None for an unknown/missing ID."""
+    return metadata_from_pdg(pdg)["charge"]
 
 
 def resolve_charge(records, config):
@@ -915,9 +914,9 @@ def resolve_charge(records, config):
             finite = False
         if not finite:
             missing += 1
-            value = fallback
-        charges.append(int(np.sign(value)))
-    charges = np.asarray(charges, dtype=int)
+            value = np.nan if source == "pdg" else fallback
+        charges.append(float(np.sign(value)))
+    charges = np.asarray(charges)
 
     if source == "positive":
         charges = np.ones(len(records), dtype=int)
@@ -927,7 +926,7 @@ def resolve_charge(records, config):
             raise ValueError(
                 f"charge_source=metadata but {missing} records do not have metadata charge"
             )
-    elif source == "metadata_or_positive":
+    elif source in {"metadata_or_positive", "pdg"}:
         pass
     elif source == "predicted_pid":
         raise NotImplementedError(
@@ -935,7 +934,7 @@ def resolve_charge(records, config):
         )
     else:
         raise ValueError(
-            "charge_source must be one of: positive, metadata, metadata_or_positive, "
+            "charge_source must be one of: positive, metadata, metadata_or_positive, pdg, "
             f"predicted_pid; got {source!r}"
         )
 
@@ -946,6 +945,7 @@ def resolve_charge(records, config):
         "n_positive": int(np.sum(charges > 0)),
         "n_negative": int(np.sum(charges < 0)),
         "n_neutral": int(np.sum(charges == 0)),
+        "n_unknown": int(np.sum(~np.isfinite(charges))),
     }
 
 
@@ -1966,6 +1966,8 @@ def write_single_target_evaluation(config, task, records, truth_native, predicti
         "huber_delta": 1.0, "methods": {"adapter": {"n": metrics["n"], **nested["adapter"]}},
         "training_history": training_summary,
     }
+    if config.get("data_contract"):
+        summary["data_contract"] = config["data_contract"]
     write_predictions(output_dir / "predictions.csv.gz", records)
     write_csv(output_dir / "ml_metrics.csv", rows)
     for filename, payload in (("summary.json", summary), ("ml_metrics_summary.json", nested)):
@@ -1996,6 +1998,15 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     params = YParams(str(config["model_yaml"]), config["model_config"])
+    hdf5 = getattr(params, "reader_type", None) == "hdf5"
+    if hdf5:
+        params["validation_split"] = config.get("evaluation_split", "test")
+        # The named HDF5 fields declare their units; legacy analysis templates
+        # carry MeV defaults which do not apply to this product.
+        config["target_momentum_scale_to_gev"] = 1.0
+        config["auxiliary_momentum_scale_to_gev"] = 1.0
+        if config.get("charge_source", "metadata_or_positive") == "metadata_or_positive":
+            config["charge_source"] = "pdg"
     from fm4npp.pretrained import configure_pretrained_backbone
     configure_pretrained_backbone(
         params, enabled=bool(config.get("use_pretrained_backbone")),
@@ -2048,9 +2059,11 @@ def main():
     regression_task = trainer.regression_target_stats["task"]
 
     dataset = trainer.val_data_loader.dataset
+    if hdf5:
+        config["data_contract"] = dataset.hdf5_source.contract
     single_target = regression_task in SINGLE_TARGET_TASKS
-    aux = None if single_target else RaggedMmap(str(Path(params.data_root_test) / "aux_target_test"))
-    aux_layout = None if single_target else load_aux_layout(params.data_root_test)
+    aux = None if single_target or hdf5 else RaggedMmap(str(Path(params.data_root_test) / "aux_target_test"))
+    aux_layout = None if single_target else (list(CVT_ENTRANCE_COLUMNS) if hdf5 else load_aux_layout(params.data_root_test))
     entrance_indices = None if single_target else [aux_layout.index(name) for name in CVT_ENTRANCE_COLUMNS]
     target_scale = float(config["target_momentum_scale_to_gev"])
     aux_scale = float(config["auxiliary_momentum_scale_to_gev"])
@@ -2111,10 +2124,17 @@ def main():
                 truth_segment_label = _batch_int(
                     batch, "truth_segment_label", local_index, default=segment_label
                 )
+                sample_metadata = {}
+                if hdf5:
+                    source = dataset.hdf5_source
+                    sample_metadata = dict(source.identity(real_index),
+                        data_plan_id=source.reader.plan_id, data_split=source.reader.split,
+                        **source.particle_metadata(real_index, truth_segment_label))
                 if single_target:
                     variable = "p_gev" if regression_task == "p" else f"{regression_task}_rad"
                     scale = target_scale if regression_task == "p" else 1.0
                     records.append({
+                        **sample_metadata,
                         "real_index": real_index, "source_event_index": real_index,
                         "segment_label": "" if segment_label is None else int(segment_label),
                         "truth_segment_label": "" if truth_segment_label is None else int(truth_segment_label),
@@ -2128,10 +2148,18 @@ def main():
                     native_truth_rows.append(truth_native[local_index].copy())
                     native_adapter_rows.append(prediction_native[local_index].copy())
                     continue
-                aux_row = aux_row_for_sample(
-                    dataset, aux, real_index, segment_label, truth_segment_label,
-                    valid_columns=entrance_indices,
-                ).astype(float)
+                benchmark = None
+                if hdf5:
+                    benchmark = dataset.hdf5_source.benchmark(
+                        real_index, truth_segment_label,
+                        segment_label if dataset.segment_target_source == "coatjava" else None,
+                    )
+                    aux_row = benchmark["values"]
+                else:
+                    aux_row = aux_row_for_sample(
+                        dataset, aux, real_index, segment_label, truth_segment_label,
+                        valid_columns=entrance_indices,
+                    ).astype(float)
                 cvt_vector = cvt_entrance_vector(aux_row, aux_layout, aux_scale)
                 if "pid_target" in batch:
                     pid_values = np.asarray(
@@ -2140,7 +2168,8 @@ def main():
                     pid_values = pid_values[pid_values != -100]
                 else:
                     pid_values = np.asarray(dataset.memmap_pid_target[real_index]).reshape(-1)
-                pid_class = int(pid_values[0]) if len(pid_values) else -1
+                pid_class = (sample_metadata["pid_class"] if hdf5
+                             else int(pid_values[0]) if len(pid_values) else -1)
                 true_native = truth_native[local_index]
                 pred_native = prediction_native[local_index]
                 native_truth_rows.append(true_native.copy())
@@ -2152,6 +2181,7 @@ def main():
                 true_eta = kinematic_variables(true_vector)["eta"]
                 pred_eta = kinematic_variables(pred_vector)["eta"]
                 record = {
+                    **sample_metadata,
                     "real_index": real_index,
                     "source_event_index": real_index,
                     "segment_label": "" if segment_label is None else int(segment_label),
@@ -2216,6 +2246,8 @@ def main():
                         "adapter_native_theta_deg": np.degrees(pred_native[3]),
                     })
                 # Retain original vectors only as explicitly labelled diagnostics.
+                if hdf5:
+                    record.update({"coatjava_" + key: value for key, value in benchmark.items() if key != "values"})
                 # Angular auxiliary fields are radians and must never be scaled to GeV.
                 for name in AUX_LAYOUT:
                     if name in aux_layout:
@@ -2227,7 +2259,7 @@ def main():
     if not records:
         raise RuntimeError("Evaluation produced no records")
 
-    if config.get("include_sample_metadata", True):
+    if config.get("include_sample_metadata", True) and not hdf5:
         metadata_path = config.get("sample_metadata_jsonl")
         if metadata_path is None:
             metadata_path = Path(params.data_root_test) / "samples_test.jsonl"
@@ -2258,7 +2290,7 @@ def main():
     # Charge is retained only as a differential label, never for transport.
     charge, charge_summary = resolve_charge(records, config)
     for record, value in zip(records, charge):
-        record["comparison_charge"] = int(value)
+        record["comparison_charge"] = int(value) if np.isfinite(value) else ""
     write_predictions(output_dir / "predictions.csv.gz", records)
     native_target_columns = list(trainer.regression_target_stats["columns"])
     if native_target_columns != list(regression_target_columns(regression_task)):
@@ -2303,6 +2335,8 @@ def main():
         "training_history": training_summary,
     }
     summary.update(matched_resolution_comparison(truth, predictions))
+    if config.get("data_contract"):
+        summary["data_contract"] = config["data_contract"]
     with (output_dir / "summary.json").open("w") as stream:
         json.dump(summary, stream, indent=2, allow_nan=False)
     with (output_dir / "ml_metrics_summary.json").open("w") as stream:

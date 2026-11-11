@@ -345,7 +345,10 @@ def render_model_yaml(manifest: dict[str, Any], run: dict[str, Any]) -> None:
         raise ValueError(f"Use nested mappings in manifest training_overrides, not literal dotted keys: {dotted}")
     params['checkpoint_selection'] = selection_mode(params)
     if params.get('task') in MOMENTUM_TASKS:
-        params['physics_checkpoint'] = resolve_physics_config(params['task'], params.get('physics_checkpoint'))
+        physics = dict(params.get('physics_checkpoint') or {})
+        if params.get('reader_type') == 'hdf5':
+            physics.setdefault('momentum_scale_to_gev', 1.0)
+        params['physics_checkpoint'] = resolve_physics_config(params['task'], physics)
     validate_regression_training(params)
     configure_validation(params)
     write_yaml(Path(run["model_yaml"]), {run["model_config"]: params})

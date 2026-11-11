@@ -1,0 +1,32 @@
+name: Momentum evaluation CPU regressions
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  momentum-evaluation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU evaluation dependencies
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'numpy>=1.26,<2' scipy scikit-learn matplotlib h5py ruamel.yaml mmap-ninja einops plotly tqdm
+          python -m pip install 'git+https://github.com/katsura-jp/pytorch-cosine-annealing-with-warmup.git@12d03c07553aedd3d9e9155e2b3e31ce8c64081a'
+      - name: Check checkpoint units through both evaluation CLIs
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+          MPLBACKEND: Agg
+          OMP_NUM_THREADS: '1'
+        run: >-
+          python -m unittest
+          train.downstream.tests.test_checkpoint_units
+          train.downstream.tests.test_momentum_evaluation_units
+          train.downstream.tests.test_validation_loss_training -v

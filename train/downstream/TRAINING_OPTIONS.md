@@ -115,7 +115,8 @@ limit and task filters.
 | `downstream_dropout` | Tracking head dropout, 0.1. Distinct from backbone `dropout`. |
 | `track_target_mode` | `signal_only`: one target per signal track; background is negative in every signal mask, not a query target. |
 | `loss_matched_ce_weight`, `loss_unmatched_ce_weight`, `loss_dice_weight`, `loss_focal_weight` | Weights for matched class, no-object class, Dice and focal losses; starting values 0.5 / 0.1 / 1 / 30. |
-| `validation_ari_mode` | `signal` excludes background points from ARI; `inclusive` includes valid background. Controls the option-2 ARI used for selection. |
+| `validation_selection_metric` | `dice` (default) maximizes mean track Dice at the configured option-2 threshold. Lower validation loss breaks ties. Use `ari` for historical selection. |
+| `validation_ari_mode` | `signal` excludes background from ARI. `inclusive` includes valid background. Controls ARI reporting and selection when `validation_selection_metric: ari`. |
 | `assignment_option` | 1 uses mask probabilities; 2 combines mask and query-class confidence and excludes no-object queries. Starting value 2. Validation records both; checkpoint selection uses option 2. |
 | `assignment_threshold` | Minimum point-assignment confidence; starting value 0.2. Changes background rejection, contamination and efficiency. Keep it fixed when comparing checkpoints. |
 | `match_iou_threshold`, `match_min_purity`, `match_min_efficiency` | Truth/prediction matching cuts for reported track metrics, each 0.5 in the preset. These are metric definitions, not LR or query-count settings. |
@@ -160,7 +161,7 @@ rejects them.
 | `scheduler_anneal_steps` | Regression `cosine_hold`: endpoint of the single warmup/cosine phase; LR then stays at `min_lr`. Warmup must fit inside it and it cannot exceed the update budget. |
 | `adapter_weight_decay` | Head AdamW decay; 1e-4. Native SSM decay exclusions are honored. |
 | `grad_clip_value` | Maximum **gradient norm** for downstream updates; 0.1. Pretraining's similarly named setting uses per-element clipping. |
-| `early_stopping_patience`, `early_stopping_min_delta` | Allowed non-improving validation checks and improvement tolerance. Regression saves every lower finite loss; min_delta controls patience. Finding uses its ARI/loss comparison tolerance for selection too. |
+| `early_stopping_patience`, `early_stopping_min_delta` | Allowed non-improving validation checks and improvement tolerance. Regression saves every lower finite loss; min_delta controls patience. Finding applies the tolerance in legacy ARI selection. Dice selection uses the exact score and a loss tie-break. |
 | `early_stopping_min_steps` | Step-mode lower bound before stopping/pruning. Set above the budget (30,001 in these profiles) for a complete fixed-budget fit. |
 | `early_stopping_warmup_steps` | Epoch-mode stopping warmup/fallback; do not confuse with LR warmup. |
 | `max_train_batches` | Per-epoch batch cap; useful for bounded runs but changes exposure/epoch behavior. |

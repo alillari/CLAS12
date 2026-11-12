@@ -48,7 +48,7 @@ def fixture_trainer(directory):
     trainer = DownstreamTrainer.__new__(DownstreamTrainer)
     trainer.params = SimpleNamespace(
         max_validation_events=3, max_val_batches=None, assignment_threshold=.2,
-        validation_ari_mode="signal", track_target_mode="signal_only",
+        validation_selection_metric="ari", validation_ari_mode="signal", track_target_mode="signal_only",
         checkpoint_dir=str(directory), training_log_path=str(Path(directory) / "training.log"),
         save_validation_checkpoints=True,
     )
@@ -101,6 +101,7 @@ class ValidationHistoryTest(unittest.TestCase):
     def test_validation_aggregates_events_once_and_pools_counts(self):
         with tempfile.TemporaryDirectory() as directory:
             trainer = fixture_trainer(directory)
+            del trainer.params.validation_selection_metric
             loss = trainer.validate_end_to_end_one_epoch()
             self.assertTrue(np.isfinite(loss))
             self.assertEqual(trainer.down_model.calls, 2)
@@ -109,12 +110,32 @@ class ValidationHistoryTest(unittest.TestCase):
             self.assertEqual(summary["n_pred_tracks"], 5)
             self.assertEqual(summary["n_matched_tracks"], 4)
             self.assertAlmostEqual(summary["ari_signal"], 2/3)
+            self.assertAlmostEqual(summary["mc_track_dice_mean"], 11/15)
             self.assertAlmostEqual(summary["track_purity"], 5/6)
             self.assertAlmostEqual(summary["track_purity_global"], 4/5)
             self.assertAlmostEqual(summary["background_rejection"], 2/3)
             self.assertAlmostEqual(trainer._selection_ari(2), 2/3)
             self.assertAlmostEqual(loss, trainer._last_validation_loss_event_mean)
             self.assertIn("val/option2/ari_with_background", trainer._validation_metric_callback())
+
+    def test_default_checkpoint_selection_prefers_dice_and_breaks_ties_by_loss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = fixture_trainer(directory)
+            del trainer.params.validation_selection_metric
+            candidates = ((.60, .90, .2), (.61, .80, .4), (.61, .70, .3), (.60, .95, .1))
+            for step, (dice, ari, loss) in enumerate(candidates, 1):
+                trainer._last_validation_metrics = {2: {"mc_track_dice_mean": dice, "ari_signal": ari}}
+                trainer.global_step = step
+                trainer._record_validation_result(loss, ari, "best.pth", epoch=0, step=step)
+            rows = read_history(trainer.params.validation_history_dir)
+            self.assertEqual([r["selected_best"] for r in rows], [True, True, True, False])
+            self.assertTrue(all(r["selection_metric"] == "mc_track_dice_mean" for r in rows))
+            self.assertTrue(all(r["selection_aggregation"] == "mean_of_eligible_truth_tracks" for r in rows))
+            saved = torch.load(Path(directory) / "best.pth", weights_only=False)
+            self.assertEqual(saved["best_step"], 3)
+            self.assertEqual(saved["selection_metric"], "mc_track_dice_mean")
+            self.assertEqual(saved["best_selection_score"], .61)
+            self.assertEqual(saved["best_ARI"], .70)
 
     def test_selection_is_batch_invariant_and_restores_modes(self):
         with tempfile.TemporaryDirectory() as directory:

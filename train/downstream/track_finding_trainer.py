@@ -49,7 +49,14 @@ from fm4npp.models.linformer_gpt import LinformerGPT
 from trackinghead import *
 from loss import *
 from downstream_util import get_early_stopping_config, require_single_process
-from track_finding_metrics import MatchConfig, EventMetricAccumulator, event_track_metrics, summarize_event_metrics
+from track_finding_metrics import (
+    EventMetricAccumulator,
+    MCReconstructionAccumulator,
+    MatchConfig,
+    event_mc_reconstruction_metrics,
+    event_track_metrics,
+    summarize_event_metrics,
+)
 from train.downstream.track_finding_contract import decoder_settings, validate_checkpoint_forward, validate_track_finding_modes
 from train.downstream.track_finding_history import ValidationHistory
 from fm4npp.datasets.track_eligibility import configure_primary_track_cut
@@ -60,11 +67,15 @@ from track_finding_targets import (
 )
 
 
+TRACK_DICE = "mc_track_dice_mean"
+
+
 class DownstreamTrainer():
     
     def __init__(self, params, args):
         require_single_process("Track finding")
         validate_track_finding_modes(vars(params), source="track-finding model")
+        self.params = params
         configure_pretrained_backbone(params)
         validate_input_representation(params)
         if getattr(params, "input_representation", "center_only") == AUX_REPRESENTATION:
@@ -83,7 +94,6 @@ class DownstreamTrainer():
         else:
             self.device = torch.device('cpu')
 
-        self.params = params
         configure_primary_track_cut(params)
         params.hilbert_angular_grid = validate_hilbert_grid(
             getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
@@ -404,7 +414,7 @@ class DownstreamTrainer():
             background_label=int(getattr(self.params, "background_label", -1)),
         )
 
-    def _batch_event_metrics(self, labels, assignments, mask, classes):
+    def _batch_event_metrics(self, labels, assignments, mask, classes, scorer=event_track_metrics):
         config = MatchConfig(
             background_label=int(getattr(self.params, "background_label", -1)),
             iou_threshold=float(getattr(self.params, "match_iou_threshold", 0.5)),
@@ -414,7 +424,7 @@ class DownstreamTrainer():
         rows = []
         for batch_idx in range(labels.size(0)):
             pred_signal = classes[batch_idx] != 0
-            rows.append(event_track_metrics(
+            rows.append(scorer(
                 labels[batch_idx].detach().cpu().numpy(),
                 assignments[batch_idx].detach().cpu().numpy(),
                 valid_mask=mask[batch_idx].detach().cpu().numpy(),
@@ -808,6 +818,7 @@ class DownstreamTrainer():
         validation_ari_mode = str(getattr(self.params, "validation_ari_mode", "signal"))
         if validation_ari_mode not in {"signal", "inclusive"}:
             raise ValueError("validation_ari_mode must be 'signal' or 'inclusive'")
+        selection_metric = self.checkpoint_selection_metric
         validation_ari_label = f"ARI_{validation_ari_mode}_option2"
 
         # Always create log file and write header
@@ -825,7 +836,8 @@ class DownstreamTrainer():
                 )
      
         self.best_loss = np.inf
-        self.best_ARI = 0
+        self.best_ARI = None
+        self.best_selection_score = None
         self.best_step = None
         self.best_epoch = None
         self.global_step = 0
@@ -899,7 +911,11 @@ class DownstreamTrainer():
                 )
                 print(f"  Matched CE: {avg_matched_ce:.6f} | Unmatched CE: {avg_unmatched_ce:.6f}")
                 print(f"  Dice: {avg_dice:.6f} | Focal: {avg_focal:.6f}")
-                print(f"  Best Loss: {self.best_loss:.6f} | Best ARI: {self.best_ARI:.6f}")
+                if self.best_selection_score is not None:
+                    print(
+                        f"  Selected checkpoint: {selection_metric} "
+                        f"{self.best_selection_score:.6f} | Val Loss: {self.best_loss:.6f}"
+                    )
                 print("-" * 80)
             self._record_validation_result(val_epoch_loss, avg_ari_2, checkpoint_file_name, epoch,
                                            self.global_step, train_loss=train_epoch_loss,
@@ -918,7 +934,8 @@ class DownstreamTrainer():
                     f"val/ari_{validation_ari_mode}_option1": float(avg_ari),
                     f"val/ari_{validation_ari_mode}_option2": float(avg_ari_2),
                     "lr": float(self._current_lr()),
-                    "best/val_ari": float(self.best_ARI),
+                    "best/val_ari": self.best_ARI,
+                    "best/selection_score": self.best_selection_score,
                     "best/val_loss": float(self.best_loss),
                     "best/step": self.best_step,
                     **self._validation_metric_callback(),
@@ -940,7 +957,7 @@ class DownstreamTrainer():
             for metric, value in summary.items()
         }
 
-    def _persist_validation(self, epoch, step, val_loss, val_ari, improved, train_loss=None):
+    def _persist_validation(self, epoch, step, val_loss, selection_score, improved, train_loss=None):
         if getattr(self, "world_rank", 0) != 0:
             return
         if getattr(self, "_validation_history", None) is None:
@@ -964,13 +981,14 @@ class DownstreamTrainer():
             params.validation_metrics_csv = str(self._validation_history.csv_path)
             print(f"Validation history: {self._validation_history.directory}")
         summaries = getattr(self, "_last_validation_metrics", {})
+        metric = self.checkpoint_selection_metric
         record = {
             "step": int(step), "epoch": int(epoch),
             "lr": float(self._current_lr()), "train_loss": train_loss, "val_loss": val_loss,
             "val_loss_event_mean": getattr(self, "_last_validation_loss_event_mean", None),
-            "selection_metric": validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal")),
-            "selection_option": 2, "selection_score": val_ari,
-            "selection_aggregation": "mean_of_eligible_events",
+            "selection_metric": metric,
+            "selection_option": 2, "selection_score": selection_score,
+            "selection_aggregation": "mean_of_eligible_truth_tracks" if metric == TRACK_DICE else "mean_of_eligible_events",
             "selected_best": bool(improved),
             "assignment_threshold": float(getattr(self.params, "assignment_threshold", 0.0)),
             "match_iou_threshold": float(getattr(self.params, "match_iou_threshold", 0.5)),
@@ -1078,18 +1096,25 @@ class DownstreamTrainer():
         self.last_validation_step = step
         if count_stagnation is None:
             count_stagnation = step >= self.early_stopping_min_steps
-        has_finite_validation = np.isfinite(val_loss) and np.isfinite(val_ari)
+        metric = self.checkpoint_selection_metric
+        score = self._last_validation_metrics[2][TRACK_DICE] if metric == TRACK_DICE else val_ari
+        # Dice ranks checkpoints by their exact score. Historical ARI runs
+        # retain their configured minimum-delta and loss tie-break behavior.
+        delta = 0.0 if metric == TRACK_DICE else self.min_delta
+        has_finite_validation = np.isfinite(val_loss) and score is not None and np.isfinite(score)
         improved = has_finite_validation and (
             self.best_step is None
-            or val_ari > self.best_ARI + self.min_delta
+            or self.best_selection_score is None
+            or score > self.best_selection_score + delta
             or (
-                abs(val_ari - self.best_ARI) <= self.min_delta
-                and val_loss < (self.best_loss - self.min_delta)
+                abs(score - self.best_selection_score) <= delta
+                and val_loss < self.best_loss - delta
             )
         )
         if improved:
             self.best_loss = val_loss
-            self.best_ARI = val_ari
+            self.best_ARI = val_ari if val_ari is not None and np.isfinite(val_ari) else None
+            self.best_selection_score = score
             self.best_epoch = epoch
             self.best_step = step
             self._save_checkpoint(
@@ -1102,10 +1127,10 @@ class DownstreamTrainer():
         elif count_stagnation:
             self.stagnation_counter += 1
 
-        self._persist_validation(epoch, step, val_loss, val_ari, improved, train_loss)
+        self._persist_validation(epoch, step, val_loss, score, improved, train_loss)
 
         if optuna_trial is not None:
-            optuna_trial.report(float(val_ari), int(step))
+            optuna_trial.report(float(score) if score is not None else np.nan, int(step))
             if step >= self.early_stopping_min_steps and optuna_trial.should_prune():
                 try:
                     import optuna
@@ -1144,7 +1169,8 @@ class DownstreamTrainer():
                 f"val/ari_{validation_ari_mode}_option1": val_ari_option1,
                 f"val/ari_{validation_ari_mode}_option2": val_ari_option2,
                 "lr": float(self._current_lr()),
-                "best/val_ari": float(self.best_ARI),
+                "best/val_ari": self.best_ARI,
+                "best/selection_score": self.best_selection_score,
                 "best/val_loss": float(self.best_loss),
                 "best/step": self.best_step,
                 **self._validation_metric_callback(),
@@ -1356,7 +1382,10 @@ class DownstreamTrainer():
             raise ValueError("max_validation_events must be positive or None")
         max_batches = getattr(self.params, "max_val_batches", 1001)
         threshold = float(getattr(self.params, "assignment_threshold", 0.0))
-        accumulators = {option: EventMetricAccumulator() for option in (1, 2)}
+        selection_metric = self.checkpoint_selection_metric
+        use_dice = selection_metric == TRACK_DICE
+        accumulators = {1: EventMetricAccumulator(),
+                        2: MCReconstructionAccumulator() if use_dice else EventMetricAccumulator()}
         weights = {
             "loss_matched_ce": self.loss_matched_ce_weight,
             "loss_unmatched_ce": self.loss_unmatched_ce_weight,
@@ -1392,24 +1421,43 @@ class DownstreamTrainer():
                 loss_totals[key] += losses[key].item() * len(points)
             for option, accumulator in accumulators.items():
                 inferred = assign_points_to_masks(outputs, option=option, threshold=threshold)
-                rows = self._batch_event_metrics(labels, inferred["assignments"], mask, classes=inferred["classes"])
+                scorer = event_mc_reconstruction_metrics if option == 2 and use_dice else event_track_metrics
+                rows = self._batch_event_metrics(labels, inferred["assignments"], mask,
+                                                 classes=inferred["classes"], scorer=scorer)
                 for row in rows:
                     accumulator.add(row)
             count += len(points)
         if not count:
             raise RuntimeError("Track-finding validation yielded no events; cannot select a checkpoint")
-        self._last_validation_metrics = {option: acc.summary() for option, acc in accumulators.items()}
-        if self._selection_ari(2) is None:
-            raise RuntimeError("Track-finding validation has no events eligible for the configured ARI")
+        if use_dice:
+            option2 = accumulators[2]
+            summary = option2.legacy.summary()
+            summary[TRACK_DICE] = option2.summary()[TRACK_DICE]
+        else:
+            summary = accumulators[2].summary()
+        self._last_validation_metrics = {1: accumulators[1].summary(), 2: summary}
+        score = summary[selection_metric]
+        if score is None or not np.isfinite(score):
+            raise RuntimeError(f"Track-finding validation has no events eligible for {selection_metric}")
         self._last_validation_loss_components = {key: total / count for key, total in loss_totals.items()}
         self._last_validation_loss_event_mean = sum(
             self._last_validation_loss_components[key] * weight for key, weight in weights.items()
         )
         return self._last_validation_loss_event_mean
 
+    @property
+    def checkpoint_selection_metric(self):
+        selection = getattr(self.params, "validation_selection_metric", "dice")
+        if selection == "dice":
+            return TRACK_DICE
+        if selection == "ari":
+            return validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal"))
+        raise ValueError("validation_selection_metric must be 'dice' or 'ari'")
+
     def _selection_ari(self, option):
         metric = validation_ari_metric(getattr(self.params, "validation_ari_mode", "signal"))
-        return self._last_validation_metrics[option][metric]
+        score = self._last_validation_metrics[option][metric]
+        return score if score is not None else np.nan
 
     def _checkpoint_payload(self, epoch, loss, inference_only=False):
         checkpoint = {
@@ -1420,6 +1468,8 @@ class DownstreamTrainer():
             'adapter_architecture': architecture_metadata(self.down_model),
             'best_loss': self.best_loss,
             'best_ARI': getattr(self, "best_ARI", None),
+            'selection_metric': self.checkpoint_selection_metric,
+            'best_selection_score': getattr(self, "best_selection_score", None),
             'best_step': getattr(self, "best_step", None),
             'best_epoch': getattr(self, "best_epoch", None),
             'global_step': getattr(self, "global_step", None),
@@ -1513,7 +1563,10 @@ class DownstreamTrainer():
 
             self.startEpoch = checkpoint.get('epoch', 0) + 1
             self.best_loss = checkpoint.get('best_loss', float('inf'))
-            self.best_ARI = checkpoint.get('best_ARI', 0) or 0
+            self.best_ARI = checkpoint.get('best_ARI')
+            self.best_selection_score = (checkpoint.get('best_selection_score')
+                                         if checkpoint.get('selection_metric') == self.checkpoint_selection_metric
+                                         else None)
             self.best_step = checkpoint.get('best_step', None)
             self.best_epoch = checkpoint.get('best_epoch', None)
             self.global_step = checkpoint.get('global_step', 0) or 0

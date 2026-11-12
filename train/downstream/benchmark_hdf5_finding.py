@@ -133,7 +133,7 @@ def main():
         checkpoint=str(checkpoint),
         checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         sample_unit='event',
-        validation_selection='signal_ARI_then_loss',
+        validation_selection=f'{trainer.checkpoint_selection_metric}_then_loss',
         test_split='test',
         adapter_parameters=sum((p.numel() for p in trainer.down_model.parameters()))
     )

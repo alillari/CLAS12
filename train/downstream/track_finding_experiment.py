@@ -130,6 +130,7 @@ def resolve_params(config: TrackFindingExperimentConfig) -> YParams:
         "return_dict": True,
         "return_reg_test": True,
         "adapter_sample_mode": "track_legacy",
+        "validation_selection_metric": getattr(params, "validation_selection_metric", "dice"),
     })
 
     if config.checkpoint_dir is not None:
@@ -194,6 +195,8 @@ def train_experiment(
             "checkpoint": getattr(params, "trained_checkpoint_path", None),
             "best_loss": json_safe(getattr(trainer, "best_loss", None)),
             "best_ari": json_safe(getattr(trainer, "best_ARI", None)),
+            "selection_metric": trainer.checkpoint_selection_metric,
+            "best_selection_score": json_safe(trainer.best_selection_score),
             "best_step": json_safe(getattr(trainer, "best_step", None)),
             "best_epoch": json_safe(getattr(trainer, "best_epoch", None)),
             "validation_history_dir": getattr(params, "validation_history_dir", None),
@@ -226,6 +229,8 @@ def train_experiment(
         return {
             "best_val_loss": json_safe(getattr(trainer, "best_loss", None)),
             "best_val_ari": json_safe(getattr(trainer, "best_ARI", None)),
+            "selection_metric": trainer.checkpoint_selection_metric,
+            "best_selection_score": json_safe(trainer.best_selection_score),
             "best_step": json_safe(getattr(trainer, "best_step", None)),
             "best_epoch": json_safe(getattr(trainer, "best_epoch", None)),
             "checkpoint_path": getattr(params, "trained_checkpoint_path", None),

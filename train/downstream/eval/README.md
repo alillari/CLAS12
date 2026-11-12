@@ -143,9 +143,9 @@ the non-target label. Overlay metrics count verified pure-overlay clusters;
 mixed and unresolved provenance have separate counts and fractions.
 
 The API is `event_mc_reconstruction_metrics` plus `MCReconstructionAccumulator`
-in `track_finding_metrics.py`. Existing training, checkpoint selection and model
-inference entry points continue to use the original metrics. This phase does not
-automatically rescore or reselect checkpoints.
+in `track_finding_metrics.py`. The standard finding trainer uses this API to
+select new checkpoints by mean validation track Dice. Previously saved
+checkpoints can be evaluated with the same metric.
 
 ### Existing training and inference contract
 
@@ -159,10 +159,11 @@ Training log columns `ARI_signal_option1` and `ARI_signal_option2` compare
 assignment policies using signal ARI. With `validation_ari_mode: inclusive`,
 the columns are `ARI_inclusive_option1` and `ARI_inclusive_option2` instead.
 Option 1 uses mask probability; option 2 uses mask probability times query
-class confidence and excludes no-object queries. Checkpoint selection uses
-option 2 in the configured ARI mode. The callback key `val/ari` is that selected
-score; explicit `val/ari_<mode>_option1` and `val/ari_<mode>_option2` keys report
-both assignment policies. Older optimizer-step logs duplicated option 2 into
+class confidence and excludes no-object queries. The callback key `val/ari`
+reports option-2 ARI. The explicit `val/ari_<mode>_option1` and
+`val/ari_<mode>_option2` keys report both assignment policies.
+With Dice selection, `val/option2/mc_track_dice_mean` reports the current Dice
+and `best/selection_score` reports the score of the saved checkpoint. Older optimizer-step logs duplicated option 2 into
 the option-1 column; this correction applies to new logs only.
 
 The retired `unified_noise_instance` training mode and
@@ -190,11 +191,12 @@ use pooled matched/predicted/truth counts. Other rates retain the evaluator's
 event-average definitions, omitting undefined values. Counts and event-averaged
 loss components are recorded too. No extra model forward pass is required.
 
-Checkpoint selection uses the configured option-2 ARI averaged over eligible
-validation events and an event-weighted validation-loss tie-break. Histories
-record `selection_aggregation: mean_of_eligible_events`. Older histories retain
-their recorded batch-mean scores. If the configured ARI is undefined across
-the full validation cohort, training fails before selecting a checkpoint.
+By default, checkpoint selection maximizes option-2 mean track Dice at the
+configured assignment threshold, with lower validation loss breaking ties.
+Histories record the metric and `selection_aggregation: mean_of_eligible_truth_tracks`.
+Set `validation_selection_metric: ari` to select by the configured ARI averaged
+over eligible validation events. The trainer requires a defined selection score
+on the full validation cohort. Older histories retain their recorded scores.
 
 Evaluation summaries use `finding_metrics_version: 2`. Matching maximizes
 the count of eligible one-to-one pairs and uses total IoU to break ties.

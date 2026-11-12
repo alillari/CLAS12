@@ -52,9 +52,11 @@ the input mode and decoder, and lack a backbone digest.
 4. [Plot the training history from its artifact receipt](../TRAINING_RECIPES.md#5-inspect-output-behavior),
    then inspect final evaluator tables and the metric population counts.
 
-Checkpoint selection uses **assignment-option-2 ARI** in the configured
-`validation_ari_mode`, with a validation-loss tie-break. The preset uses signal
-ARI. Selection averages eligible events across the full validation cohort.
+Checkpoint selection defaults to **mean track Dice** on the full validation
+cohort using assignment option 2 at the configured threshold. Each eligible
+truth track carries equal weight, and missed tracks contribute zero. Lower
+validation loss breaks exact Dice ties. Set `validation_selection_metric: ari`
+to reproduce historical selection with the configured `validation_ari_mode`.
 No-object assignments count as background for both options. A run that reaches
 its update or epoch cap validates the last update and must produce a finite
 selected checkpoint to succeed. Option 2 combines mask probability with query-class confidence and excludes
@@ -118,8 +120,8 @@ The configuration is `hdf5_finding_5k` in `scripts/configs/clas12_adapter_recipe
 Samples are whole events. `primary_segment == -1`, including contested clusters,
 remains background. The model, Hungarian targets and losses are unchanged.
 Both methods use identical truth/masks; COATJAVA groups come from first-pass
-`reco_segment`. Checkpoint selection uses validation signal ARI with a loss
-tie-break; inference remains option 2 at threshold 0.2. Standalone evaluation
+`reco_segment`. Checkpoint selection uses mean validation track Dice with a
+loss tie-break. Inference uses option 2 at threshold 0.2. Standalone evaluation
 uses `test` by default and requires a target momentum scale of 1 for GeV/c.
 Campaign analysis rendering selects this scale from the effective HDF5 reader,
 including manifest and run training overrides. Explicit analysis overrides take

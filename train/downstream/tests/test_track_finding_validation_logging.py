@@ -21,6 +21,7 @@ class TrackFindingValidationLoggingTest(unittest.TestCase):
                 trainer.params = SimpleNamespace(
                     max_optimizer_steps=1, val_interval_steps=1,
                     early_stopping_min_steps=0, max_epochs=1, validation_ari_mode=mode,
+                    validation_selection_metric="ari",
                     training_log_path=str(Path(directory) / "training.log"),
                     save_validation_checkpoints=False,
                 )

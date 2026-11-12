@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-steps", type=int, help="Warmup steps for the adapter scheduler.")
     parser.add_argument("--early-stopping-min-steps", type=int, help="Minimum optimizer steps before early stopping/pruning.")
     parser.add_argument("--early-stopping-patience", type=int, help="Validation checks without improvement before early stopping.")
-    parser.add_argument("--early-stopping-min-delta", type=float, help="Minimum ARI/loss improvement for checkpoint/early stopping.")
+    parser.add_argument("--early-stopping-min-delta", type=float, help="Minimum ARI/loss improvement when using legacy ARI selection.")
     parser.add_argument("--max-train-batches", type=int, help="Maximum train batches per epoch.")
     parser.add_argument("--max-val-batches", type=int, help="Maximum validation batches per validation pass.")
     parser.add_argument("--num-data-workers", type=int, help="DataLoader worker count.")
@@ -96,9 +96,14 @@ def parse_args() -> argparse.Namespace:
         help="Hungarian targets contain only signal tracks; aggregate background queries were removed.",
     )
     parser.add_argument(
+        "--validation-selection-metric",
+        choices=("dice", "ari"),
+        help="Validation checkpoint metric (default: mean track Dice).",
+    )
+    parser.add_argument(
         "--validation-ari-mode",
         choices=("signal", "inclusive"),
-        help="Checkpoint-selection ARI; inclusive includes valid raw -1 noise rows.",
+        help="ARI reporting mode and selection mode when legacy ARI selection is enabled.",
     )
     parser.add_argument("--training-override", action="append", default=[], metavar="KEY=VALUE", help="Additional rendered model YAML override. Can be repeated.")
     parser.add_argument("--save-validation-checkpoints", action=argparse.BooleanOptionalAction, default=None,
@@ -157,6 +162,7 @@ def parse_training_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "max_val_batches": args.max_val_batches,
         "num_data_workers": args.num_data_workers,
         "track_target_mode": args.track_target_mode,
+        "validation_selection_metric": args.validation_selection_metric,
         "validation_ari_mode": args.validation_ari_mode,
         "seed": args.seed,
         "assignment_threshold": args.assignment_threshold,

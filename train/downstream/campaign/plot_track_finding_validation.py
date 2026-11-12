@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 METRICS = {
+    "mc_track_dice_mean": "Mean track Dice",
     "ari_signal": "Signal ARI",
     "ari_with_background": "Inclusive ARI",
     "track_purity_global": "Global track purity",
@@ -106,7 +107,7 @@ def plot_history(rows, output_dir, option=2):
 
     selected = [index for index, row in enumerate(rows) if str(row.get("selected_best")).lower() == "true"]
     selected = selected[-1] if selected else None
-    groups = (("ari_signal", "ari_with_background"),
+    groups = (("mc_track_dice_mean", "ari_signal", "ari_with_background"),
               ("track_purity_global", "track_efficiency_global"),
               ("background_rejection", "signal_loss_to_background"),
               ("matched_iou_mean", "matched_purity_mean"),
@@ -115,12 +116,15 @@ def plot_history(rows, output_dir, option=2):
     fig, axes = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
     for ax, metrics in zip(axes.flat, groups):
         for metric in metrics:
-            ax.plot(steps, values(metric), marker=".", label=METRICS[metric])
+            series = values(metric)
+            if np.isfinite(series).any():
+                ax.plot(steps, series, marker=".", label=METRICS[metric])
         if selected is not None:
             ax.axvline(steps[selected], color="black", linestyle=":", alpha=.5)
         ax.set_xlabel("Optimizer step")
         ax.grid(alpha=.2)
-        ax.legend(fontsize=8)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize=8)
     threshold = number(rows[0].get("assignment_threshold"))
     fig.suptitle(f"Validation trajectory · assignment option {option} · threshold {threshold:g}\nDotted line: final checkpoint selected during training")
     for extension in ("png", "pdf"):

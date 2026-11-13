@@ -23,7 +23,7 @@ from mmap_ninja import RaggedMmap
 from fm4npp.utils import expand_config_string, expand_param_references
 from fm4npp.pretrained import apply_backbone_to_run
 
-from campaign_util import (
+from train.downstream.campaign.campaign_util import (
     command_env,
     format_command,
     load_base_model_config,

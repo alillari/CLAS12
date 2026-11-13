@@ -11,47 +11,55 @@ recipes still require access to data and compatible CUDA kernels.
 
 ## Environment
 
-Use Linux, Python 3.10 or newer, and a CUDA-capable NVIDIA GPU for training.
-The recent a02c/a518 campaigns used a prepared Docker environment; its recorded
-runtime is in [Mamba support](train/MAMBA_SUPPORT.md). A fresh environment must
-match PyTorch, CUDA, compiler, `mamba-ssm`, `causal-conv1d`, and Triton versions.
-Do not replace a working training environment merely to follow a generic pip
-command. Mamba3 requires an upstream revision containing its SISO implementation;
-Mamba1 also requires the selective-scan CUDA extension.
+Start with the team’s prepared Docker runtime on a02c or a518. Ask the host
+operator for access, the approved image (for example
+`pp_collision:alessio-latest`), the published CVT cluster HDF5 directory, and
+a writable results directory. Follow [Remote edgexpert jobs](train/REMOTE_RUNS.md)
+to record the image ID and mount a source snapshot and the data read-only.
+Run the checks below from the repository root inside that runtime. Use paths
+as seen by the container.
 
-For a new local environment, create it first and install a PyTorch build
-appropriate to the target GPU/CUDA stack:
+For a separate local environment, use Linux, Python 3.10 or newer, and an NVIDIA
+GPU. [requirements.txt](requirements.txt) lists Python dependencies. Choose
+PyTorch, CUDA, Triton, and compiled Mamba extensions for the target GPU as
+described in [Mamba support](train/MAMBA_SUPPORT.md#mamba3-runtime).
 
-```bash
-conda create -n clas12-fm python=3.10
-conda activate clas12-fm
-```
-
-`requirements.txt` is an inherited, unpinned dependency inventory. It is not a
-complete tested installation recipe: the trainers also import `ruamel.yaml`,
-`scikit-learn`, `einops`, `plotly`, and `cosine_annealing_warmup`, and
-evaluators/plotting need packages such as `matplotlib` and `pandas`. `plotly`
-is imported by the dataset loader even when `voxelize: false`. The
-`torch-distributed` entry is not the source of `torch.distributed`, which is provided by PyTorch itself.
-Use the team's working environment or resolve and record a compatible environment
-before a long run. The scheduler import's upstream installation reference is
-in `train/downstream/track_finding_trainer.py` and
-`train/downstream/track_regression_trainer.py`.
-
-Check the actual imports, not just `import fm4npp`:
+### Check CUDA and trainer imports
 
 ```bash
-python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
-python -c "import ruamel.yaml, sklearn, einops, mmap_ninja, plotly, cosine_annealing_warmup"
-python train/downstream/train_track_finding.py --help
-python train/downstream/train_track_regression.py --help
+nvidia-smi
+python -c "import torch; assert torch.cuda.is_available(), 'CUDA unavailable'; print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))"
+python -c "import h5py, ruamel.yaml, sklearn, einops, mmap_ninja, plotly, cosine_annealing_warmup"
+python -m train.downstream.train_track_finding --help
 ```
 
-The help commands exercise trainer imports without loading data or starting
-training. A successful help command does not validate GPU kernels. Use the
-CUDA checks in [Mamba support](train/MAMBA_SUPPORT.md) on the target runtime.
-The repository's local Mamba2 CPU fallback is approximate and cannot validate
-the fused training path.
+For Mamba2/3 workloads, run the
+[existing CUDA kernel tests](train/MAMBA_SUPPORT.md#checkpoints-and-validation)
+in the same runtime. Check that the tests for the intended backend ran, since
+the suite can skip cases when CUDA or optional dependencies are unavailable.
+
+### Run a short HDF5 smoke test
+
+Use the directory containing `manifest.json` for a published
+`cvt-clusters-h5-v1` product with train, validation, and test splits. If you
+use a small custom fixture, include eligible truth tracks with at least four
+clusters in the validation events. Set
+`CLAS12_ARTIFACT_ROOT` to a writable directory outside the source checkout.
+
+```bash
+export CLAS12_DATA_ROOT=/absolute/path/to/cvt-clusters-h5
+export CLAS12_ARTIFACT_ROOT=/absolute/path/to/writable/results
+CLAS12_SMOKE_DIR="$(mktemp -d "$CLAS12_ARTIFACT_ROOT/hdf5-smoke.XXXXXX")"
+CLAS12_VALIDATION_DATA_ROOT="$CLAS12_DATA_ROOT" \
+  python -m train.downstream.benchmark_hdf5_finding \
+    --data-root "$CLAS12_DATA_ROOT" --output-dir "$CLAS12_SMOKE_DIR/finding" \
+    --train-size 32 --validation-size 16 --test-size 16 --steps 2 --workers 0
+```
+
+In `$CLAS12_SMOKE_DIR/finding/summary.json`, check `optimizer_steps: 2`,
+`train_samples: 32`, `validation_samples: 16`, and `test_samples: 16`.
+The run trains an AdapterOnly head, reloads its checkpoint, and evaluates
+the test split. Use it to check data access and execution before a longer fit.
 
 ### GB10 Triton assembler selection
 
@@ -72,13 +80,11 @@ This addresses assembler selection; it does not install the toolkit or validate
 a different GPU architecture. The same GB10 failure and selection are described
 in [the upstream Triton issue](https://github.com/triton-lang/triton/issues/10331).
 
-For remote execution in an existing team runtime, follow
-[Remote edgexpert jobs](train/REMOTE_RUNS.md). It explains SSH versus container
-paths, isolated source snapshots, persistent mounts, monitoring and recovery.
-
 ## Data contract
 
-The normal downstream CLIs read a CLAS12 v6 event-product RaggedMmap root:
+For HDF5, see
+[data representation and sample selection](train/downstream/TRAINING_OPTIONS.md#data-representation-and-sample-selection).
+The legacy downstream recipes read a CLAS12 v6 event-product RaggedMmap root:
 
 ```text
 data_root/

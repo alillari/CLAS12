@@ -1,11 +1,18 @@
+# Dependency inventory. Use the team runtime in SETUP.md for CUDA training.
+# PyTorch and compiled Mamba dependencies must match the target GPU and CUDA.
+
 # Core dependencies
 torch>=2.4.0
 numpy>=1.24.0
 scipy>=1.10.0
 pyyaml>=6.0
+ruamel.yaml
+scikit-learn
+einops
 tqdm>=4.65.0
 optuna>=3.6.0
 wandb>=0.17.0
+cosine-annealing-warmup @ git+https://github.com/katsura-jp/pytorch-cosine-annealing-with-warmup.git@12d03c07553aedd3d9e9155e2b3e31ce8c64081a
 
 # Mamba-specific dependencies
 mamba-ssm>=1.0.0
@@ -16,9 +23,7 @@ triton>=2.2.0
 mmap-ninja>=0.7.0
 h5py>=3.8
 
-# Distributed training
-torch-distributed>=2.0.0
-
-# Optional: for better performance
-# einops>=0.6.0
-# packaging>=23.0
+# Evaluation and plotting (the dataset loader also imports Plotly and Matplotlib)
+matplotlib
+pandas
+plotly

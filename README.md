@@ -103,10 +103,9 @@ remain documented rather than silently changing the experimental baseline.
 
 ## Setup
 
-Follow [SETUP.md](SETUP.md), then select a task in the
-[training guide](train/TRAINING_RECIPES.md). Training requires a compatible
-PyTorch/CUDA/Mamba environment and access to the RaggedMmap data. The unpinned
-`requirements.txt` is an inherited dependency inventory, not a tested lockfile.
+Follow [SETUP.md](SETUP.md) to use the team GPU runtime and run a short HDF5
+track-finding check, then select a task in the
+[training guide](train/TRAINING_RECIPES.md).
 
 See [Mamba support](train/MAMBA_SUPPORT.md) for independent backbone/adapter
 selection, Mamba2 pretraining, Mamba3 SISO, and checkpoint/runtime requirements.

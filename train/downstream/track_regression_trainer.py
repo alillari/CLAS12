@@ -41,6 +41,7 @@ from fm4npp.models.linformer_gpt import LinformerGPT
 from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
 from fm4npp.models.mamba2 import Mamba2
+from train.downstream.regression_initialization import initialize_regression_adapter
 
 from model import *
 from loss import *
@@ -581,35 +582,6 @@ class DownstreamTrainer():
         self.bwd_hooks = register_param_backward_nan_hooks(self.model)
         ###%%%%%%%%
 
-        def initialize_mamba2(model, num_layers, num_residuals=1):
-            """ Properly initializes Mamba v2 to ensure stable learning. """
-            for name, param in legacy_initialization_parameters(model):
-            
-                # Stable State-Space Matrix (A_t)
-                if "A" in name:  
-                    init.uniform_(param, -0.1 / num_layers, 0.1 / num_layers)
-        
-                # State Decay D (Ensure nonzero values)
-                elif "D" in name:
-                    init.normal_(param, mean=0.1, std=0.02)
-        
-                # Convolution Weights
-                elif "conv1d.weight" in name:
-                    init.kaiming_uniform_(param, mode="fan_in", nonlinearity="linear")
-        
-                # Projection Layers (Mapping Activations)
-                elif "out_proj.weight" in name or "in_proj.weight" in name:
-                    init.xavier_uniform_(param, gain=1.0 / (num_layers ** 0.5))
-        
-                # Normalization Layers (LayerNorm, RMSNorm)
-                elif "norm.weight" in name:
-                    init.ones_(param)
-        
-                # Bias Terms
-                elif "bias" in name:
-                    init.zeros_(param)
-        
-            print(f"✅ Mamba v2 Model Initialized (Safe Scaling for {num_layers} Layers")
                 
         #self.down_model = MambaHead(input_dim=self.params.embed_dim, num_layers=2, 
         #                          d_state=self.params.d_state, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone, num_output_dim = self.params.max_gt_classes).to(self.device)
@@ -642,7 +614,10 @@ class DownstreamTrainer():
         total_params = sum(p.numel() for p in self.down_model.parameters())
         print(f"Total parameters in down_model: {total_params}")
         
-        initialize_mamba2(self.down_model, 3, num_residuals=1)
+        self.adapter_ssm_initialization = getattr(
+            self.params, "adapter_ssm_initialization", "constructor"
+        )
+        initialize_regression_adapter(self.down_model, self.adapter_ssm_initialization)
 
         self.down_optimizer = optim.AdamW(optimizer_parameters(self.down_model),
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
@@ -1145,6 +1120,7 @@ class DownstreamTrainer():
             'pooling': head.pooling,
             'backbone_architecture': architecture_metadata(self.model),
             'adapter_architecture': architecture_metadata(self.down_model),
+            'adapter_ssm_initialization': getattr(self, 'adapter_ssm_initialization', 'constructor'),
             'optimizer_state_dict': self.down_optimizer.state_dict(),
             'scheduler_state_dict': self.down_scheduler.state_dict(),
             'best_loss': self.best_loss,
@@ -1244,6 +1220,8 @@ class DownstreamTrainer():
                 f"mambaversion={getattr(self.params, 'mambaversion', None)}"
             ) from exc
     
+        self.adapter_ssm_initialization = checkpoint.get('adapter_ssm_initialization', 'legacy')
+
         # 5. If not inference mode, load optimizer/scheduler states
         if not inference:
             self.down_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

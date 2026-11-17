@@ -56,6 +56,21 @@ reuse it across models fitted on the same labels. Keep validation/evaluation
 labels out of that calculation. Read [Target statistics](TARGET_STATISTICS.md)
 for the formulas, sampling policy and checkpoint-buffer behavior.
 
+### Mamba2 adapter initialization
+
+Fresh momentum heads preserve the Mamba2 constructor's `dt_bias`, `A_log` and
+`D`. The previous generic initializer overwrote all three, including setting
+`dt_bias` to zero and changing the constructor's positive time-step range.
+All other initialization rules and random-number consumption are unchanged.
+
+Set `adapter_ssm_initialization: legacy` in the model YAML to reproduce the old
+fresh-head initialization. The default is `constructor`. Checkpoints and training
+artifact summaries record the initialization mode; unmarked historical
+checkpoints are identified as `legacy` when loaded. Loading trained weights
+does not reinitialize them, and checkpoint tensor shapes are unchanged.
+This corrects an initialization overwrite; momentum gains still require a
+matched comparison for each backbone and label budget.
+
 ## Inspect behavior
 
 Momentum evaluation requires `aux_target_test` and `metadata.json` with the

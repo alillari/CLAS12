@@ -14,6 +14,10 @@ from train.downstream.regression_utils import validate_regression_training
 
 
 class Params(dict):
+    @property
+    def params(self):
+        return self
+
     def __getattr__(self, key):
         try:
             return self[key]

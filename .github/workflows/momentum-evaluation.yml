@@ -29,4 +29,5 @@ jobs:
           python -m unittest
           train.downstream.tests.test_checkpoint_units
           train.downstream.tests.test_momentum_evaluation_units
+          train.downstream.tests.test_regression_initialization
           train.downstream.tests.test_validation_loss_training -v

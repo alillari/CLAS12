@@ -31,6 +31,18 @@ is independent of that backbone choice. Mamba-family head width/count remain
 fixed by the ordinary trainer; Transformer adapters expose additional controls.
 See [Training options](TRAINING_OPTIONS.md#regression-target-and-head).
 
+### Adapter dropout
+
+Set `downstream_dropout` explicitly to keep head regularization independent of
+the pretrained backbone's `dropout`. It takes precedence in both the training
+and evaluation head factories; omitting it preserves the regression trainer's
+legacy fallback to `dropout` (or zero). New checkpoints record the dropout
+settings and reject changes on training resume. Legacy regression checkpoints
+used their saved `dropout` for the head even if `downstream_dropout` was present;
+resume those with the original effective value. The resume-specific dropout
+check is skipped for inference, which disables dropout; ordinary architecture
+checks still apply.
+
 ## Run and evaluate
 
 Run the momentum trainer with one process. To use a particular GPU, select

@@ -14,6 +14,10 @@ from train.downstream.regression_utils import validate_regression_training
 
 
 class Params(dict):
+    @property
+    def params(self):
+        return self
+
     def __getattr__(self, key):
         try:
             return self[key]
@@ -64,6 +68,46 @@ class ValidationLossTrainingTest(unittest.TestCase):
         with torch.no_grad():
             trainer.down_model.offset.fill_(step)
         trainer._record_validation_result(loss, 'selected.pth', 0, step)
+
+    def test_training_and_evaluation_heads_keep_explicit_adapter_dropout(self):
+        from train.downstream.eval.evaluate_track_regression import build_head
+
+        for explicit, expected in ((None, .05), (0., 0.), (.2, .2)):
+            with self.subTest(explicit=explicit), tempfile.TemporaryDirectory() as tmp:
+                trainer = self.trainer(tmp)
+                trainer.params.update(embed_dim=64, num_layers_backbone=2,
+                    num_output_classes=3, num_embedder_layers=0,
+                    embed_method='pos_only', pe_method='nerf', dropout=.05,
+                    max_lr=.001, min_lr=.0001, warmup_steps=0,
+                    max_optimizer_steps=1, scheduler_first_cycle_steps=2,
+                    log_file_name='dropout.log')
+                if explicit is not None:
+                    trainer.params['downstream_dropout'] = explicit
+                with patch.object(trainer, '_train_by_optimizer_step'), \
+                        patch.object(trainer, '_finish_validation'):
+                    trainer.train(pretrain=False)
+                restored_head = build_head(trainer)
+                restored_head.load_state_dict(trainer.down_model.state_dict(), strict=True)
+                for model in (trainer.down_model, restored_head):
+                    rates = [m.p for m in model.modules() if isinstance(m, torch.nn.Dropout)]
+                    self.assertTrue(rates)
+                    self.assertEqual(set(rates), {expected})
+                path = trainer._save_checkpoint('dropout.pth', 0, 0.)
+                trainer.load_checkpoint(path, inference=False, use_pretrained_backbone=False)
+                for module in trainer.down_model.modules():
+                    if isinstance(module, torch.nn.Dropout):
+                        module.p = .3
+                trainer.load_checkpoint(path, inference=True, use_pretrained_backbone=False)
+                with self.assertRaisesRegex(ValueError, 'dropout mismatch'):
+                    trainer.load_checkpoint(path, inference=False, use_pretrained_backbone=False)
+                saved = torch.load(path, weights_only=False)
+                del saved['adapter_dropout_config']
+                saved['params'] = {'dropout': .05, 'downstream_dropout': .2}
+                torch.save(saved, path)
+                trainer.params['downstream_dropout'] = .3
+                with self.assertRaisesRegex(ValueError, 'Legacy adapter dropout mismatch'):
+                    trainer.load_checkpoint(path, inference=False, use_pretrained_backbone=False)
+
 
     def test_saved_weights_follow_minimum_loss_and_only_one_file_is_saved(self):
         with tempfile.TemporaryDirectory() as tmp:

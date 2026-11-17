@@ -59,6 +59,10 @@ from physics_checkpoints import (
 )
 from train.downstream.checkpoint_units import validate_hdf5_momentum_checkpoint_units
 
+from train.downstream.regression_dropout import (
+    regression_dropout, regression_dropout_config, validate_regression_dropout_resume,
+)
+
 VALIDATION_LOSS_REDUCTION = "mean_over_valid_terms"
 
 
@@ -426,6 +430,7 @@ class DownstreamTrainer():
             num_embedder_layers=self.params.num_embedder_layers,
             pooling=getattr(self.params, "pooling", "mean"),
             embed_method=self.params.embed_method, pe_method=self.params.pe_method,
+            dropout=regression_dropout(self.params),
             target_mean=self.regression_target_stats["mean"],
             target_std=self.regression_target_stats["std"],
             input_representation=getattr(self.params, "input_representation", "center_only"),
@@ -630,7 +635,7 @@ class DownstreamTrainer():
             pooling=getattr(self.params, "pooling", "mean"),
             embed_method=self.params.embed_method,
             pe_method=self.params.pe_method,
-            dropout=float(getattr(self.params, "dropout", 0.0)),
+            dropout=regression_dropout(self.params),
             target_mean=self.regression_target_stats["mean"],
             target_std=self.regression_target_stats["std"],
             input_representation=getattr(self.params, "input_representation", "center_only"),
@@ -1143,6 +1148,7 @@ class DownstreamTrainer():
             'model_state_dict': head.state_dict(),
             'use_pretrained_backbone': self.use_pretrained_backbone,
             'pooling': head.pooling,
+            'adapter_dropout_config': regression_dropout_config(head),
             'backbone_architecture': architecture_metadata(self.model),
             'adapter_architecture': architecture_metadata(self.down_model),
             'optimizer_state_dict': self.down_optimizer.state_dict(),
@@ -1228,6 +1234,8 @@ class DownstreamTrainer():
                 "Cannot resume with an incompatible validation loss reduction. "
                 "Evaluate these weights or start a new validation-loss run."
             )
+        if not inference:
+            validate_regression_dropout_resume(checkpoint, head, self.params)
         validate_checkpoint_architecture(
             checkpoint, head, 'adapter', backbone=self.model if use_pretrained_backbone else None,
         )

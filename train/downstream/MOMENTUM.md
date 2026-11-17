@@ -58,12 +58,17 @@ for the formulas, sampling policy and checkpoint-buffer behavior.
 
 ## Inspect behavior
 
-Momentum evaluation requires `aux_target_test` and `metadata.json` with the
-declared auxiliary layout for its conventional entrance comparison. Current
-MC momentum targets are in MeV and the auxiliary reconstruction momentum is
-in GeV; the analysis scales are 0.001 and 1.0 respectively. Evaluation uses
-entrance truth/output directly. The CVT reference combines `CVT::Tracks` p/theta
-with the matched `CVT::Trajectory` entrance direction's phi.
+Legacy mmap evaluation requires `aux_target_test` and `metadata.json` with the
+declared auxiliary layout for its conventional entrance comparison. In that
+product, MC momentum targets are in MeV and auxiliary reconstruction momentum
+is in GeV; the analysis scales are 0.001 and 1.0 respectively.
+
+The `cvt-clusters-h5-v1` product stores momentum targets in GeV/c and supplies
+the conventional reference through its HDF5 reader. Its evaluator uses scale 1
+and requires saved GeV/c checkpoint evidence; the legacy mmap scale does not
+apply. Evaluation uses entrance truth/output directly. The CVT reference
+combines `CVT::Tracks` p/theta with the matched `CVT::Trajectory` entrance
+direction's phi.
 
 | Output | Use |
 | --- | --- |

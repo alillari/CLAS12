@@ -47,6 +47,11 @@ def make_trainer(directory, version="mamba2", **overrides):
 
 
 class PretrainingIntegrationTest(unittest.TestCase):
+    def test_unmasked_neighbor_objective_rejects_bidirectional_backbone(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaisesRegex(ValueError, "requires a causal Transformer"):
+                make_trainer(root, "transformer", backbone_causal=False)
+
     def test_checkpoint_records_default_and_requires_legacy_for_unmarked_weights(self):
         with tempfile.TemporaryDirectory() as root:
             trainer = make_trainer(root, "transformer")

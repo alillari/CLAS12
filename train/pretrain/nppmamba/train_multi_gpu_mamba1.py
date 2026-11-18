@@ -138,6 +138,9 @@ class Trainer():
         version = backbone_version(self.params, default='mamba1')
         if version not in {'mamba1', 'mamba2', 'mamba3', 'transformer'}:
             raise ValueError('This pretraining entrypoint supports Mamba1, Mamba2, Mamba3 SISO, and causal transformers')
+        if version == 'transformer' and getattr(self.params, 'backbone_causal', True) is not True:
+            raise ValueError('Outward-neighbor pretraining requires a causal Transformer; '
+                             'bidirectional pretraining needs an objective that masks hidden coordinates')
         self.model = build_backbone(self.params, default='mamba1')
 
         # Standard initialization

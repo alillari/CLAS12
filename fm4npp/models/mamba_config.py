@@ -149,7 +149,7 @@ def build_backbone(params, default="mamba2"):
         from fm4npp.models.transformer import TransformerGPT
         options = transformer_options(params, "backbone")
         common.pop("dropout")
-        model = TransformerGPT(**common, **options,
+        model = TransformerGPT(**common, **options, causal=value(params, "backbone_causal", True),
                                pos_dim=value(params, "pos_dim", 3), aux_dim=value(params, "aux_dim", 4))
         common["dropout"] = options["dropout"]
         return _finish_backbone(model, params, version, common)
@@ -198,7 +198,8 @@ def _finish_backbone(model, params, version, common):
         options = transformer_options(params, "backbone")
         config.update(num_heads_backbone=options["num_heads"],
                       backbone_sequence_encoding=options["sequence_encoding"],
-                      backbone_rope_theta=options["rope_theta"], backbone_mlp_ratio=options["mlp_ratio"])
+                      backbone_rope_theta=options["rope_theta"], backbone_mlp_ratio=options["mlp_ratio"],
+                      backbone_causal=value(params, "backbone_causal", True))
     if version in {"longformer", "linformer"}:
         config.update(num_heads_backbone=common["num_heads"], mlp_ratio=common["mlp_ratio"])
         if version == "longformer":

@@ -41,6 +41,7 @@ from regression_utils import (  # noqa: E402
     single_target_to_physical_numpy,
     target_to_cartesian_numpy,
 )
+from train.downstream.regression_dropout import regression_dropout
 from physics_checkpoints import write_evaluation_summary
 from track_regression_trainer import DownstreamTrainer  # noqa: E402
 
@@ -230,6 +231,7 @@ def build_head(trainer):
         pooling=getattr(params, "pooling", "mean"),
         embed_method=params.embed_method,
         pe_method=params.pe_method,
+        dropout=regression_dropout(params),
         target_mean=trainer.regression_target_stats["mean"],
         target_std=trainer.regression_target_stats["std"],
         input_representation=getattr(params, "input_representation", "center_only"),

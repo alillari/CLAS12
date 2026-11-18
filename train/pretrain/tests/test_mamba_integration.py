@@ -175,6 +175,44 @@ class PretrainingIntegrationTest(unittest.TestCase):
             self.assertEqual(legacy.iters, trainer.iters)
             self.assertEqual(legacy.best_loss, float("inf"))
 
+    def test_width_scaling_applies_to_first_update_and_survives_resume(self):
+        for enabled, base_width in ((True, 16), (True, 64), (True, 256), (False, 16)):
+            with self.subTest(enabled=enabled, base_width=base_width), \
+                    tempfile.TemporaryDirectory() as directory:
+                options = dict(use_mup=enabled, mup_base_width=base_width,
+                               warmup_steps=1, n_eval_steps=100, weight_decay=.02)
+                trainer = make_trainer(directory, "transformer", **options)
+                ratio = 64 / base_width if enabled else 1.
+
+                def rates(subject):
+                    return [g["lr"] for g in subject.optimizer.param_groups]
+
+                expected = [trainer.params.min_lr, trainer.params.min_lr / ratio]
+                self.assertEqual(rates(trainer), expected)
+                consumed = []
+                original_step = trainer.optimizer.step
+
+                def step(*args, **kwargs):
+                    consumed.append(rates(trainer))
+                    return original_step(*args, **kwargs)
+
+                with patch.object(trainer.optimizer, "step", side_effect=step):
+                    trainer.train_one_epoch()
+                self.assertEqual(consumed, [expected])
+                trainer.save_checkpoint(trainer.checkpoint_path)
+                resumed = make_trainer(directory, "transformer", **options)
+                # Restoring already-scaled saved rates must not scale them again.
+                self.assertEqual(rates(resumed), rates(trainer))
+                self.assertEqual(resumed.scheduler.state_dict(), trainer.scheduler.state_dict())
+                resumed.train_data_loader = trainer.train_data_loader
+                trainer.train_one_epoch()
+                resumed.train_one_epoch()
+                self.assertEqual(rates(resumed), rates(trainer))
+                for name, value in trainer.model.state_dict().items():
+                    torch.testing.assert_close(resumed.model.state_dict()[name], value,
+                                               rtol=0, atol=0)
+
+
     def test_offline_wandb_logging_is_preserved(self):
         tracking = Mock()
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ), \

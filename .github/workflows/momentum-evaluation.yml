@@ -18,7 +18,7 @@ jobs:
       - name: Install CPU evaluation dependencies
         run: |
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install 'numpy>=1.26,<2' scipy scikit-learn matplotlib h5py ruamel.yaml mmap-ninja einops plotly tqdm
+          python -m pip install 'numpy>=1.26,<2' scipy scikit-learn matplotlib h5py ruamel.yaml pyyaml mmap-ninja einops plotly tqdm
           python -m pip install 'git+https://github.com/katsura-jp/pytorch-cosine-annealing-with-warmup.git@12d03c07553aedd3d9e9155e2b3e31ce8c64081a'
       - name: Check checkpoint units through both evaluation CLIs
         env:
@@ -28,5 +28,6 @@ jobs:
         run: >-
           python -m unittest
           train.downstream.tests.test_checkpoint_units
+          train.pretrain.tests.test_mamba_integration.PretrainingIntegrationTest.test_width_scaling_applies_to_first_update_and_survives_resume
           train.downstream.tests.test_momentum_evaluation_units
           train.downstream.tests.test_validation_loss_training -v

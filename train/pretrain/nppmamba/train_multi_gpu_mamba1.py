@@ -166,14 +166,13 @@ class Trainer():
                 find_unused_parameters=True
             )
 
-        # [muP] Simplified width-transfer (mu-parameterization, practical form).
+        # Historical muP-inspired, rank-based learning-rate heuristic.
         # Split trainable params into two groups by tensor rank:
-        #   - VECTOR params (biases, norm gains, Mamba A_log/D): base LR, NOT
-        #     width-scaled (no fan-in that grows with width).
-        #   - MATRIX params (Mamba block weights + output_layer): LR divided by
-        #     the width ratio (embed_dim / mup_base_width). This is the piece
-        #     that gives near-constant optimal LR across widths, so a recipe
-        #     tuned at the base width transfers to other widths.
+        #   - Rank-zero/one params: base LR.
+        #   - Higher-rank params (including output_layer.weight): LR divided by
+        #     the width ratio (embed_dim / mup_base_width).
+        # This is not a validated full muP parameterization: tensor rank does
+        # not identify which dimensions scale, and readout/init rules matter.
         # If use_mup is off, both groups get the same LR -> identical to before.
         self.mup_base_width = getattr(self.params, 'mup_base_width', 256)
         self.use_mup = getattr(self.params, 'use_mup', False)
@@ -226,6 +225,11 @@ class Trainer():
             warmup_steps=self.params.warmup_steps,
             gamma=1.0
         )
+        # Scheduler construction assigns the unscaled minimum LR to all groups.
+        # Apply the same rule used after every scheduler step before the first
+        # optimizer update too. A resume below replaces these rates with the
+        # already-scaled checkpoint rates; do not scale again after restoring.
+        self._scale_mup_matrix_lr()
 
         # [W&B] Optional offline experiment tracking (no account needed).
         # Enable per-config with `use_wandb: true`. Logs hyperparameters,

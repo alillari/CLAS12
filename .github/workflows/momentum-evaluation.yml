@@ -30,4 +30,5 @@ jobs:
           train.downstream.tests.test_checkpoint_units
           train.pretrain.tests.test_mamba_integration.PretrainingIntegrationTest.test_width_scaling_applies_to_first_update_and_survives_resume
           train.downstream.tests.test_momentum_evaluation_units
+          train.downstream.tests.test_regression_initialization
           train.downstream.tests.test_validation_loss_training -v

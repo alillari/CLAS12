@@ -226,6 +226,7 @@ def train_experiment(
             "mambaversion": json_safe(getattr(params, "mambaversion", None)),
             "backbone_version": backbone_version(params),
             "adapter_version": adapter_options(params)["adapter_version"],
+            "adapter_ssm_initialization": trainer.adapter_ssm_initialization,
             "hostname": socket.gethostname(),
             "git_commit": git_commit(),
             "data_root": json_safe(getattr(params, "data_root", None)),

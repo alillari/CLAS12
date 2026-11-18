@@ -1,11 +1,30 @@
 """Initialize fresh momentum adapters without overwriting Mamba2 dynamics."""
 
 import math
+import random
+
+import numpy as np
 
 import torch
 
 from fm4npp.models.mamba2 import Mamba2
 from fm4npp.models.mamba_config import legacy_initialization_parameters
+
+
+def seed_adapter_initialization(seed):
+    """Optionally decouple a fresh adapter's draws from backbone construction.
+
+    Call immediately before constructing the adapter. This controls its random
+    initialization; it does not promise deterministic GPU training.
+    """
+    if seed is None:
+        return
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def initialize_regression_adapter(model, ssm_initialization="constructor"):

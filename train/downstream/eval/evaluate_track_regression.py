@@ -221,6 +221,7 @@ def build_head(trainer):
 
     return MambaTrackRegressionHead(
         **adapter_options(params), **adapter_dimensions(params),
+        pretrained_readout=getattr(params, "pretrained_readout", "features"),
         input_dim=params.embed_dim,
         num_output_dim=params.num_output_classes,
         d_state=64,
@@ -2090,9 +2091,9 @@ def main():
             model_input = trainer._representation_input(points, batch)
 
             if use_pretrained:
-                _, embeddings, _ = trainer.model(model_input, return_z=True)
+                embeddings = trainer._backbone_features(model_input)
                 prediction = trainer.down_model(
-                    model_input, torch.stack(embeddings), pretrain=True, padding_mask=mask
+                    model_input, embeddings, pretrain=True, padding_mask=mask
                 )["pred_regression"]
             else:
                 prediction = trainer.down_model(

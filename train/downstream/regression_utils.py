@@ -284,7 +284,9 @@ def load_regression_target_stats(path, task):
     }
 
 
-def validate_regression_checkpoint_inputs(checkpoint, state_dict, use_pretrained_backbone, pooling):
+def validate_regression_checkpoint_inputs(
+    checkpoint, state_dict, use_pretrained_backbone, pooling, *, pretrained_readout="features",
+):
     """Validate the forward path before a legacy non-strict weight load can discard it."""
     # Older trainers saved vars(YParams), with resolved settings at the top
     # level and a copy of the YAML settings under "params".
@@ -315,6 +317,19 @@ def validate_regression_checkpoint_inputs(checkpoint, state_dict, use_pretrained
     expected_keys = {"pool_score.weight", "pool_score.bias"} if pooling == "attention" else set()
     if scorer_keys != expected_keys:
         raise ValueError(f"Adapter checkpoint pooling weights do not match {pooling!r} pooling")
+
+    saved_readout = checkpoint.get("pretrained_readout", saved_params.get("pretrained_readout", "features"))
+    if saved_readout != pretrained_readout:
+        raise ValueError(
+            f"Adapter checkpoint pretrained readout mismatch: saved {saved_readout!r}, "
+            f"requested {pretrained_readout!r}"
+        )
+    projection_keys = {key for key in state_dict if key.startswith("feature_proj.")}
+    expected_projection = {
+        "feature_proj.0.weight", "feature_proj.0.bias", "feature_proj.1.weight", "feature_proj.1.bias",
+    } if pretrained_readout == "coordinate" else set()
+    if projection_keys != expected_projection:
+        raise ValueError("Adapter checkpoint feature projection does not match its pretrained readout")
 
 
 def validate_regression_training(params):

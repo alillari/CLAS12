@@ -43,6 +43,68 @@ resume those with the original effective value. The resume-specific dropout
 check is skipped for inference, which disables dropout; ordinary architecture
 checks still apply.
 
+### Layer-mixture learning rate
+
+`adapter_feature_mixing_lr_ratio` optionally multiplies the learning rate of
+the pretrained layer-mixture logits. Its default is `1.0`, preserving the
+historical optimizer layout. For example, `100.0` lets the mixture adapt faster
+while keeping the rest of the adapter on its configured schedule. The ratio
+applies to both step and epoch schedules, is recorded in the checkpoint, and
+must match when resuming training. Inference uses the saved weights directly.
+
+### Coordinate-assisted pretrained readout
+
+Set `pretrained_readout: coordinate` in the model YAML to retain the raw position
+embedding alongside the frozen backbone features. The head applies separate
+LayerNorm/linear projections to the raw embedding and the learned average of
+backbone layers, adds the projected values, and passes them through the same
+refinement and pooling. The feature projection starts at zero, so the initial
+function and all common weights match AdapterOnly with the same adapter seed.
+Its projection receives gradients immediately; the layer-mixing weights begin
+learning once that projection moves away from zero.
+
+The default `features` retains the existing pretrained feature-only readout.
+Use the same readout setting for training, resume and evaluation; checkpoints
+record it and reject mismatches or missing projection weights. In AdapterOnly
+mode the feature branch is unused. With width-512 inputs and a width-256 head,
+the coordinate option adds 132,352 parameters. It changes the architecture, so
+include a matched raw-only capacity control when attributing gains to pretraining.
+
+### Reproducible backbone encoding shapes
+
+`backbone_feature_kind` explicitly selects the Mamba backbone's adapter inputs:
+`accumulated_states` (default) uses each state after residual addition;
+`residual_updates` captures each block output before addition. The latter requires
+a backbone exposing `mamba_layers`. These policies have the same tensor shapes
+but different meanings. Train and evaluate with the same policy; it is recorded
+inside `backbone_encoding` and mismatches are rejected. Existing checkpoints
+without this field are interpreted as accumulated-state checkpoints. An older
+adapter known to have used residual updates needs verified provenance before its
+metadata can be corrected; tensor shapes cannot establish the policy.
+
+For explicit numerical qualification of Mamba3 checkpoints, use:
+
+```yaml
+backbone_sequence_padding: 128
+backbone_batch_padding: 128
+regression_matmul_precision: highest
+```
+
+The backbone sees fixed dimensions: shorter inputs receive the padding sentinel,
+and larger evaluation batches are split into batches of the configured size.
+The adapter receives only the original samples/tokens and their original masks.
+Sequences exceeding the configured length are rejected. The `highest` option
+disables TF32 and BF16 reduced-precision reductions through PyTorch's global
+settings, including for the adapter. It does not change Mamba3's internal BF16
+implementation or promise universal numerical invariance.
+
+Defaults are zero padding controls and `default` precision, preserving the
+existing forward shapes and process settings. Training checkpoints and artifact
+summaries record these options; resume and evaluation require matching settings.
+Use the same model YAML for both. A fixed shape avoids the observed dependence
+on input/batch dimensions in the qualified Mike checkpoints, at additional
+computation cost; check numerical parity when using other architectures.
+
 ## Run and evaluate
 
 Run the momentum trainer with one process. To use a particular GPU, select
@@ -82,6 +144,10 @@ checkpoints are identified as `legacy` when loaded. Loading trained weights
 does not reinitialize them, and checkpoint tensor shapes are unchanged.
 This corrects an initialization overwrite; momentum gains still require a
 matched comparison for each backbone and label budget.
+
+Set `adapter_initialization_seed` to seed a fresh adapter immediately before
+construction. This controls which random draws initialize the head when
+comparing different backbone constructors with the same adapter recipe.
 
 ## Inspect behavior
 

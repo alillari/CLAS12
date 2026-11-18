@@ -280,11 +280,37 @@ class ValidationLossTrainingTest(unittest.TestCase):
             torch.testing.assert_close(trainer.down_model.target_normalizer.mean, torch.full((3,), 1000.))
 
     @staticmethod
-    def regression_head(pooling):
+    def regression_head(pooling, pretrained_readout="features"):
         return MambaTrackRegressionHead(
             input_dim=64, embed_dim=64, num_layers=1, num_feature_layers=2,
             num_embedder_layers=0, embed_method='pos_only', pooling=pooling,
+            pretrained_readout=pretrained_readout,
         )
+
+    def test_checkpoint_readout_mismatch_and_missing_projection_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            trainer.use_pretrained_backbone = True
+            for readout in ('coordinate', 'features'):
+                trainer.down_model = self.regression_head('attention', readout)
+                path = trainer._save_checkpoint('readout.pth', 0, 0.)
+                saved = torch.load(path, weights_only=False)
+                self.assertEqual(saved['pretrained_readout'], readout)
+                for inference in (True, False):
+                    trainer.down_model = self.regression_head('attention', readout)
+                    trainer.load_checkpoint(path, inference=inference, use_pretrained_backbone=True)
+                    for name, value in trainer.down_model.state_dict().items():
+                        torch.testing.assert_close(value, saved['model_state_dict'][name], rtol=0, atol=0)
+                    other = 'features' if readout == 'coordinate' else 'coordinate'
+                    trainer.down_model = self.regression_head('attention', other)
+                    with self.assertRaisesRegex(ValueError, 'pretrained readout mismatch'):
+                        trainer.load_checkpoint(path, inference=inference, use_pretrained_backbone=True)
+                if readout == 'coordinate':
+                    trainer.down_model = self.regression_head('attention', readout)
+                    del saved['model_state_dict']['feature_proj.1.weight']
+                    torch.save(saved, path)
+                    with self.assertRaisesRegex(ValueError, 'feature projection'):
+                        trainer.load_checkpoint(path, inference=True, use_pretrained_backbone=True)
 
     def test_checkpoint_requires_trained_mode_and_pooling_for_evaluation_and_resume(self):
         with tempfile.TemporaryDirectory() as tmp:

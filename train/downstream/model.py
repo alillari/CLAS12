@@ -1,3 +1,5 @@
+import copy
+
 import torch
 import torch.nn as nn
 
@@ -529,8 +531,12 @@ class MambaTrackRegressionHead(nn.Module):
                  pooling="mean", embed_method="add", pe_method="nerf",
                  target_mean=None, target_std=None,
                  input_representation="center_only",
-                 pos_dim=3, aux_dim=4, *, adapter_version="mamba2", adapter_block_kwargs=None):
+                 pos_dim=3, aux_dim=4, *, adapter_version="mamba2", adapter_block_kwargs=None,
+                 pretrained_readout="features"):
         super().__init__()
+        if pretrained_readout not in {"features", "coordinate"}:
+            raise ValueError("pretrained_readout must be 'features' or 'coordinate'")
+        self.pretrained_readout = pretrained_readout
         self.adapter_version = adapter_version
         if adapter_version == "transformer" and num_layers < 1:
             raise ValueError("Transformer adapters require at least one refinement layer (num_adapter_layers >= 1)")
@@ -612,6 +618,13 @@ class MambaTrackRegressionHead(nn.Module):
             self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim)
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
 
+        if self.pretrained_readout == "coordinate":
+            # Preserve the AO path and learn an independent projection of the
+            # frozen representation. Deepcopy consumes no additional RNG draws.
+            self.feature_proj = copy.deepcopy(self.input_proj)
+            nn.init.zeros_(self.feature_proj[1].weight)
+            nn.init.zeros_(self.feature_proj[1].bias)
+
     def pool(self, x, padding_mask=None):
         """
         x:            (B, N, D)
@@ -645,6 +658,7 @@ class MambaTrackRegressionHead(nn.Module):
             if padding_mask is None:
                 padding_mask = x[..., 0] != -100
             x = x.masked_fill(~padding_mask[..., None], 0.)
+        raw_points = x
         if pretrain:
             x = feature.permute(1, 2, 0, 3)
             weights = torch.softmax(self.weighted_avg_weights, dim=0)
@@ -669,7 +683,20 @@ class MambaTrackRegressionHead(nn.Module):
         if self.return_embedding:
             embedding_pre_projection = x
 
-        x = self.input_proj(x)
+        if pretrain and self.pretrained_readout == "coordinate":
+            raw = self.embedder(raw_points)
+            if isinstance(raw, tuple):
+                raw = raw[0]
+            for layer in self.mamba_embedder_layers:
+                raw = apply_adapter_layer(layer, raw, padding_mask)
+            raw = self.embedder_norm(raw)
+            if self.adapter_version == "transformer":
+                raw = raw.masked_fill(~padding_mask[..., None], 0.)
+            if self.return_embedding:
+                embedding_pre_projection = raw
+            x = self.input_proj(raw) + self.feature_proj(x)
+        else:
+            x = self.input_proj(x)
 
         if self.return_embedding:
             embedding_post_projection = x

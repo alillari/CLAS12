@@ -41,7 +41,6 @@ from fm4npp.models.linformer_gpt import LinformerGPT
 from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
 from fm4npp.models.mamba2 import Mamba2
-from train.downstream.regression_initialization import initialize_regression_adapter
 
 from model import *
 from loss import *
@@ -59,6 +58,17 @@ from physics_checkpoints import (
     selection_mode, write_evaluation_summary,
 )
 from train.downstream.checkpoint_units import validate_hdf5_momentum_checkpoint_units
+from train.downstream.regression_initialization import (
+    initialize_regression_adapter, seed_adapter_initialization,
+)
+from train.downstream.regression_features import (
+    configure_regression_precision, regression_backbone_features,
+    regression_encoding_config, validate_regression_encoding,
+)
+from train.downstream.regression_optimization import (
+    regression_optimizer_parameters, apply_regression_lr_ratios,
+    feature_mixing_lr_ratio, validate_regression_optimizer_resume,
+)
 
 from train.downstream.regression_dropout import (
     regression_dropout, regression_dropout_config, validate_regression_dropout_resume,
@@ -89,6 +99,7 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
 
         self.params = params
+        configure_regression_precision(params)
         params.hilbert_angular_grid = validate_hilbert_grid(
             getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
         )
@@ -425,6 +436,7 @@ class DownstreamTrainer():
         #else:
         self.down_model = MambaTrackRegressionHead(
             **adapter_options(self.params), **adapter_dimensions(self.params),
+            pretrained_readout=getattr(self.params, "pretrained_readout", "features"),
             input_dim=self.params.embed_dim,
             num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2,
             num_feature_layers=self.params.num_layers_backbone,
@@ -512,10 +524,7 @@ class DownstreamTrainer():
                 model_input = self._representation_input(grouped, inputdict)
                 if pretrain:
                     with torch.no_grad():
-                        _, pre_embed, _ = self.model(model_input, return_z = True)
-                    #feature = torch.stack(pre_embed).mean(0)
-                    feature = torch.stack(pre_embed)
-                    #print('feature: ', feature.size())
+                        feature = self._backbone_features(model_input)
                     pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
 
                 else:
@@ -595,8 +604,10 @@ class DownstreamTrainer():
         #                          num_embedder_layers= self.params.num_embedder_layers, 
         #                          ).to(self.device)
 
+        seed_adapter_initialization(getattr(self.params, "adapter_initialization_seed", None))
         self.down_model = MambaTrackRegressionHead(
             **adapter_options(self.params), **adapter_dimensions(self.params),
+            pretrained_readout=getattr(self.params, "pretrained_readout", "features"),
             input_dim=self.params.embed_dim,
             num_output_dim=self.params.num_output_classes,
             d_state=64,
@@ -624,7 +635,7 @@ class DownstreamTrainer():
         )
         initialize_regression_adapter(self.down_model, self.adapter_ssm_initialization)
 
-        self.down_optimizer = optim.AdamW(optimizer_parameters(self.down_model),
+        self.down_optimizer = optim.AdamW(regression_optimizer_parameters(self.down_model, self.params),
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
                                          weight_decay=float(getattr(self.params, "adapter_weight_decay", 0.0001))) 
         
@@ -855,6 +866,9 @@ class DownstreamTrainer():
     def _representation_input(self, grouped, inputdict):
         return representation_input(grouped, inputdict, self.params)
 
+    def _backbone_features(self, model_input):
+        return regression_backbone_features(self.model, model_input, self.params)
+
 
     def _train_one_batch(self, inputdict, pretrain=False):
         grouped = inputdict['points'].to(self.device)  # B X N X C
@@ -872,8 +886,7 @@ class DownstreamTrainer():
         model_input = self._representation_input(grouped, inputdict)
         if pretrain:
             with torch.no_grad():
-                _, pre_embed, _ = self.model(model_input, return_z=True)
-            feature = torch.stack(pre_embed)
+                feature = self._backbone_features(model_input)
             pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
         else:
             pred_dict = self.down_model(model_input, feature=None, padding_mask=mask)
@@ -901,6 +914,7 @@ class DownstreamTrainer():
             norm_type=2.0,
         )
 
+        apply_regression_lr_ratios(self.down_optimizer)
         self.down_optimizer.step()
         return loss.item()
 
@@ -1084,8 +1098,8 @@ class DownstreamTrainer():
                     targets = self.build_regression_targets(reg, mask, segment)
                     model_input = self._representation_input(grouped, inputdict)
                     if pretrain:
-                        _, embeddings, _ = self.model(model_input, return_z=True)
-                        pred = self.down_model(model_input, torch.stack(embeddings), pretrain=True,
+                        features = self._backbone_features(model_input)
+                        pred = self.down_model(model_input, features, pretrain=True,
                                                padding_mask=mask)["pred_regression"]
                     else:
                         pred = self.down_model(model_input, feature=None, padding_mask=mask)["pred_regression"]
@@ -1123,6 +1137,9 @@ class DownstreamTrainer():
             'model_state_dict': head.state_dict(),
             'use_pretrained_backbone': self.use_pretrained_backbone,
             'pooling': head.pooling,
+            'pretrained_readout': getattr(head, 'pretrained_readout', 'features'),
+            'backbone_encoding': regression_encoding_config(self.params),
+            'adapter_feature_mixing_lr_ratio': feature_mixing_lr_ratio(self.params),
             'adapter_dropout_config': regression_dropout_config(head),
             'backbone_architecture': architecture_metadata(self.model),
             'adapter_architecture': architecture_metadata(self.down_model),
@@ -1170,6 +1187,7 @@ class DownstreamTrainer():
         # 2. Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device_str, weights_only=False)
         validate_checkpoint_hilbert_grid(checkpoint, self.params)
+        validate_regression_encoding(checkpoint, self.params)
         if "model_state_dict" not in checkpoint:
             raise KeyError(
                 f"Adapter checkpoint {checkpoint_path} is missing 'model_state_dict'. "
@@ -1204,7 +1222,10 @@ class DownstreamTrainer():
         state_dict = {k.removeprefix('module.'): v for k, v in checkpoint['model_state_dict'].items()}
         if use_pretrained_backbone is None:
             use_pretrained_backbone = getattr(self.params, 'pretrained_ckpt', None) is not None
-        validate_regression_checkpoint_inputs(checkpoint, state_dict, use_pretrained_backbone, head.pooling)
+        validate_regression_checkpoint_inputs(
+            checkpoint, state_dict, use_pretrained_backbone, head.pooling,
+            pretrained_readout=getattr(head, 'pretrained_readout', 'features'),
+        )
         if not inference and checkpoint.get("validation_loss_reduction") != VALIDATION_LOSS_REDUCTION:
             raise ValueError(
                 "Cannot resume with an incompatible validation loss reduction. "
@@ -1218,7 +1239,10 @@ class DownstreamTrainer():
         if "weighted_avg_weights" in state_dict:
             print("Trained weighted_avg_weights:", state_dict["weighted_avg_weights"])
         try:
-            head.load_state_dict(state_dict, strict=uses_mamba3(head))
+            head.load_state_dict(
+                state_dict, strict=uses_mamba3(head) or
+                getattr(head, 'pretrained_readout', 'features') == 'coordinate',
+            )
         except RuntimeError as exc:
             raise RuntimeError(
                 "Failed to load adapter checkpoint with the current regression-head "
@@ -1232,6 +1256,7 @@ class DownstreamTrainer():
 
         # 5. If not inference mode, load optimizer/scheduler states
         if not inference:
+            validate_regression_optimizer_resume(checkpoint, self.params)
             self.down_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if self.down_scheduler is not None:
                 self.down_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])

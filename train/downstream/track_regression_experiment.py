@@ -26,6 +26,7 @@ from fm4npp.pretrained import configure_pretrained_backbone
 from fm4npp.utils import YParams
 from fm4npp.artifact_paths import artifact_path
 from train.downstream.regression_utils import validate_regression_training
+from train.downstream.regression_features import regression_encoding_config
 from train.downstream.validation_config import configure_validation
 from train.downstream.physics_checkpoints import MOMENTUM_TASKS, resolve_config as resolve_physics_config, selection_mode
 
@@ -217,6 +218,10 @@ def train_experiment(
             "eventnumber": int(config.eventnumber),
             "train_batch_size": int(config.train_batch_size),
             "seed": json_safe(getattr(params, "seed", None)),
+            "adapter_initialization_seed": json_safe(getattr(params, "adapter_initialization_seed", None)),
+            "adapter_feature_mixing_lr_ratio": float(getattr(params, "adapter_feature_mixing_lr_ratio", 1.0)),
+            "pretrained_readout": getattr(params, "pretrained_readout", "features"),
+            "backbone_encoding": regression_encoding_config(params),
             "task": json_safe(getattr(params, "task", None)),
             "regression_target_stats": json_safe(getattr(params, "regression_target_stats", None)),
             "regression_target_columns": json_safe(getattr(trainer, "regression_target_stats", {}).get("columns")),

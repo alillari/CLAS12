@@ -123,6 +123,23 @@ class EmbedderPosPlusAux(nn.Module):
         return pos_embed + aux_embed, pos_embed
 
 
+def build_backbone_embedder(method, pe_method, embed_dim, pos_dim=3, aux_dim=4):
+    """Build an embedder with the shared (token, position) backbone API."""
+    from fm4npp.tracking_geometry import TRACKING_GEOMETRY_V1
+
+    if method == TRACKING_GEOMETRY_V1:
+        from .tracking_geometry import TrackingGeometryEmbedder
+
+        return TrackingGeometryEmbedder(pe_method, embed_dim)
+    embedders = dict(add=EmbedderAdd, concat=EmbedderConcat,
+                     pos_only=EmbedderPosOnly, pos_plus_aux=EmbedderPosPlusAux)
+    if method not in embedders:
+        raise ValueError(f"Unknown embed_method: {method}")
+    options = dict(pos_dim=pos_dim, aux_dim=aux_dim) if method == "pos_plus_aux" else {}
+    return embedders[method](pe_method=pe_method, embed_dim=embed_dim,
+                             learnable_projection=False, **options)
+
+
 
 
         

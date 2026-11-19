@@ -1,4 +1,4 @@
-"""Event access for the published cvt-clusters-h5-v1 skim.
+"""Event access for the published CVT cluster and strip HDF5 skims.
 
 Follows the skim's standalone reader contract. Fields are selected by name and
 each ragged collection uses its own event offsets. No training targets or
@@ -15,8 +15,10 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from fm4npp.tracking_geometry import pack_tracking_geometry
 
-class CVTClusterEvents:
+
+class _CVTHDF5Events:
     """Index one split in manifest order, with bounded, process-local file handles."""
 
     def __init__(self, root, split, *, max_open=4):
@@ -26,8 +28,10 @@ class CVTClusterEvents:
         if self.max_open < 1:
             raise ValueError("max_open must be positive")
         manifest = json.loads((self.root / "manifest.json").read_text())
-        if manifest["format"] != "cvt-clusters-h5-v1" or manifest["status"] != "complete":
-            raise ValueError(f"Expected a published cvt-clusters-h5-v1 manifest at {self.root}")
+        self.format = manifest["format"]
+        if self.format not in self.formats or manifest["status"] != "complete":
+            expected = " or ".join(self.formats)
+            raise ValueError(f"Expected a published {expected} manifest at {self.root}")
         self.plan_id = manifest["plan_id"]
         if split not in manifest["splits"]:
             raise ValueError(f"Split {split!r} is absent from {self.root}/manifest.json")
@@ -66,7 +70,7 @@ class CVTClusterEvents:
             file = h5py.File(self.root / path, "r")
             attrs = file.attrs
             if (
-                attrs.get("format") != "cvt-clusters-h5-v1"
+                attrs.get("format") != self.format
                 or attrs.get("complete") != 1
                 or attrs.get("plan_id") != self.plan_id
                 or attrs.get("part_key") != path
@@ -132,3 +136,31 @@ class CVTClusterEvents:
 
     def __exit__(self, *args):
         self.close()
+
+
+class CVTClusterEvents(_CVTHDF5Events):
+    """Read the published CVT cluster v1 product."""
+
+    formats = ("cvt-clusters-h5-v1",)
+
+
+class CVTStripEvents(_CVTHDF5Events):
+    """Read native CVT strips and preserve the published per-hit ordering."""
+
+    formats = ("cvt-strips-h5-v1", "cvt-strips-h5-v2")
+
+    def geometry_tokens(self, index):
+        """Read only detector geometry and pack one token per saved hit."""
+        fields = ("xyz", "endpoints", "length", "pitch", "arc_angle",
+                  "geometry_kind", "detector", "layer")
+        rows = self.read(index, [f"strips.{field}" for field in fields])
+        return pack_tracking_geometry(
+            center_cm=rows["strips.xyz"],
+            endpoints_cm=rows["strips.endpoints"].reshape(-1, 2, 3),
+            length_cm=rows["strips.length"],
+            pitch_cm=rows["strips.pitch"],
+            sweep_rad=rows["strips.arc_angle"],
+            kind=rows["strips.geometry_kind"],
+            detector=rows["strips.detector"],
+            layer=rows["strips.layer"],
+        )

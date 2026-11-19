@@ -3,33 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from fm4npp.models.mamba_config import build_mamba_block
-from fm4npp.models.embed import *
+from fm4npp.models.embed import build_backbone_embedder
 from fm4npp.models.rmsnorm import RMSNorm
+from fm4npp.tracking_geometry import TRACKING_GEOMETRY_V1
 
 
 class MambaGPT(nn.Module):
     def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4, *, block_kwargs=None, block_version="mamba2"):
         super().__init__()
-        assert embed_method in ['concat', 'add', 'pos_only', 'pos_plus_aux']
         self.embed_dim = embed_dim
         self.backbone_version = block_version
-        
-        if embed_method == 'concat':
-            Embedder = EmbedderConcat
-        elif embed_method == 'pos_only':
-            Embedder = EmbedderPosOnly
-        elif embed_method == 'pos_plus_aux':
-            self.embedder = EmbedderPosPlusAux(
-                pe_method=pe_method,
-                embed_dim=embed_dim,
-                pos_dim=pos_dim,
-                aux_dim=aux_dim,
-                learnable_projection=False,
-            )
-        else:
-            Embedder = EmbedderAdd
-        if embed_method != 'pos_plus_aux':
-            self.embedder = Embedder(pe_method = pe_method, embed_dim = embed_dim, learnable_projection = False)
+        self._tracking_geometry = embed_method == TRACKING_GEOMETRY_V1
+        self.embedder = build_backbone_embedder(embed_method, pe_method, embed_dim, pos_dim, aux_dim)
         
         self.mamba_layers = nn.ModuleList(
             [nn.Sequential(RMSNorm(embed_dim), 
@@ -48,7 +33,8 @@ class MambaGPT(nn.Module):
         
     def forward(self, x, return_z = False):
         in_scale, out_scale = 1.0, 1.0
-        x = self.change_maskval(x) # for training stability
+        if not self._tracking_geometry:
+            x = self.change_maskval(x) # for training stability
         x, pos = self.embedder(x)  # Add slight noise
         
         x = x * in_scale
@@ -87,25 +73,10 @@ class MambaGPT(nn.Module):
 class Mamba1GPT(nn.Module):
     def __init__(self, embed_dim=512, num_layers=12, d_state=64, d_conv=4, expand=2, klen=10, dropout = 0.2, embed_method='add', pe_method = 'nerf', pos_dim=3, aux_dim=4, *, block_kwargs=None):
         super().__init__()
-        assert embed_method in ['concat', 'add', 'pos_only', 'pos_plus_aux']
         self.embed_dim = embed_dim
         self.backbone_version = "mamba1"
-        if embed_method == 'concat':
-            Embedder = EmbedderConcat
-        elif embed_method == 'pos_only':
-            Embedder = EmbedderPosOnly
-        elif embed_method == 'pos_plus_aux':
-            self.embedder = EmbedderPosPlusAux(
-                pe_method=pe_method,
-                embed_dim=embed_dim,
-                pos_dim=pos_dim,
-                aux_dim=aux_dim,
-                learnable_projection=False,
-            )
-        else:
-            Embedder = EmbedderAdd
-        if embed_method != 'pos_plus_aux':
-            self.embedder = Embedder(pe_method = pe_method, embed_dim = embed_dim, learnable_projection = False)
+        self._tracking_geometry = embed_method == TRACKING_GEOMETRY_V1
+        self.embedder = build_backbone_embedder(embed_method, pe_method, embed_dim, pos_dim, aux_dim)
         self.mamba_layers = nn.ModuleList(
             [nn.Sequential(RMSNorm(embed_dim), 
                            build_mamba_block("mamba1", d_model=embed_dim, d_state=d_state,
@@ -122,7 +93,8 @@ class Mamba1GPT(nn.Module):
         return out
     def forward(self, x, return_z = False):
         in_scale, out_scale = 1.0, 1.0
-        x = self.change_maskval(x) # for training stability
+        if not self._tracking_geometry:
+            x = self.change_maskval(x) # for training stability
         x, pos = self.embedder(x)  # Add slight noise
         x = x * in_scale
         feature = []

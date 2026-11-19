@@ -66,6 +66,44 @@ only reads the requested fields. `CVTClusterEvents.read(i, fields)` in
 `fm4npp.datasets.cvt_hdf5` also accepts event, particle and native reco
 fields, sliced with each collection's own offsets. The loader requires h5py.
 
+### Native strip geometry inputs
+
+`CVTStripEvents.geometry_tokens(i)` reads only channel geometry from a
+published strip HDF5 v1 or v2 event. It returns one row per saved hit, in
+published order. Each row carries the center and both relative endpoints in
+cm, length and pitch in cm, sweep in radians, and the geometry type, detector
+and layer IDs. BMT C uses the arc midpoint as its center.
+
+```python
+import torch
+
+from fm4npp.datasets.cvt_hdf5 import CVTStripEvents
+from fm4npp.models.mamba_config import build_backbone
+
+with CVTStripEvents(strip_root, "train") as events:
+    tokens = torch.from_numpy(events.geometry_tokens(0)).unsqueeze(0)
+
+backbone = build_backbone(dict(
+    backbone_version="transformer", embed_method="tracking_geometry_v1",
+    embed_dim=64, num_layers_backbone=2, num_heads_backbone=4,
+))
+_, features, positions = backbone(tokens, return_z=True)
+```
+
+The embedder shares a Cartesian position encoder and a nonlinear endpoint
+projection across hits. It averages the two endpoint embeddings, then uses a
+line or arc projection for shape. The arc projection also receives its sweep
+and the displacement from the chord midpoint to the arc midpoint. The
+position, shape, detector and layer vectors combine into one backbone token
+per hit. The same geometry layout works with the Mamba and Transformer
+backbone factories. Zero is reserved for padding in the positive detector and
+layer vocabularies. For batched model input, right-pad with `-100` rows.
+
+Other tracking readers can call `fm4npp.tracking_geometry.pack_tracking_geometry`
+with their measured line or arc geometry in the shared detector frame. This
+interface provides native hit reading and embedding; the pretraining recipes
+below still construct targets for the cluster products.
+
 To repeat the real-event parity check with the single-part qualification skim:
 
 ```bash

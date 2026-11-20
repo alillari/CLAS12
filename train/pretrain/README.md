@@ -83,6 +83,10 @@ from fm4npp.models.mamba_config import build_backbone
 with CVTStripEvents(strip_root, "train") as events:
     tokens = torch.from_numpy(events.geometry_tokens(0)).unsqueeze(0)
 
+# A strip event can be empty. The Transformer needs at least one sequence slot.
+if tokens.shape[1] == 0:
+    tokens = tokens.new_full((1, 1, tokens.shape[-1]), -100)
+
 backbone = build_backbone(dict(
     backbone_version="transformer", embed_method="tracking_geometry_v1",
     embed_dim=64, num_layers_backbone=2, num_heads_backbone=4,
@@ -97,7 +101,9 @@ and the displacement from the chord midpoint to the arc midpoint. The
 position, shape, detector and layer vectors combine into one backbone token
 per hit. The same geometry layout works with the Mamba and Transformer
 backbone factories. Zero is reserved for padding in the positive detector and
-layer vocabularies. For batched model input, right-pad with `-100` rows.
+layer vocabularies. For batched model input, right-pad with `-100` rows and
+keep at least one slot. The Transformer masks these rows. An empty event has
+no hit features to consume.
 
 Other tracking readers can call `fm4npp.tracking_geometry.pack_tracking_geometry`
 with their measured line or arc geometry in the shared detector frame. This

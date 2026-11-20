@@ -42,6 +42,7 @@ from regression_utils import (  # noqa: E402
     target_to_cartesian_numpy,
 )
 from train.downstream.regression_dropout import regression_dropout
+from train.downstream.regression_features import regression_precision
 from physics_checkpoints import write_evaluation_summary
 from track_regression_trainer import DownstreamTrainer  # noqa: E402
 
@@ -221,6 +222,7 @@ def build_head(trainer):
 
     return MambaTrackRegressionHead(
         **adapter_options(params), **adapter_dimensions(params),
+        pretrained_readout=getattr(params, "pretrained_readout", "features"),
         input_dim=params.embed_dim,
         num_output_dim=params.num_output_classes,
         d_state=64,
@@ -2077,7 +2079,7 @@ def main():
     native_adapter_rows = []
     physics_truth_rows = []
     cursor = 0
-    with torch.no_grad():
+    with regression_precision(params), torch.no_grad():
         for batch in tqdm(trainer.val_data_loader, desc="Evaluating tracks"):
             remaining = max_samples - len(records)
             if remaining <= 0:
@@ -2090,9 +2092,9 @@ def main():
             model_input = trainer._representation_input(points, batch)
 
             if use_pretrained:
-                _, embeddings, _ = trainer.model(model_input, return_z=True)
+                embeddings = trainer._backbone_features(model_input)
                 prediction = trainer.down_model(
-                    model_input, torch.stack(embeddings), pretrain=True, padding_mask=mask
+                    model_input, embeddings, pretrain=True, padding_mask=mask
                 )["pred_regression"]
             else:
                 prediction = trainer.down_model(

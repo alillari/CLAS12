@@ -109,6 +109,25 @@ class ValidationLossTrainingTest(unittest.TestCase):
                     trainer.load_checkpoint(path, inference=False, use_pretrained_backbone=False)
 
 
+    def test_resumed_legacy_feature_policy_is_saved_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            trainer.use_pretrained_backbone = True
+            original_path = trainer._save_checkpoint('unmarked.pth', 0, 0.)
+            original = torch.load(original_path, weights_only=False)
+            del original['backbone_encoding']
+            torch.save(original, original_path)
+
+            trainer.params.update(backbone_feature_kind='residual_updates',
+                                  legacy_backbone_feature_kind='residual_updates')
+            trainer.load_checkpoint(original_path, use_pretrained_backbone=True)
+            migrated_path = trainer._save_checkpoint('migrated.pth', 0, 0.)
+            migrated = torch.load(migrated_path, weights_only=False)
+            self.assertEqual(migrated['backbone_encoding']['feature_kind'], 'residual_updates')
+            del trainer.params['legacy_backbone_feature_kind']
+            trainer.load_checkpoint(migrated_path, inference=True, use_pretrained_backbone=True)
+            self.assertNotIn('backbone_encoding', torch.load(original_path, weights_only=False))
+
     def test_saved_weights_follow_minimum_loss_and_only_one_file_is_saved(self):
         with tempfile.TemporaryDirectory() as tmp:
             trainer = self.trainer(tmp)
@@ -280,11 +299,37 @@ class ValidationLossTrainingTest(unittest.TestCase):
             torch.testing.assert_close(trainer.down_model.target_normalizer.mean, torch.full((3,), 1000.))
 
     @staticmethod
-    def regression_head(pooling):
+    def regression_head(pooling, pretrained_readout="features"):
         return MambaTrackRegressionHead(
             input_dim=64, embed_dim=64, num_layers=1, num_feature_layers=2,
             num_embedder_layers=0, embed_method='pos_only', pooling=pooling,
+            pretrained_readout=pretrained_readout,
         )
+
+    def test_checkpoint_readout_mismatch_and_missing_projection_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            trainer.use_pretrained_backbone = True
+            for readout in ('coordinate', 'features'):
+                trainer.down_model = self.regression_head('attention', readout)
+                path = trainer._save_checkpoint('readout.pth', 0, 0.)
+                saved = torch.load(path, weights_only=False)
+                self.assertEqual(saved['pretrained_readout'], readout)
+                for inference in (True, False):
+                    trainer.down_model = self.regression_head('attention', readout)
+                    trainer.load_checkpoint(path, inference=inference, use_pretrained_backbone=True)
+                    for name, value in trainer.down_model.state_dict().items():
+                        torch.testing.assert_close(value, saved['model_state_dict'][name], rtol=0, atol=0)
+                    other = 'features' if readout == 'coordinate' else 'coordinate'
+                    trainer.down_model = self.regression_head('attention', other)
+                    with self.assertRaisesRegex(ValueError, 'pretrained readout mismatch'):
+                        trainer.load_checkpoint(path, inference=inference, use_pretrained_backbone=True)
+                if readout == 'coordinate':
+                    trainer.down_model = self.regression_head('attention', readout)
+                    del saved['model_state_dict']['feature_proj.1.weight']
+                    torch.save(saved, path)
+                    with self.assertRaisesRegex(ValueError, 'feature projection'):
+                        trainer.load_checkpoint(path, inference=True, use_pretrained_backbone=True)
 
     def test_checkpoint_requires_trained_mode_and_pooling_for_evaluation_and_resume(self):
         with tempfile.TemporaryDirectory() as tmp:

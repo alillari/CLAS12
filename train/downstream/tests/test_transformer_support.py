@@ -71,6 +71,27 @@ class TransformerSemanticsTest(unittest.TestCase):
             model(x)[:, 0].square().sum().backward()
             self.assertGreater(x.grad[:, -1].abs().max().item(), 1e-6)
 
+    def test_bidirectional_backbone_roundtrip_preserves_context_contract(self):
+        from fm4npp.pretrained import checkpoint_config, export_backbone_config
+        params = config(backbone_causal=False)
+        model = build_backbone(params).eval()
+        x = torch.rand(1, 6, 3, requires_grad=True)
+        model(x)[:, 0].square().sum().backward()
+        self.assertGreater(x.grad[:, -1].abs().max().item(), 1e-6)
+        checkpoint = dict(model_state=model.state_dict(),
+                          backbone_architecture=architecture_metadata(model),
+                          backbone_config=export_backbone_config(params, model))
+        recovered = checkpoint_config(checkpoint)
+        self.assertIs(recovered['backbone_causal'], False)
+        restored = build_backbone(recovered).eval()
+        validate_checkpoint_architecture(checkpoint, restored, 'backbone')
+        restored.load_state_dict(checkpoint['model_state'], strict=True)
+        torch.testing.assert_close(restored(x), model(x), rtol=0, atol=0)
+        with self.assertRaises(ValueError):
+            validate_checkpoint_architecture(checkpoint, build_backbone(config()), 'backbone')
+        with self.assertRaises(ValueError):
+            build_backbone(config(backbone_causal='false'))
+
     def test_nope_is_permutation_equivariant_but_rope_encodes_order(self):
         x = torch.randn(2, 7, 16)
         permutation = torch.tensor([3, 0, 6, 2, 1, 5, 4])

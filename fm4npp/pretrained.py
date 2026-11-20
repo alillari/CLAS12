@@ -22,7 +22,7 @@ BLOCK_KEYS = ("d_state", "d_conv", "expand", "headdim", "ngroups", "chunk_size",
               "use_mem_eff_path", "rope_fraction", "is_mimo", "is_outproj_norm")
 MODEL_KEYS = ("backbone_version", "embed_dim", "num_layers_backbone", "klen",
               "backbone_output_dim", "embed_method", "pe_method", "pos_dim", "aux_dim",
-              "dropout", "num_heads_backbone", "backbone_sequence_encoding",
+              "dropout", "num_heads_backbone", "backbone_sequence_encoding", "backbone_causal",
               "backbone_rope_theta", "backbone_mlp_ratio", "mlp_ratio", "window_size",
               "seq_len", "proj_dim", *BLOCK_KEYS)
 INPUT_KEYS = ("input_layout", "input_representation", "serialization", "clas12_band_config",
@@ -142,7 +142,8 @@ def checkpoint_config(checkpoint):
         inferred.update(embed_dim=first["d_model"], num_layers_backbone=len(blocks))
         inferred.update({key: first[key] for key in BLOCK_KEYS if key in first})
         for old, new in (("num_heads", "num_heads_backbone"), ("sequence_encoding", "backbone_sequence_encoding"),
-                         ("rope_theta", "backbone_rope_theta"), ("mlp_ratio", "backbone_mlp_ratio")):
+                         ("rope_theta", "backbone_rope_theta"), ("mlp_ratio", "backbone_mlp_ratio"),
+                         ("causal", "backbone_causal")):
             if old in first:
                 inferred[new] = first[old]
         if first.get("version") == "transformer" and "dropout" in first:

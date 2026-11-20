@@ -116,13 +116,15 @@ class TransformerBlock(nn.Module):
 
 
 class TransformerGPT(nn.Module):
-    """Full-sequence causal predictor with the existing backbone feature API."""
+    """Sequence predictor with the existing backbone feature API; causal by default."""
 
     def __init__(self, embed_dim=256, num_layers=12, num_heads=4, klen=1,
                  dropout=0.1, embed_method="pos_only", pe_method="nerf",
                  pos_dim=3, aux_dim=4, sequence_encoding="rope", rope_theta=10000.,
-                 mlp_ratio=4.):
+                 mlp_ratio=4., causal=True):
         super().__init__()
+        if not isinstance(causal, bool):
+            raise ValueError("Transformer backbone causal must be boolean")
         if num_layers < 1:
             raise ValueError("Transformer backbones need at least one layer")
         self.backbone_version = "transformer"
@@ -137,7 +139,7 @@ class TransformerGPT(nn.Module):
         self.embedder = embedders[embed_method](
             pe_method=pe_method, embed_dim=embed_dim, learnable_projection=False, **options)
         self.blocks = nn.ModuleList([
-            TransformerBlock(embed_dim, num_heads, causal=True,
+            TransformerBlock(embed_dim, num_heads, causal=causal,
                              sequence_encoding=sequence_encoding, rope_theta=rope_theta,
                              mlp_ratio=mlp_ratio, dropout=dropout)
             for _ in range(num_layers)])

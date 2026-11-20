@@ -1,19 +1,24 @@
 import copy
+import random
 import tempfile
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
 from train.downstream.model import MambaTrackRegressionHead
-from train.downstream.regression_initialization import initialize_regression_adapter
+from train.downstream.regression_initialization import (
+    initialize_regression_adapter, seeded_adapter_initialization,
+)
 from train.downstream.tests import test_validation_loss_training as training_tests
 
 
-def head():
+def head(num_layers=1, **kwargs):
     return MambaTrackRegressionHead(
-        input_dim=64, embed_dim=64, num_layers=1, num_embedder_layers=0,
+        input_dim=64, embed_dim=64, num_layers=num_layers, num_embedder_layers=0,
         num_feature_layers=3, d_state=16, embed_method="pos_only", pooling="attention",
+        **kwargs,
     )
 
 
@@ -151,6 +156,80 @@ class RegressionInitializationTest(unittest.TestCase):
                     for name, value in trainer.down_model.state_dict().items():
                         torch.testing.assert_close(value, saved['model_state_dict'][name], rtol=0, atol=0)
                     self.assertEqual(trainer.adapter_ssm_initialization, mode or 'constructor')
+
+    def test_adapter_seed_decouples_weights_from_backbone_rng_consumption(self):
+        states = []
+        for draws in (12, 10000):
+            torch.rand(draws)
+            with seeded_adapter_initialization(23):
+                model = head()
+                initialize_regression_adapter(model, "constructor")
+            states.append(model.state_dict())
+        for key in states[0]:
+            torch.testing.assert_close(states[0][key], states[1][key], rtol=0, atol=0)
+
+    def test_seed_restores_training_rng_even_on_failure(self):
+        devices = ["cpu"]
+        if torch.cuda.is_available():
+            devices.append(torch.cuda.current_device())
+        for device in devices:
+            for seed in (23, 42):
+                with self.subTest(device=device, seed=seed):
+                    torch_state = torch.get_rng_state()
+                    cuda_state = torch.cuda.get_rng_state(device) if isinstance(device, int) else None
+                    numpy_state, python_state = np.random.get_state(), random.getstate()
+                    with self.assertRaisesRegex(RuntimeError, "initialization failed"):
+                        with seeded_adapter_initialization(seed, device):
+                            model = head().to(device)
+                            initialize_regression_adapter(model)
+                            np.random.rand()
+                            random.random()
+                            raise RuntimeError("initialization failed")
+                    self.assertTrue(torch.equal(torch_state, torch.get_rng_state()))
+                    if cuda_state is not None:
+                        self.assertTrue(torch.equal(cuda_state, torch.cuda.get_rng_state(device)))
+                    self.assertEqual(python_state, random.getstate())
+                    np.testing.assert_array_equal(numpy_state[1], np.random.get_state()[1])
+                    self.assertEqual(numpy_state[2:], np.random.get_state()[2:])
+
+    def test_omitted_seed_keeps_normal_training_rng_progression(self):
+        torch_state = torch.get_rng_state()
+        with seeded_adapter_initialization(None):
+            torch.rand(5)
+        actual = torch.get_rng_state()
+        torch.set_rng_state(torch_state)
+        torch.rand(5)
+        self.assertTrue(torch.equal(actual, torch.get_rng_state()))
+
+    def test_coordinate_path_starts_at_ao_and_learns_feature_contribution(self):
+        with seeded_adapter_initialization(42):
+            ao = head(num_layers=0)
+            initialize_regression_adapter(ao, "constructor")
+            expected_rng = torch.get_rng_state()
+        with seeded_adapter_initialization(42):
+            coordinate = head(num_layers=0, pretrained_readout="coordinate")
+            initialize_regression_adapter(coordinate, "constructor")
+            self.assertTrue(torch.equal(expected_rng, torch.get_rng_state()))
+        for name, value in ao.state_dict().items():
+            torch.testing.assert_close(value, coordinate.state_dict()[name], rtol=0, atol=0)
+        points = torch.randn(2, 5, 3)
+        mask = torch.tensor([[True] * 5, [True] * 3 + [False] * 2])
+        points[~mask] = -100
+        features = torch.randn(3, 2, 5, 64)
+        expected = ao(points, padding_mask=mask)["pred_regression"]
+        actual = coordinate(points, features, pretrain=True, padding_mask=mask)["pred_regression"]
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        optimizer = torch.optim.AdamW(coordinate.parameters(), lr=.001)
+        actual.square().sum().backward()
+        self.assertGreater(float(coordinate.feature_proj[1].weight.grad.norm()), 0.)
+        optimizer.step()
+        a = coordinate(points, features, pretrain=True, padding_mask=mask)["pred_regression"]
+        b = coordinate(points, -features, pretrain=True, padding_mask=mask)["pred_regression"]
+        self.assertGreater(float((a - b).norm()), 0.)
+
+    def test_unknown_readout_rejected(self):
+        with self.assertRaisesRegex(ValueError, "pretrained_readout"):
+            head(pretrained_readout="typo")
 
 
 if __name__ == "__main__":

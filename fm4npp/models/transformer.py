@@ -11,9 +11,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from fm4npp.models.embed import (
-    EmbedderAdd, EmbedderConcat, EmbedderPosOnly, EmbedderPosPlusAux,
-)
+from fm4npp.models.embed import build_backbone_embedder
+from fm4npp.tracking_geometry import TRACKING_GEOMETRY_V1, valid_tracking_hits
 
 
 def valid_mask(x, padding_mask=None):
@@ -129,13 +128,8 @@ class TransformerGPT(nn.Module):
         self.embed_dim = embed_dim
         self._transformer_input_config = dict(embed_method=embed_method, pe_method=pe_method,
                                               pos_dim=pos_dim, aux_dim=aux_dim, klen=klen)
-        embedders = dict(add=EmbedderAdd, concat=EmbedderConcat,
-                         pos_only=EmbedderPosOnly, pos_plus_aux=EmbedderPosPlusAux)
-        if embed_method not in embedders:
-            raise ValueError(f"Unknown embed_method: {embed_method}")
-        options = dict(pos_dim=pos_dim, aux_dim=aux_dim) if embed_method == "pos_plus_aux" else {}
-        self.embedder = embedders[embed_method](
-            pe_method=pe_method, embed_dim=embed_dim, learnable_projection=False, **options)
+        self._tracking_geometry = embed_method == TRACKING_GEOMETRY_V1
+        self.embedder = build_backbone_embedder(embed_method, pe_method, embed_dim, pos_dim, aux_dim)
         self.blocks = nn.ModuleList([
             TransformerBlock(embed_dim, num_heads, causal=True,
                              sequence_encoding=sequence_encoding, rope_theta=rope_theta,
@@ -145,7 +139,7 @@ class TransformerGPT(nn.Module):
         self.output_layer = nn.Linear(embed_dim, klen * 3)
 
     def forward(self, x, return_z=False, padding_mask=None):
-        inferred = x[..., 0] != -100
+        inferred = valid_tracking_hits(x) if self._tracking_geometry else x[..., 0] != -100
         mask = inferred if padding_mask is None else valid_mask(x, padding_mask) & inferred
         x = x.masked_fill(~mask[..., None], 0.)
         x, pos = self.embedder(x)

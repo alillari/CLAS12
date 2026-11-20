@@ -1,5 +1,6 @@
 """Bounded HDF5 momentum AdapterOnly benchmark against COATJAVA."""
 from train.downstream.hdf5_benchmark_utils import clean, write_json, cohort, event_keys
+from train.downstream.regression_features import with_regression_precision
 import argparse
 from collections import Counter
 import hashlib
@@ -40,6 +41,7 @@ def momentum_metrics(truth, predicted):
     )
 
 @torch.no_grad()
+@with_regression_precision
 def evaluate(trainer, loader, output):
     trainer.down_model.eval()
     records = []

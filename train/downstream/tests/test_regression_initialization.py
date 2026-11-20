@@ -9,7 +9,7 @@ import torch
 
 from train.downstream.model import MambaTrackRegressionHead
 from train.downstream.regression_initialization import (
-    initialize_regression_adapter, seed_adapter_initialization,
+    initialize_regression_adapter, seeded_adapter_initialization,
 )
 from train.downstream.tests import test_validation_loss_training as training_tests
 
@@ -161,32 +161,55 @@ class RegressionInitializationTest(unittest.TestCase):
         states = []
         for draws in (12, 10000):
             torch.rand(draws)
-            seed_adapter_initialization(23)
-            model = head()
-            initialize_regression_adapter(model, "constructor")
+            with seeded_adapter_initialization(23):
+                model = head()
+                initialize_regression_adapter(model, "constructor")
             states.append(model.state_dict())
         for key in states[0]:
             torch.testing.assert_close(states[0][key], states[1][key], rtol=0, atol=0)
 
-    def test_omitted_seed_leaves_rng_unchanged(self):
-        torch_state, numpy_state, python_state = (
-            torch.get_rng_state(), np.random.get_state(), random.getstate()
-        )
-        seed_adapter_initialization(None)
-        self.assertTrue(torch.equal(torch_state, torch.get_rng_state()))
-        self.assertEqual(python_state, random.getstate())
-        np.testing.assert_array_equal(numpy_state[1], np.random.get_state()[1])
-        self.assertEqual(numpy_state[2:], np.random.get_state()[2:])
+    def test_seed_restores_training_rng_even_on_failure(self):
+        devices = ["cpu"]
+        if torch.cuda.is_available():
+            devices.append(torch.cuda.current_device())
+        for device in devices:
+            for seed in (23, 42):
+                with self.subTest(device=device, seed=seed):
+                    torch_state = torch.get_rng_state()
+                    cuda_state = torch.cuda.get_rng_state(device) if isinstance(device, int) else None
+                    numpy_state, python_state = np.random.get_state(), random.getstate()
+                    with self.assertRaisesRegex(RuntimeError, "initialization failed"):
+                        with seeded_adapter_initialization(seed, device):
+                            model = head().to(device)
+                            initialize_regression_adapter(model)
+                            np.random.rand()
+                            random.random()
+                            raise RuntimeError("initialization failed")
+                    self.assertTrue(torch.equal(torch_state, torch.get_rng_state()))
+                    if cuda_state is not None:
+                        self.assertTrue(torch.equal(cuda_state, torch.cuda.get_rng_state(device)))
+                    self.assertEqual(python_state, random.getstate())
+                    np.testing.assert_array_equal(numpy_state[1], np.random.get_state()[1])
+                    self.assertEqual(numpy_state[2:], np.random.get_state()[2:])
+
+    def test_omitted_seed_keeps_normal_training_rng_progression(self):
+        torch_state = torch.get_rng_state()
+        with seeded_adapter_initialization(None):
+            torch.rand(5)
+        actual = torch.get_rng_state()
+        torch.set_rng_state(torch_state)
+        torch.rand(5)
+        self.assertTrue(torch.equal(actual, torch.get_rng_state()))
 
     def test_coordinate_path_starts_at_ao_and_learns_feature_contribution(self):
-        seed_adapter_initialization(42)
-        ao = head(num_layers=0)
-        initialize_regression_adapter(ao, "constructor")
-        expected_rng = torch.get_rng_state()
-        seed_adapter_initialization(42)
-        coordinate = head(num_layers=0, pretrained_readout="coordinate")
-        initialize_regression_adapter(coordinate, "constructor")
-        self.assertTrue(torch.equal(expected_rng, torch.get_rng_state()))
+        with seeded_adapter_initialization(42):
+            ao = head(num_layers=0)
+            initialize_regression_adapter(ao, "constructor")
+            expected_rng = torch.get_rng_state()
+        with seeded_adapter_initialization(42):
+            coordinate = head(num_layers=0, pretrained_readout="coordinate")
+            initialize_regression_adapter(coordinate, "constructor")
+            self.assertTrue(torch.equal(expected_rng, torch.get_rng_state()))
         for name, value in ao.state_dict().items():
             torch.testing.assert_close(value, coordinate.state_dict()[name], rtol=0, atol=0)
         points = torch.randn(2, 5, 3)

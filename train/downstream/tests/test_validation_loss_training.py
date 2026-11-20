@@ -109,6 +109,25 @@ class ValidationLossTrainingTest(unittest.TestCase):
                     trainer.load_checkpoint(path, inference=False, use_pretrained_backbone=False)
 
 
+    def test_resumed_legacy_feature_policy_is_saved_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self.trainer(tmp)
+            trainer.use_pretrained_backbone = True
+            original_path = trainer._save_checkpoint('unmarked.pth', 0, 0.)
+            original = torch.load(original_path, weights_only=False)
+            del original['backbone_encoding']
+            torch.save(original, original_path)
+
+            trainer.params.update(backbone_feature_kind='residual_updates',
+                                  legacy_backbone_feature_kind='residual_updates')
+            trainer.load_checkpoint(original_path, use_pretrained_backbone=True)
+            migrated_path = trainer._save_checkpoint('migrated.pth', 0, 0.)
+            migrated = torch.load(migrated_path, weights_only=False)
+            self.assertEqual(migrated['backbone_encoding']['feature_kind'], 'residual_updates')
+            del trainer.params['legacy_backbone_feature_kind']
+            trainer.load_checkpoint(migrated_path, inference=True, use_pretrained_backbone=True)
+            self.assertNotIn('backbone_encoding', torch.load(original_path, weights_only=False))
+
     def test_saved_weights_follow_minimum_loss_and_only_one_file_is_saved(self):
         with tempfile.TemporaryDirectory() as tmp:
             trainer = self.trainer(tmp)

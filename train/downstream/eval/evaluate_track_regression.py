@@ -42,6 +42,7 @@ from regression_utils import (  # noqa: E402
     target_to_cartesian_numpy,
 )
 from train.downstream.regression_dropout import regression_dropout
+from train.downstream.regression_features import regression_precision
 from physics_checkpoints import write_evaluation_summary
 from track_regression_trainer import DownstreamTrainer  # noqa: E402
 
@@ -2078,7 +2079,7 @@ def main():
     native_adapter_rows = []
     physics_truth_rows = []
     cursor = 0
-    with torch.no_grad():
+    with regression_precision(params), torch.no_grad():
         for batch in tqdm(trainer.val_data_loader, desc="Evaluating tracks"):
             remaining = max_samples - len(records)
             if remaining <= 0:

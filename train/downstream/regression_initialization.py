@@ -2,29 +2,39 @@
 
 import math
 import random
+from contextlib import contextmanager
 
 import numpy as np
-
 import torch
 
 from fm4npp.models.mamba2 import Mamba2
 from fm4npp.models.mamba_config import legacy_initialization_parameters
 
 
-def seed_adapter_initialization(seed):
-    """Optionally decouple a fresh adapter's draws from backbone construction.
-
-    Call immediately before constructing the adapter. This controls its random
-    initialization; it does not promise deterministic GPU training.
-    """
+@contextmanager
+def seeded_adapter_initialization(seed, device="cpu"):
+    """Scope an optional seed to adapter construction and initialization."""
     if seed is None:
+        yield
         return
     seed = int(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    device = torch.device("cuda", device) if isinstance(device, int) else torch.device(device)
+    cuda_devices = []
+    if device.type == "cuda":
+        cuda_devices.append(torch.cuda.current_device() if device.index is None else device.index)
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    with torch.random.fork_rng(devices=cuda_devices):
+        try:
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.random.default_generator.manual_seed(seed)
+            for index in cuda_devices:
+                torch.cuda.default_generators[index].manual_seed(seed)
+            yield
+        finally:
+            random.setstate(python_state)
+            np.random.set_state(numpy_state)
 
 
 def initialize_regression_adapter(model, ssm_initialization="constructor"):

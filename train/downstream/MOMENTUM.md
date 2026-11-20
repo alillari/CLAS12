@@ -78,9 +78,20 @@ include a matched raw-only capacity control when attributing gains to pretrainin
 a backbone exposing `mamba_layers`. These policies have the same tensor shapes
 but different meanings. Train and evaluate with the same policy; it is recorded
 inside `backbone_encoding` and mismatches are rejected. Existing checkpoints
-without this field are interpreted as accumulated-state checkpoints. An older
-adapter known to have used residual updates needs verified provenance before its
-metadata can be corrected; tensor shapes cannot establish the policy.
+without this field default to accumulated states. If the original training code
+or run records confirm that an unmarked adapter used residual updates, add both
+settings to the model YAML used to evaluate it or resume compatible training:
+
+```yaml
+backbone_feature_kind: residual_updates
+legacy_backbone_feature_kind: residual_updates
+```
+
+The legacy setting supplies only the missing feature policy. The trainer still
+checks any saved padding and precision controls, and any explicit checkpoint
+feature policy takes precedence. Evaluation leaves the checkpoint file intact.
+Checkpoints written after a resume record the policy explicitly and no longer
+require the legacy setting.
 
 For explicit numerical qualification of Mamba3 checkpoints, use:
 
@@ -94,8 +105,9 @@ The backbone sees fixed dimensions: shorter inputs receive the padding sentinel,
 and larger evaluation batches are split into batches of the configured size.
 The adapter receives only the original samples/tokens and their original masks.
 Sequences exceeding the configured length are rejected. The `highest` option
-disables TF32 and BF16 reduced-precision reductions through PyTorch's global
-settings, including for the adapter. It does not change Mamba3's internal BF16
+disables TF32 and BF16 reduced-precision reductions during regression training
+and evaluation, including for the adapter. The previous PyTorch settings are
+restored after the operation. It does not change Mamba3's internal BF16
 implementation or promise universal numerical invariance.
 
 Defaults are zero padding controls and `default` precision, preserving the
@@ -147,7 +159,8 @@ matched comparison for each backbone and label budget.
 
 Set `adapter_initialization_seed` to seed a fresh adapter immediately before
 construction. This controls which random draws initialize the head when
-comparing different backbone constructors with the same adapter recipe.
+comparing different backbone constructors with the same adapter recipe. The
+training RNG state is restored before the first update.
 
 ## Inspect behavior
 

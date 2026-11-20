@@ -3,7 +3,8 @@ import unittest
 import torch
 
 from train.downstream.regression_features import (
-    regression_backbone_features, regression_encoding_config, validate_regression_encoding,
+    regression_backbone_features, regression_encoding_config, regression_precision,
+    validate_regression_encoding,
 )
 
 
@@ -105,6 +106,53 @@ class RegressionFeaturesTest(unittest.TestCase):
                 (dict(backbone_encoding=regression_encoding_config(update_params)), {})]:
             with self.assertRaisesRegex(ValueError, 'backbone encoding mismatch'):
                 validate_regression_encoding(saved, requested)
+
+    def test_legacy_policy_fills_only_missing_feature_metadata(self):
+        params = dict(backbone_feature_kind='residual_updates',
+                      legacy_backbone_feature_kind='residual_updates')
+        validate_regression_encoding({}, params)
+        prior = dict(sequence_padding=8, batch_padding=0, matmul_precision='default')
+        checkpoint = dict(backbone_encoding=prior)
+        validate_regression_encoding(checkpoint, dict(params, backbone_sequence_padding=8))
+        self.assertNotIn('feature_kind', prior)
+        with self.assertRaisesRegex(ValueError, 'backbone encoding mismatch'):
+            validate_regression_encoding(checkpoint, params)
+        explicit = dict(backbone_encoding=regression_encoding_config({}))
+        with self.assertRaisesRegex(ValueError, 'backbone encoding mismatch'):
+            validate_regression_encoding(explicit, params)
+
+    def test_opt_in_precision_restores_global_settings_after_exception(self):
+        matmul = torch.backends.cuda.matmul
+        cudnn = torch.backends.cudnn
+
+        def state():
+            return (torch.get_float32_matmul_precision(), matmul.allow_tf32,
+                    cudnn.allow_tf32, getattr(matmul, 'allow_bf16_reduced_precision_reduction', None))
+
+        original = state()
+        try:
+            torch.set_float32_matmul_precision('medium')
+            cudnn.allow_tf32 = True
+            if original[3] is not None:
+                matmul.allow_bf16_reduced_precision_reduction = True
+            expected = state()
+            options = dict(regression_matmul_precision='highest')
+            with self.assertRaisesRegex(RuntimeError, 'evaluation failed'):
+                with regression_precision(options):
+                    self.assertEqual(state(), ('highest', False, False,
+                                               False if original[3] is not None else None))
+                    with regression_precision(options):
+                        self.assertEqual(torch.get_float32_matmul_precision(), 'highest')
+                    self.assertEqual(torch.get_float32_matmul_precision(), 'highest')
+                    raise RuntimeError('evaluation failed')
+            with regression_precision({}):
+                self.assertEqual(state(), expected)
+        finally:
+            matmul.allow_tf32 = original[1]
+            torch.set_float32_matmul_precision(original[0])
+            cudnn.allow_tf32 = original[2]
+            if original[3] is not None:
+                matmul.allow_bf16_reduced_precision_reduction = original[3]
 
     def test_unsupported_residual_encoder_rejected_before_forward(self):
         model = RecordingEncoder()

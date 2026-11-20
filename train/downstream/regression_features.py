@@ -1,4 +1,6 @@
 """Explicit, checkpointed numerical controls for regression feature encoding."""
+from contextlib import contextmanager
+from functools import wraps
 from numbers import Integral
 
 import torch
@@ -25,14 +27,40 @@ def regression_encoding_config(params):
     return config
 
 
-def configure_regression_precision(params):
-    """Leave global defaults untouched unless the caller explicitly opts in."""
-    if regression_encoding_config(params)['matmul_precision'] == 'highest':
+@contextmanager
+def regression_precision(params):
+    """Apply the opt-in precision settings for one training or evaluation scope."""
+    if regression_encoding_config(params)['matmul_precision'] == 'default':
+        yield
+        return
+
+    matmul = torch.backends.cuda.matmul
+    cudnn = torch.backends.cudnn
+    precision = torch.get_float32_matmul_precision()
+    matmul_tf32, cudnn_tf32 = matmul.allow_tf32, cudnn.allow_tf32
+    bf16_reduction = getattr(matmul, 'allow_bf16_reduced_precision_reduction', None)
+    try:
         torch.set_float32_matmul_precision('highest')
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        if hasattr(torch.backends.cuda.matmul, 'allow_bf16_reduced_precision_reduction'):
-            torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+        matmul.allow_tf32 = False
+        cudnn.allow_tf32 = False
+        if bf16_reduction is not None:
+            matmul.allow_bf16_reduced_precision_reduction = False
+        yield
+    finally:
+        matmul.allow_tf32 = matmul_tf32
+        # The CUDA TF32 setter can change the float32 precision mode.
+        torch.set_float32_matmul_precision(precision)
+        cudnn.allow_tf32 = cudnn_tf32
+        if bf16_reduction is not None:
+            matmul.allow_bf16_reduced_precision_reduction = bf16_reduction
+
+
+def with_regression_precision(run):
+    @wraps(run)
+    def wrapped(trainer, *args, **kwargs):
+        with regression_precision(trainer.params):
+            return run(trainer, *args, **kwargs)
+    return wrapped
 
 
 def _capture_features(model, points, feature_kind):
@@ -85,11 +113,16 @@ def regression_backbone_features(model, points, params):
 
 
 def validate_regression_encoding(checkpoint, params):
-    saved = checkpoint.get('backbone_encoding', regression_encoding_config({}))
-    if isinstance(saved, dict):
-        # Existing regression checkpoints used accumulated states before the
-        # extraction policy became explicit metadata.
-        saved = {'feature_kind': 'accumulated_states', **saved}
+    if 'backbone_encoding' in checkpoint:
+        saved = checkpoint['backbone_encoding']
+    else:
+        saved = regression_encoding_config({})
+        saved.pop('feature_kind')
+    if isinstance(saved, dict) and 'feature_kind' not in saved:
+        legacy_kind = value(params, 'legacy_backbone_feature_kind', 'accumulated_states')
+        if legacy_kind not in ('accumulated_states', 'residual_updates'):
+            raise ValueError("legacy_backbone_feature_kind must be 'accumulated_states' or 'residual_updates'")
+        saved = {**saved, 'feature_kind': legacy_kind}
     current = regression_encoding_config(params)
     if saved != current:
         raise ValueError(f'Adapter checkpoint backbone encoding mismatch: saved {saved}, requested {current}')

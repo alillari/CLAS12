@@ -59,11 +59,11 @@ from physics_checkpoints import (
 )
 from train.downstream.checkpoint_units import validate_hdf5_momentum_checkpoint_units
 from train.downstream.regression_initialization import (
-    initialize_regression_adapter, seed_adapter_initialization,
+    initialize_regression_adapter, seeded_adapter_initialization,
 )
 from train.downstream.regression_features import (
-    configure_regression_precision, regression_backbone_features,
-    regression_encoding_config, validate_regression_encoding,
+    regression_backbone_features, regression_encoding_config, validate_regression_encoding,
+    with_regression_precision,
 )
 from train.downstream.regression_optimization import (
     regression_optimizer_parameters, apply_regression_lr_ratios,
@@ -99,7 +99,6 @@ class DownstreamTrainer():
             self.device = torch.device('cpu')
 
         self.params = params
-        configure_regression_precision(params)
         params.hilbert_angular_grid = validate_hilbert_grid(
             getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
         )
@@ -419,6 +418,7 @@ class DownstreamTrainer():
         #  training
         #self.train()
 
+    @with_regression_precision
     def inference(self, checkpoint_path, pretrain=True, logfile=None):
         """Initialize model and load weights for inference"""
         # 1. Initialize model architecture
@@ -580,6 +580,7 @@ class DownstreamTrainer():
         
 
 
+    @with_regression_precision
     def train(
         self,
         pretrain=True,
@@ -604,36 +605,36 @@ class DownstreamTrainer():
         #                          num_embedder_layers= self.params.num_embedder_layers, 
         #                          ).to(self.device)
 
-        seed_adapter_initialization(getattr(self.params, "adapter_initialization_seed", None))
-        self.down_model = MambaTrackRegressionHead(
-            **adapter_options(self.params), **adapter_dimensions(self.params),
-            pretrained_readout=getattr(self.params, "pretrained_readout", "features"),
-            input_dim=self.params.embed_dim,
-            num_output_dim=self.params.num_output_classes,
-            d_state=64,
-            d_conv=4,
-            expand=2,
-            num_feature_layers=self.params.num_layers_backbone,
-            num_embedder_layers=self.params.num_embedder_layers,
-            pooling=getattr(self.params, "pooling", "mean"),
-            embed_method=self.params.embed_method,
-            pe_method=self.params.pe_method,
-            dropout=regression_dropout(self.params),
-            target_mean=self.regression_target_stats["mean"],
-            target_std=self.regression_target_stats["std"],
-            input_representation=getattr(self.params, "input_representation", "center_only"),
-            pos_dim=getattr(self.params, "pos_dim", 3),
-            aux_dim=getattr(self.params, "aux_dim", 4),
-        ).to(self.device)
+        self.adapter_ssm_initialization = getattr(
+            self.params, "adapter_ssm_initialization", "constructor"
+        )
+        initialization_seed = getattr(self.params, "adapter_initialization_seed", None)
+        with seeded_adapter_initialization(initialization_seed, self.device):
+            self.down_model = MambaTrackRegressionHead(
+                **adapter_options(self.params), **adapter_dimensions(self.params),
+                pretrained_readout=getattr(self.params, "pretrained_readout", "features"),
+                input_dim=self.params.embed_dim,
+                num_output_dim=self.params.num_output_classes,
+                d_state=64,
+                d_conv=4,
+                expand=2,
+                num_feature_layers=self.params.num_layers_backbone,
+                num_embedder_layers=self.params.num_embedder_layers,
+                pooling=getattr(self.params, "pooling", "mean"),
+                embed_method=self.params.embed_method,
+                pe_method=self.params.pe_method,
+                dropout=regression_dropout(self.params),
+                target_mean=self.regression_target_stats["mean"],
+                target_std=self.regression_target_stats["std"],
+                input_representation=getattr(self.params, "input_representation", "center_only"),
+                pos_dim=getattr(self.params, "pos_dim", 3),
+                aux_dim=getattr(self.params, "aux_dim", 4),
+            ).to(self.device)
+            initialize_regression_adapter(self.down_model, self.adapter_ssm_initialization)
 
         #print number of parameters in the model
         total_params = sum(p.numel() for p in self.down_model.parameters())
         print(f"Total parameters in down_model: {total_params}")
-        
-        self.adapter_ssm_initialization = getattr(
-            self.params, "adapter_ssm_initialization", "constructor"
-        )
-        initialize_regression_adapter(self.down_model, self.adapter_ssm_initialization)
 
         self.down_optimizer = optim.AdamW(regression_optimizer_parameters(self.down_model, self.params),
                                          lr=self.params.max_lr, # Mamba: Linear-Time Sequence Modeling with Selective State Spaces
@@ -1075,6 +1076,7 @@ class DownstreamTrainer():
         mean = torch.where(valid, xyz, 0.).sum(dim=1) / counts.clamp_min(1)
         return mean.masked_fill(counts == 0, float("nan"))
 
+    @with_regression_precision
     def validate_end_to_end_one_epoch(self, pretrain=False):
         backbone_training, head_training = self.model.training, self.down_model.training
         self.model.eval()

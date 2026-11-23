@@ -59,6 +59,22 @@ class DownstreamHDF5Test(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_geometric_backbone_receives_its_pretraining_tokens(self):
+        from fm4npp.datasets.dataset_pretrain import TPCBatchDataset as PretrainDataset
+
+        row = event()
+        phi = np.linspace(-2.5, 2.5, 8)
+        r = np.array([7., 7., 7., 7., 9., 9., 12., 12.])
+        row['clusters/xyz'] = np.column_stack((r*np.cos(phi), r*np.sin(phi), np.arange(8)-4)).astype('f4')
+        with tempfile.TemporaryDirectory() as tmp:
+            publish_fixture(Path(tmp), {'train': [[row]]})
+            common = dict(split='train', reader_type='hdf5', coord_system='theta',
+                          hilbert_angular_grid='unit_v2', num_pred_points=1)
+            downstream = TPCBatchDataset(tmp, normalize=True, voxelize=False, return_dict=True,
+                                         serialization='clas12_band_hilbert', compute_neighbors=False, **common)
+            pretrain = PretrainDataset(tmp, train=False, knn_rule='geometric', **common)
+            torch.testing.assert_close(downstream[0]['points'], pretrain[0][0], rtol=0, atol=0)
+
     def test_explicit_joins_and_binary_policy(self):
         source = CVTDownstreamSource(self.root, "train")
         reg = source.point_field(0, "reg_target")

@@ -109,13 +109,21 @@ scale_w64_d12_chinchilla: &w64_chinchilla
   use_wandb: true
   save_version: scale_w64_d12_chinchilla
 
-scale_w64_d12_bgmerged_hdf5:
+scale_w64_d12_bgmerged_hdf5: &w64_hdf5
   <<: *w64_chinchilla
   data_version: cvt-clusters-h5-v1
   reader_type: hdf5
   limit_data: false
   data_fraction: 1.0
   save_version: scale_w64_d12_bgmerged_hdf5
+
+# Mike's geometric single-neighbor objective on the existing HDF5 training profile.
+scale_w64_d12_bgmerged_geometric:
+  <<: *w64_hdf5
+  knn_rule: geometric
+  coord_system: theta
+  use_sincos_target: true
+  save_version: scale_w64_d12_bgmerged_geometric
 
 scale_w128_d12_chinchilla:
   <<: *default

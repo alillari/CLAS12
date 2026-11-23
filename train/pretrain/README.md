@@ -59,6 +59,24 @@ contributes one xyz token, including noise clusters. HDF5 has no 50-cluster
 cut or 10-million-event limit in this profile. Longer events increase the
 cost of the pairwise neighbor calculation. Measure batch size on your hardware.
 
+Use `--config scale_w64_d12_bgmerged_geometric` to train the same width-64
+profile with Mike Frank's geometric objective. Set `knn_rule: geometric` and
+`klen: 1` to use the selector in another profile. For each cluster it scores
+all outward pairs using wrapped azimuth and polar angle relative to the target
+center at z = −3 cm. Run-11 CVT dimensions, a bend allowance and the 5 cm target
+length set the angular scales. It takes the lowest score on the first layer
+with a score below 11.83, falling back to the lowest score on any later layer.
+The outermost occupied layer has masked targets. The selector uses cluster
+centers and fixed geometry, independently of cluster ownership and endpoints.
+
+The profile represents the selected center with normalized θ and radius and
+a sine/cosine chord loss for φ. Network θ is measured from the detector origin.
+Both pretraining and adapters use θ limits of 32.8° to 167° and serialize
+on the same normalized angles. A historical θ checkpoint without coordinate
+metadata needs `coord_system: theta` in its backbone catalog entry.
+The distance selector and η input remain the defaults. This profile changes
+the objective and coordinates under the existing optimizer settings.
+
 Other pretraining profiles can opt in with `reader_type: hdf5` and
 `limit_data: false`. The usual geometry options read direction, length and
 pitch from cluster rows. The reader opens shards lazily in each worker and

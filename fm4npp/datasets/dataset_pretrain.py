@@ -12,6 +12,7 @@ import torch
 from fm4npp.utils import *
 # NOTE (CLAS12): Voxelizer/HRS removed entirely — replaced by Hilbert band ordering.
 # from .voxelizer import *   # (no longer used)
+from fm4npp.geometric_target import geometric_target_indices
 from fm4npp.hilbert import DEFAULT_HILBERT_GRID, validate_hilbert_grid, clas12_band_hilbert_order, assign_clas12_layer
 
 from torch.utils.data import DataLoader, Dataset
@@ -130,9 +131,17 @@ class TPCBatchDataset(Dataset):
                  bin_dir = '',
                  use_aux_features = False,
                  aux_extra_feature = 'length',
-                 hilbert_angular_grid = DEFAULT_HILBERT_GRID):
+                 hilbert_angular_grid = DEFAULT_HILBERT_GRID,
+                 coord_system = 'eta',
+                 knn_rule = 'distance'):
         
         self.hilbert_angular_grid = validate_hilbert_grid(hilbert_angular_grid)
+        if knn_rule not in ('distance', 'geometric'):
+            raise ValueError(f"Unknown knn_rule {knn_rule!r}")
+        if knn_rule == 'geometric' and num_pred_points != 1:
+            raise ValueError("The geometric target requires klen=1")
+        self.knn_rule = knn_rule
+        self.coord_system = coord_system
         self.band_classification = band_classification
         self.use_aux_features = use_aux_features
         assert aux_extra_feature in ('length', 'pitch', 'both')
@@ -176,7 +185,7 @@ class TPCBatchDataset(Dataset):
         self.space_filling_curve = space_filling_curve
         
         # for normalization (CLAS12 values — see CLAS12_CHANGES.md)
-        self.eta_lim = {'min':-2.5, 'max':1.5}
+        self.eta_lim = cvt_angular_limits(coord_system)
         self.phi_lim = {'min':-torch.pi, 'max':torch.pi}
         self.r_lim = {'min': 6.0, 'max': 23.0}
         # [NEW] physical_length_cm normalization range -- from real measured
@@ -417,7 +426,7 @@ class TPCBatchDataset(Dataset):
 
         ## To polar representation — CLAS12: input is 3-column (x,y,z), no energy.
         ## cartesian_to_polar_batched returns [eta, phi, r].
-        polar_features = cartesian_to_polar_batched(features)
+        polar_features = cartesian_to_detector_batched(features, self.coord_system)
         # NOTE (CLAS12): no energy column to split off / re-concat.
 
         ## Normalize the polar representation -> [eta, phi, r] all in ~[0,1]
@@ -431,9 +440,14 @@ class TPCBatchDataset(Dataset):
         norm_features = norm_features[:, ind]
         if self.use_aux_features:
             aux_features = aux_features[:, ind]
-        # CLAS12: norm_features is already 3 columns [eta,phi,r] — pass directly,
-        # no [..., 1:] slice (that would drop eta and leave only 2 columns).
-        knearest_points = knn_later_indices_batch(norm_features, k=self.num_pred_points)
+        if self.knn_rule == 'geometric':
+            # Use the same radius precision and band boundaries as serialization.
+            radius = polar_features[0, ind, 2]
+            layer = assign_clas12_layer(self.minmax_normalize(radius, self.r_lim['max'], self.r_lim['min']))
+            neighbor = geometric_target_indices(features[0, ind], layer)
+            knearest_points = norm_features[:, neighbor.clamp_min(0)].masked_fill(neighbor[None, :, None] < 0, -100)
+        else:
+            knearest_points = knn_later_indices_batch(norm_features, k=self.num_pred_points)
         norm_target = target[:, ind]
         
         # CLAS12 ordering: exact-layer-band radius grouping + 2D Hilbert over (phi, eta)
@@ -541,6 +555,8 @@ def _split_loader(params, distributed, *, train):
         band_classification=getattr(params, 'band_classification', False),
         use_aux_features=getattr(params, 'use_aux_features', False),
         aux_extra_feature=getattr(params, 'aux_extra_feature', 'length'),
+        coord_system=getattr(params, 'coord_system', 'eta'),
+        knn_rule=getattr(params, 'knn_rule', 'distance'),
         hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
     )
     sampler = DistributedSampler(dataset, shuffle=train) if distributed else None

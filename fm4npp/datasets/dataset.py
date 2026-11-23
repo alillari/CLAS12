@@ -373,7 +373,8 @@ class TPCBatchDataset(Dataset):
                  hilbert_angular_grid=DEFAULT_HILBERT_GRID,
                  reader_type='ragged_mmap',
                  compute_neighbors=True,
-                 apply_primary_track_cut=False):
+                 apply_primary_track_cut=False,
+                 coord_system='eta'):
 
         self.data_root = data_root
         self.split = split
@@ -454,6 +455,9 @@ class TPCBatchDataset(Dataset):
             self.memmap_token_context = None
             self.memmap_geometry_context = None
 
+        self.coord_system = coord_system
+        if coord_system != 'eta' and (input_layout.lower() != 'xyz' or get_cart):
+            raise ValueError("CVT theta coordinates require xyz inputs converted to polar coordinates")
         self.input_layout = input_layout.lower()
         self.serialization = serialization
         self.clas12_band_config = clas12_band_config
@@ -480,7 +484,7 @@ class TPCBatchDataset(Dataset):
 
         # Original TPC normalization constants; CLAS12/CVT constants for position-only data.
         if self.is_position_only:
-            self.eta_lim = {'min': -2.5, 'max': 1.5}
+            self.eta_lim = cvt_angular_limits(coord_system)
             self.phi_lim = {'min': -torch.pi, 'max': torch.pi}
             self.r_lim = {'min': 6.0, 'max': 23.0}
             self.E_mean, self.E_std = None, None
@@ -717,7 +721,7 @@ class TPCBatchDataset(Dataset):
         if self.get_cart:
             return features
         if self.input_layout == 'xyz':
-            return cartesian_to_polar_batched(features)             # -> [eta, phi, r]
+            return cartesian_to_detector_batched(features, self.coord_system)
         if self.input_layout == 'exyz':
             polar_coord = cartesian_to_polar_batched(features[..., 1:])
             return torch.cat([features[..., 0:1], polar_coord], dim=-1)  # -> [E, eta, phi, r]
@@ -1388,6 +1392,7 @@ def get_data_loader(params, distributed):
                                     input_layout=getattr(params, 'input_layout', 'xyz'),
                                     serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                     clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
+                                    coord_system=getattr(params, 'coord_system', 'eta'),
                                     hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
                                     low_thr=getattr(params, 'low_thr', 1),
                                     high_thr=getattr(params, 'high_thr', 100),
@@ -1426,6 +1431,7 @@ def get_data_loader(params, distributed):
                                    input_layout=getattr(params, 'input_layout', 'xyz'),
                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                    clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
+                                   coord_system=getattr(params, 'coord_system', 'eta'),
                                    hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
                                    low_thr=getattr(params, 'low_thr', 1),
                                    high_thr=getattr(params, 'high_thr', 100),
@@ -1522,6 +1528,7 @@ def get_val_loader(params, distributed):
                                    input_layout=getattr(params, 'input_layout', 'xyz'),
                                    serialization=getattr(params, 'serialization', 'clas12_band_hilbert'),
                                    clas12_band_config=getattr(params, 'clas12_band_config', 'calibrated12'),
+                                   coord_system=getattr(params, 'coord_system', 'eta'),
                                    hilbert_angular_grid=getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID),
                                    low_thr=getattr(params, 'low_thr', 1),
                                    high_thr=getattr(params, 'high_thr', 100),

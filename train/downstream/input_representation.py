@@ -14,6 +14,9 @@ AUX_REPRESENTATION = "clas12_pos_plus_aux_v1"
 def input_config(params):
     representation = value(params, "input_representation", "center_only")
     config = {"input_representation": representation}
+    coord_system = value(params, "coord_system", "eta")
+    if coord_system != "eta":
+        config["coord_system"] = coord_system
     if representation == AUX_REPRESENTATION:
         config.update(pos_dim=int(value(params, "pos_dim", 3)),
                       aux_dim=int(value(params, "aux_dim", 4)),

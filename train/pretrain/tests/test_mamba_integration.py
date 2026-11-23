@@ -53,6 +53,7 @@ class PretrainingIntegrationTest(unittest.TestCase):
             trainer.save_checkpoint(trainer.checkpoint_path)
             saved = torch.load(trainer.checkpoint_path, map_location="cpu", weights_only=False)
             self.assertEqual(saved["hilbert_angular_grid"], "unit_v2")
+            self.assertEqual(saved["backbone_config"]["coord_system"], "eta")
             self.assertEqual(saved["backbone_config"]["backbone_version"], "transformer")
             resolved = resolve_backbone({"checkpoint": trainer.checkpoint_path})
             build_backbone(resolved["config"]).load_state_dict(saved["model_state"], strict=True)

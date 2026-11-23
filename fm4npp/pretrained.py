@@ -291,6 +291,7 @@ def export_backbone_config(params, model):
     result = dict(model._backbone_config)
     values = _mapping(params)
     result.update({key: values[key] for key in INPUT_KEYS if key in values})
+    result.setdefault("coord_system", "eta")
     return result
 
 

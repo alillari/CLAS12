@@ -57,14 +57,13 @@ default: &default
   return_reg: false
   return_reg_test: true
   return_knn_target: false
+  compute_neighbors: false
   return_coatjava_seg_pred: false
   require_coatjava_seg_pred: false
   adapter_sample_mode: track_legacy
 
   rep_aaai: false
   nexttoken: false
-  loss_reweight: false
-  ablate_loss_scale: false
   save_checkpoint: true
 
   max_epochs: 300
@@ -132,7 +131,6 @@ default: &default
   num_heads_decoder: 2
   num_heads_encoder: 2
   num_embedder_layers: 0
-  use_attention_head: true
   continue_from_best: true
 
   loss_matched_ce_weight: 0.5

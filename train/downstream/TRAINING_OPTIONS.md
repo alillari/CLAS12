@@ -56,7 +56,7 @@ Track finding forces event-level sampling and validates supported target modes.
 | `return_dict`, `return_reg`, `return_reg_test`, `require_reg_target` | Batch/sidecar plumbing. Keep the task preset's values; regression requires real aligned targets. |
 | `return_coatjava_seg_pred`, `require_coatjava_seg_pred` | Load/require reconstruction segmentation sidecars when a comparison needs them. Finding evaluation has a separate `evaluate_coatjava` control. |
 | `return_knn_target` | Additional next-point targets; false for ordinary adapter fits. |
-| `compute_neighbors` | Defaults true for compatibility. HDF5 adapter recipes disable unused quadratic nearest-neighbor preprocessing; `return_knn_target: true` still computes it. |
+| `compute_neighbors` | The CLAS12 adapter recipes set this to false for mmap and HDF5. Set it to true to compute nearest neighbors, or set `return_knn_target: true` to request their associated targets as well. |
 | `num_data_workers` | CPU loader workers; affects preprocessing throughput, memory and debugging, not the training sample budget. |
 
 The loader radius-sorts before its final serialization step; `serialization:
@@ -166,11 +166,6 @@ rejects them.
 | `early_stopping_warmup_steps` | Epoch-mode stopping warmup/fallback; do not confuse with LR warmup. |
 | `max_train_batches` | Per-epoch batch cap; useful for bounded runs but changes exposure/epoch behavior. |
 | `use_amp` | Finding's outer mixed-precision switch; false in the starting profile. It does not disable Mamba3's internal BF16 execution. It is not a general regression precision switch. |
-
-Track finding also has an opt-in `use_lora` path with `lora_rank`, `lora_alpha`
-and comma-separated `lora_target_modules`. It changes the trainable backbone
-parameters and has a separate optimizer. Keep it false for a frozen-feature
-comparison; family/module compatibility needs its own validation.
 
 ## Validation, checkpoints and evidence
 

@@ -134,7 +134,7 @@ class AuxiliaryTrainerTest(unittest.TestCase):
                    num_output_classes=5 if task == "pid" else 2)
         trainer = (Finder if task == "finding" else Classifier).__new__(Finder if task == "finding" else Classifier)
         trainer.params, trainer.device = p, self.device
-        trainer.log_to_screen, trainer.world_rank, trainer.use_lora, trainer.use_amp = False, 1, False, False
+        trainer.log_to_screen, trainer.world_rank, trainer.use_amp = False, 1, False
         trainer.iters = trainer.global_step = 1
         trainer.best_loss, trainer.class_weights = math.inf, None
         p["data_contract"] = {"format": "cvt-clusters-h5-v1", "plan_id": "fixture"}
@@ -184,7 +184,7 @@ class AuxiliaryTrainerTest(unittest.TestCase):
                     hook = trainer.model.register_forward_pre_hook(lambda module, args: widths.append(args[0].shape[-1]))
                     trainer.use_pretrained_backbone = True
                     if task == "finding":
-                        loss, _, _ = trainer._compute_batch_loss(batch, pretrain=True, train=True)
+                        loss, _, _ = trainer._compute_batch_loss(batch, pretrain=True)
                         loss.backward()
                         trainer.down_optimizer.step()
                         loss = float(loss)
@@ -213,7 +213,7 @@ class AuxiliaryTrainerTest(unittest.TestCase):
                         trainer.params["aux_extra_feature"] = extra
                     # The adapter-only path must receive packed tokens too.
                     if task == "finding":
-                        loss, _, _ = trainer._compute_batch_loss(batch, pretrain=False, train=True)
+                        loss, _, _ = trainer._compute_batch_loss(batch, pretrain=False)
                         self.assertTrue(torch.isfinite(loss))
                     else:
                         self.assertTrue(math.isfinite(trainer._train_one_batch(batch, pretrain=False)))

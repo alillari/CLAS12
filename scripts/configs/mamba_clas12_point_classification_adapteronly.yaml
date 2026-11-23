@@ -50,11 +50,10 @@ default: &default
   return_reg: false
   return_reg_test: false
   return_knn_target: false
+  compute_neighbors: false
 
   rep_aaai: false
   nexttoken: false
-  loss_reweight: false
-  ablate_loss_scale: false
   save_checkpoint: true
 
   max_epochs: 300

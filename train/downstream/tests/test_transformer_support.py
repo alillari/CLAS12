@@ -307,7 +307,7 @@ class TransformerTransferTest(unittest.TestCase):
                     trainer.model = build_backbone(config(encoding)).eval()
                     trainer.device = next(trainer.model.parameters()).device
                     trainer.down_model = head(MambaAttentionHead, encoding=encoding).to(trainer.device)
-                    loss, *_ = trainer._compute_batch_loss(trainer.val_data_loader[0], pretrain=pretrain, train=True)
+                    loss, *_ = trainer._compute_batch_loss(trainer.val_data_loader[0], pretrain=pretrain)
                     self.assertTrue(torch.isfinite(loss))
                     loss.backward()
                     self.assertTrue(all(p.grad is None or torch.isfinite(p.grad).all()

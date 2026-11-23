@@ -55,7 +55,7 @@ def fixture_trainer(directory):
     trainer.use_pretrained_backbone = False
     trainer.backbone_sha256 = None
     trainer.device = "cpu"
-    trainer.use_lora = trainer.use_amp = trainer.log_to_screen = False
+    trainer.use_amp = trainer.log_to_screen = False
     trainer.model = torch.nn.Identity()
     trainer.down_model = FixtureHead()
     trainer.down_optimizer = torch.optim.SGD(trainer.down_model.parameters(), lr=.01)
@@ -256,6 +256,28 @@ class ValidationHistoryTest(unittest.TestCase):
             torch.save(old, best)
             with self.assertRaisesRegex(ValueError, 'legacy'):
                 trainer.load_checkpoint(best, inference=True, use_pretrained_backbone=False)
+
+    def test_checkpoint_accepts_disabled_lora_metadata_and_rejects_lora_weights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = fixture_trainer(directory)
+            path = Path(directory, "adapter.pth")
+            checkpoint = trainer._checkpoint_payload(0, .5)
+            decoder = checkpoint["forward_config"]["decoder"]
+            self.assertIs(decoder["use_lora"], False)
+            checkpoint["params"] = {"params": {"use_lora": False}}
+            torch.save(checkpoint, path)
+            trainer.load_checkpoint(path, inference=True)
+
+            decoder["use_lora"] = True
+            torch.save(checkpoint, path)
+            with self.assertRaisesRegex(ValueError, "LoRA is unsupported"):
+                trainer.load_checkpoint(path, inference=True)
+
+            decoder["use_lora"] = False
+            checkpoint["lora_state_dict"] = {"block.lora_A": torch.ones(1)}
+            torch.save(checkpoint, path)
+            with self.assertRaisesRegex(ValueError, "LoRA is unsupported"):
+                trainer.load_checkpoint(path, inference=True)
 
     def test_every_validation_is_retained_and_snapshot_roundtrips(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -70,6 +70,7 @@ default: &default
   return_reg: true
   return_reg_test: true
   return_knn_target: false
+  compute_neighbors: false
   adapter_sample_mode: event_segment  # one MC-truth segment per regression sample
   segment_target_source: mctrue       # authoritative v6 seg_target labels
   segment_min_clusters: 12            # event_segment: reject truth segments with fewer clusters
@@ -80,8 +81,6 @@ default: &default
   # === Compatibility flags ===
   rep_aaai: false
   nexttoken: false
-  loss_reweight: false
-  ablate_loss_scale: false
   save_checkpoint: true
 
   # === Regression-head optimization ===
@@ -116,21 +115,15 @@ default: &default
   pooling: attention
   regression_loss: mae
 
-  # The downstream regression head is not selected by use_attention_head.
   # For Mamba-family heads, the trainer fixes width 256 and one layer. The default
   # is Mamba2, state 64 / conv 4 / expand 2; adapter_version and adapter_* block
   # overrides are supported. Transformer width/depth are configurable; pooling is honored.
   num_heads_backbone: 4
   num_heads_decoder: 2
   num_heads_encoder: 2
-  num_embedder_layers: 0
   continue_from_best: true
 
   # Retained for shared trainer compatibility.
-  loss_matched_ce_weight: 0.5
-  loss_unmatched_ce_weight: 0.1
-  loss_dice_weight: 1
-  loss_focal_weight: 30
 
 clas12_track_regression_pretrained:
   <<: *default

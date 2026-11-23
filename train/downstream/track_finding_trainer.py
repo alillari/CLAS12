@@ -99,7 +99,6 @@ class DownstreamTrainer():
             getattr(params, 'hilbert_angular_grid', DEFAULT_HILBERT_GRID)
         )
         self.backbone_sha256 = None
-        self.use_lora = False
         self.use_amp = bool(getattr(self.params, 'use_amp', True))
         print("running on rank {} with world size {}".format(self.world_rank, self.world_size))
 
@@ -196,19 +195,6 @@ class DownstreamTrainer():
             if self.bins[i] <= seq_length < self.bins[i + 1]:
                 return i
         return len(self.bins) - 2  # Assign to last bin if out of range
-
-    def update_moving_average(self, bin_idx, loss_value):
-        """Update exponential moving average of loss per bin."""
-        self.loss_moving_avg[bin_idx] = (
-            self.smoothing_factor * self.loss_moving_avg[bin_idx] +
-            (1 - self.smoothing_factor) * loss_value
-        )
-
-    def compute_inverse_loss_weights(self):
-        """Compute inverse loss weights for each bin."""
-        weights = {i: 1 / (self.loss_moving_avg[i] + self.epsilon) for i in self.loss_moving_avg}
-        total_weight = sum(weights.values())
-        return {i: weights[i] / total_weight for i in weights}  # Normalize weights
 
     def launch(self):
         print(self.root_dir, self.config, self.run_num)
@@ -313,11 +299,6 @@ class DownstreamTrainer():
         self.train_data_loader, self.train_sampler, self.val_data_loader, _ = get_data_loader(self.params, 
                                                                                               dist.is_initialized())
 
-        # set loss functions
-        self.loss_func = nn.MSELoss(reduction='none')
-        self.centroid_loss_func = nn.MSELoss(reduction='none')
-        self.loss_func_eval = nn.MSELoss(reduction='none')
-
         # checkpointing
         self.iters = 0
         self.startEpoch = 0
@@ -331,21 +312,6 @@ class DownstreamTrainer():
         else:
             print("No pretrained checkpoint provided; using randomly initialized backbone.")
             self.resumed = False
-
-        # LoRA: apply low-rank adapters to frozen backbone
-        if getattr(self.params, 'use_lora', False):
-            from fm4npp.models.lora import apply_lora_to_model, get_lora_params
-            target_modules = getattr(self.params, 'lora_target_modules', 'in_proj,out_proj,lin_B,lin_C').split(',')
-            lora_rank = getattr(self.params, 'lora_rank', 8)
-            lora_alpha = getattr(self.params, 'lora_alpha', 16)
-            n_lora = apply_lora_to_model(self.model, target_modules, lora_rank, lora_alpha)
-            self.use_lora = True
-            self.lora_optimizer = torch.optim.AdamW(
-                get_lora_params(self.model), lr=self.params.max_lr, weight_decay=0.01
-            )
-            total_backbone = sum(p.numel() for p in self.model.parameters())
-            trainable_backbone = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-            print(f"LoRA applied: {n_lora} adapter params ({trainable_backbone}/{total_backbone} trainable in backbone)")
 
         self.startEpoch = 0
         self.epoch = self.startEpoch
@@ -379,14 +345,6 @@ class DownstreamTrainer():
             dist.barrier()
             dist.destroy_process_group()
         print("Cleanup complete. All resources released.")
-
-    def _load_loss_reweight_stats(self):
-        if not getattr(self.params, "loss_reweight", False):
-            self.loss_bin = None
-            self.loss_weight = None
-            return
-        self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
-        self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
 
     def _representation_input(self, grouped, batch):
         return representation_input(grouped, batch, self.params)
@@ -855,7 +813,6 @@ class DownstreamTrainer():
         self.last_validation_step = None
         self.early_stopping_min_steps = int(getattr(self.params, "early_stopping_min_steps", self.warmup_steps))
 
-        self._load_loss_reweight_stats()
         if train_from_checkpoint:
             self.load_checkpoint(checkpoint_path, inference=False, use_pretrained_backbone=pretrain)
             # Score the restored weights on this invocation's cohort before
@@ -1012,7 +969,7 @@ class DownstreamTrainer():
             checkpoint_writer=save_snapshot if bool(getattr(self.params, "save_validation_checkpoints", True)) else None,
         )
 
-    def _compute_batch_loss(self, batch, pretrain=False, train=False):
+    def _compute_batch_loss(self, batch, pretrain=False):
         grouped, label, _knearest, _reg = self._unpack_batch(batch)
         b, c = grouped.size(0), grouped.size(-1)
         labels = label.to(self.device)
@@ -1022,11 +979,8 @@ class DownstreamTrainer():
         targets, _ = self._build_track_targets(labels, mask)
 
         if pretrain:
-            if train and self.use_lora:
+            with torch.no_grad():
                 _, pre_embed, _ = self.model(model_input, return_z=True)
-            else:
-                with torch.no_grad():
-                    _, pre_embed, _ = self.model(model_input, return_z=True)
             feature = torch.stack(pre_embed)
             pred_dict = self.down_model(model_input, feature, pretrain=pretrain, padding_mask=mask)
         else:
@@ -1200,7 +1154,7 @@ class DownstreamTrainer():
             self.epoch = epoch
             if dist.is_initialized():
                 self.train_sampler.set_epoch(epoch)
-            self.model.train() if self.use_lora else self.model.eval()
+            self.model.eval()
             self.down_model.train()
             self.starttime = time.time()
             max_train_batches = getattr(self.params, "max_train_batches", None)
@@ -1210,13 +1164,10 @@ class DownstreamTrainer():
                 if self.global_step >= max_optimizer_steps:
                     break
 
-                if self.use_lora:
-                    self.lora_optimizer.zero_grad()
                 self.down_optimizer.zero_grad()
                 loss, _losses, _metrics = self._compute_batch_loss(
                     batch,
                     pretrain=pretrain,
-                    train=True,
                 )
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.down_optimizer)
@@ -1226,8 +1177,6 @@ class DownstreamTrainer():
                     norm_type=2.0,
                 )
                 self.scaler.step(self.down_optimizer)
-                if self.use_lora:
-                    self.scaler.step(self.lora_optimizer)
                 self.scaler.update()
                 self.down_scheduler.step()
                 self.global_step += 1
@@ -1259,10 +1208,7 @@ class DownstreamTrainer():
 
     def downstream_end_to_end_one_epoch(self, pretrain = False):
         tr_time = 0
-        if self.use_lora:
-            self.model.train()
-        else:
-            self.model.eval()
+        self.model.eval()
         self.down_model.train()
         amp_enabled = torch.cuda.is_available() and self.use_amp
         # Buffers for logs
@@ -1284,16 +1230,11 @@ class DownstreamTrainer():
             targets, _ = self._build_track_targets(labels, mask)
             
 
-            if self.use_lora:
-                self.lora_optimizer.zero_grad()
             self.down_optimizer.zero_grad()
 
             with autocast('cuda', dtype=torch.bfloat16) if amp_enabled else nullcontext():
                 if pretrain:
-                    if not self.use_lora:
-                        with torch.no_grad():
-                            _, pre_embed, _ = self.model(model_input, return_z=True)
-                    else:
+                    with torch.no_grad():
                         _, pre_embed, _ = self.model(model_input, return_z=True)
                     #feature = torch.stack(pre_embed).mean(0)
                     feature = torch.stack(pre_embed)
@@ -1348,18 +1289,8 @@ class DownstreamTrainer():
                 max_norm=1.0,
                 norm_type=2.0
             )
-            if self.use_lora:
-                from fm4npp.models.lora import get_lora_params
-                self.scaler.unscale_(self.lora_optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    get_lora_params(self.model),
-                    max_norm=1.0,
-                    norm_type=2.0
-                )
 
             self.scaler.step(self.down_optimizer)
-            if self.use_lora:
-                self.scaler.step(self.lora_optimizer)
             self.scaler.update()
             self.global_step += 1
 
@@ -1494,13 +1425,6 @@ class DownstreamTrainer():
         if isinstance(self.down_model, torch.nn.parallel.DistributedDataParallel):
             checkpoint['model_state_dict'] = self.down_model.module.state_dict()
 
-        if self.use_lora:
-            lora_state = {k: v for k, v in self.model.state_dict().items()
-                          if 'lora_A' in k or 'lora_B' in k}
-            checkpoint['lora_state_dict'] = lora_state
-            if not inference_only:
-                checkpoint['lora_optimizer_state_dict'] = self.lora_optimizer.state_dict()
-
         return checkpoint
 
     def _save_checkpoint(self, filename, epoch, is_best, loss):
@@ -1545,21 +1469,12 @@ class DownstreamTrainer():
         )
         state = {k.removeprefix('module.'): v for k, v in checkpoint['model_state_dict'].items()}
         self.down_model.load_state_dict(state, strict=True)
-        if self.use_lora:
-            saved_lora = checkpoint.get('lora_state_dict', {})
-            expected = {k for k in self.model.state_dict() if 'lora_A' in k or 'lora_B' in k}
-            if not expected or saved_lora.keys() != expected:
-                raise ValueError("Track-finding checkpoint LoRA weights do not match configured backbone adapters")
-            self.model.load_state_dict(saved_lora, strict=False)
 
         # 5. If not inference mode, load optimizer/scheduler states
         if not inference:
             self.down_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if self.down_scheduler is not None:
                 self.down_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-            if self.use_lora and 'lora_optimizer_state_dict' in checkpoint:
-                self.lora_optimizer.load_state_dict(checkpoint['lora_optimizer_state_dict'])
 
             self.startEpoch = checkpoint.get('epoch', 0) + 1
             self.best_loss = checkpoint.get('best_loss', float('inf'))

@@ -50,6 +50,8 @@ def validate_track_finding_modes(config: Mapping, *, source: str = "configuratio
                 "is supported. Aggregate background-query training and "
                 "truth-assisted noise attribution have been removed."
             )
+    if config.get("use_lora") or config.get("lora_state_dict"):
+        raise ValueError(f"{source}: track-finding LoRA is unsupported")
     nested = config.get("params")
     if isinstance(nested, Mapping):
         validate_track_finding_modes(nested, source=f"{source}.params")
@@ -57,13 +59,13 @@ def validate_track_finding_modes(config: Mapping, *, source: str = "configuratio
 def decoder_settings(params, head=None):
     # These settings can change predictions without changing state-dict shapes.
     defaults = {"softmax_mask": False, "do_masked_attn": True, "num_heads_decoder": 4,
-                "embed_method": "add", "pe_method": "nerf", "use_lora": False}
+                "embed_method": "add", "pe_method": "nerf"}
     settings = {key: params.get(key, default) for key, default in defaults.items()}
+    # Keep the legacy checkpoint field for older evaluators.
+    settings["use_lora"] = False
     if head is not None:
         settings.update(softmax_mask=head.softmax_mask, do_masked_attn=head.do_masked_attn,
                         num_heads_decoder=head.num_heads, embed_method=head.embed_method, pe_method=head.pe_method)
-    if settings["use_lora"]:
-        settings["lora_alpha"] = params.get("lora_alpha", 16)
     return settings
 
 
@@ -85,5 +87,6 @@ def validate_checkpoint_forward(checkpoint, current_decoder, use_pretrained, bac
             raise ValueError("Frozen track finding requires a loaded pretrained backbone checkpoint")
         if "forward_config" in checkpoint and saved["backbone_sha256"] != backbone_sha256:
             raise ValueError("Track-finding checkpoint was trained with different pretrained backbone weights")
+    validate_track_finding_modes(saved["decoder"], source="checkpoint decoder")
     if saved["decoder"] != current_decoder:
         raise ValueError(f"Track-finding decoder mismatch: saved {saved['decoder']!r}, requested {current_decoder!r}")

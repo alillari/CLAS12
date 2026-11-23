@@ -25,6 +25,7 @@ default: &default
   return_dict: true
   return_reg_test: true
   return_knn_target: false
+  compute_neighbors: false
   return_coatjava_seg_pred: false
   require_coatjava_seg_pred: false
   limit_data: true
@@ -42,8 +43,6 @@ default: &default
   group_size: 8
   rep_aaai: false
   nexttoken: false
-  loss_reweight: false
-  ablate_loss_scale: false
   save_checkpoint: true
   continue_from_best: true
   log_to_screen: true
@@ -86,14 +85,9 @@ default: &default
   klen: 1
   init_std: 0.025
   adapter_version: mamba2
-  num_embedder_layers: 0
   num_heads_backbone: 4
   num_heads_decoder: 2
   num_heads_encoder: 2
-  loss_matched_ce_weight: 0.5
-  loss_unmatched_ce_weight: 0.1
-  loss_dice_weight: 1
-  loss_focal_weight: 30
 
 # Published HDF5 compatibility pilot. Noise and finding count events; momentum
 # counts accepted truth segments. Checkpoints use validation; reporting uses test.
@@ -102,7 +96,6 @@ hdf5_pilot_defaults: &hdf5
   train_split: train
   validation_split: validation
   test_split: test
-  compute_neighbors: false
   limit_size: 5000
   limit_test_size: 1000
   max_validation_events: 1000
@@ -132,16 +125,20 @@ clas12_track_finding_50k: &finding
   adapter_sample_mode: track_legacy   # event-level tracking, not legacy regression
   return_reg: false
   track_target_mode: signal_only
+  loss_matched_ce_weight: 0.5
+  loss_unmatched_ce_weight: 0.1
+  loss_dice_weight: 1
+  loss_focal_weight: 30
   validation_ari_mode: signal
   adapter_embed_dim: 256
   num_adapter_layers: 0
+  num_embedder_layers: 0
   adapter_d_state: 16
   adapter_d_conv: 4
   adapter_expand: 2
   num_self_attn_layers: 2
   do_masked_attn: true
   softmax_mask: false
-  use_attention_head: true
   assignment_option: 2
   assignment_threshold: 0.2
   match_iou_threshold: 0.5
@@ -215,6 +212,7 @@ hdf5_noise_5k: &noise
   return_reg_test: false
   return_coatjava_seg_pred: true
   use_attention_head: true
+  num_embedder_layers: 0
 
 hdf5_noise_50k_balanced:
   <<: *noise

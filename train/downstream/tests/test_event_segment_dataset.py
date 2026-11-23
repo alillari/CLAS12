@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from mmap_ninja import RaggedMmap
@@ -9,12 +10,15 @@ from mmap_ninja import RaggedMmap
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
+import fm4npp.datasets.dataset as dataset_module
 from fm4npp.datasets.dataset import (
     EventSegmentTPCBatchDataset,
     MyCollator,
     TPCBatchDataset,
+    get_val_loader,
     resolve_adapter_sample_mode,
 )
+from fm4npp.utils import YParams
 from train.downstream.scripts.compute_regression_target_stats import compute_stats
 
 
@@ -44,6 +48,29 @@ class EventSegmentDatasetTest(unittest.TestCase):
         Params.adapter_sample_mode = "missing_mode"
         with self.assertRaisesRegex(ValueError, "Unknown adapter_sample_mode"):
             resolve_adapter_sample_mode(Params())
+
+    def test_clas12_mmap_recipe_skips_neighbors_and_honors_target_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            features = np.array([[7., 0., 0.], [9., 0., 0.]], dtype=np.float32)
+            write_ragged(root, "features_test", [features])
+            write_ragged(root, "seg_target_test", [np.array([0, 0], dtype=np.int64)])
+            write_ragged(root, "reg_target_test", [np.zeros((2, 7), dtype=np.float32)])
+            params = YParams(ROOT / "scripts/configs/clas12_adapter_recipes.yaml", "clas12_track_finding_50k")
+            params.data_root = str(root)
+
+            with patch.object(dataset_module, "knn_later_indices_batch",
+                              wraps=dataset_module.knn_later_indices_batch) as neighbors:
+                default = get_val_loader(params, distributed=False).dataset[0]
+                neighbors.assert_not_called()
+                self.assertTrue((default["knearest_points"] == -100).all())
+
+                params.return_knn_target = True
+                requested = get_val_loader(params, distributed=False).dataset[0]
+                neighbors.assert_called_once()
+                self.assertTrue(neighbors.call_args.kwargs["return_target"])
+                self.assertTrue(default["points"].equal(requested["points"]))
+                self.assertTrue(default["target"].equal(requested["target"]))
 
     def test_event_is_split_into_segment_samples(self):
         with tempfile.TemporaryDirectory() as tmpdir:

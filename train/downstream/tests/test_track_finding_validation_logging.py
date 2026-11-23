@@ -26,7 +26,6 @@ class TrackFindingValidationLoggingTest(unittest.TestCase):
                     save_validation_checkpoints=False,
                 )
                 trainer.startEpoch = trainer.global_step = trainer.iters = 0
-                trainer.use_lora = False
                 trainer.model = torch.nn.Identity()
                 trainer.down_model = torch.nn.Linear(1, 1)
                 trainer.down_optimizer = torch.optim.SGD(trainer.down_model.parameters(), lr=.01)

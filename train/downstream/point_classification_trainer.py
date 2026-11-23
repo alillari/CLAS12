@@ -262,21 +262,6 @@ class DownstreamTrainer():
                 return i
         return len(self.bins) - 2  # Assign to last bin if out of range
 
-    def update_moving_average(self, bin_idx, loss_value):
-        """Update exponential moving average of loss per bin."""
-        self.loss_moving_avg[bin_idx] = (
-            self.smoothing_factor * self.loss_moving_avg[bin_idx] +
-            (1 - self.smoothing_factor) * loss_value
-        )
-
-    def compute_inverse_loss_weights(self):
-        """Compute inverse loss weights for each bin."""
-        weights = {i: 1 / (self.loss_moving_avg[i] + self.epsilon) for i in self.loss_moving_avg}
-        total_weight = sum(weights.values())
-        return {i: weights[i] / total_weight for i in weights}  # Normalize weights
-
-
-
     def cleanup(self):
         # 1) remove hooks
         for hook_list in ("fwd_hooks", "bwd_hooks"):
@@ -404,11 +389,6 @@ class DownstreamTrainer():
                                                                                               dist.is_initialized())
 
         self.configure_class_weights()
-
-        # set loss functions
-        self.loss_func = nn.MSELoss(reduction='none')
-        self.centroid_loss_func = nn.MSELoss(reduction='none')
-        self.loss_func_eval = nn.MSELoss(reduction='none')
 
         # checkpointing
         self.iters = 0
@@ -697,15 +677,6 @@ class DownstreamTrainer():
             default_warmup_steps=20,
         )
         self.stagnation_counter = 0
-        
-
-
-        if getattr(self.params, "loss_reweight", False):
-            self.loss_bin = pickle_load('{}/loss_bin_pp.pkl'.format(self.params.stat_dir))
-            self.loss_weight = pickle_load('{}/loss_weight_pp.pkl'.format(self.params.stat_dir))
-        else:
-            self.loss_bin = None
-            self.loss_weight = None
 
         if step_budget is not None:
             self._train_by_optimizer_step(pretrain, checkpoint_file_name, log_file_path)

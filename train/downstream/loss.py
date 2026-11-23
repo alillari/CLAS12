@@ -40,37 +40,6 @@ def compute_multiclass_metrics(outputs, targets, average='macro'):
     return precision, recall, accuracy
 
 
-def compute_masked_cross_entropy_loss(logits, targets, valid_mask):
-    """
-    Args:
-        logits: (B, N, C) or (N, C) — raw class scores (before softmax)
-        targets: (B, N) or (N,) — ground truth class labels
-        valid_mask: (B, N) or (N,) — boolean or 0/1 tensor indicating valid points
-
-    Returns:
-        Scalar: averaged cross entropy loss over valid points
-    """
-    if logits.dim() == 3:
-        B, N, C = logits.shape
-        logits = logits.view(-1, C)              # (B*N, C)
-        targets = targets.view(-1)               # (B*N,)
-        valid_mask = valid_mask.view(-1) > 0     # (B*N,)
-    elif logits.dim() == 2:
-        # unbatched: (N, C)
-        logits = logits
-        targets = targets
-        valid_mask = valid_mask > 0
-    else:
-        raise ValueError(f"Unsupported logits shape: {logits.shape}")
-
-    if valid_mask.sum() == 0:
-        return torch.tensor(0., device=logits.device)
-
-    loss = F.cross_entropy(logits[valid_mask], targets[valid_mask], reduction='mean')
-    return loss
-
-
-
 def batch_dice_loss(inputs: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor, eps=1e-6):
     """
     Args:
@@ -237,62 +206,6 @@ class PointHungarianMatcher(torch.nn.Module):
         self.cost_focal = cost_focal  # Focal loss weight
 
     @torch.no_grad()
-    def forward_backup(self, outputs, targets, mask):
-        """
-        Args:
-            outputs: Dict with "pred_probs" (B, N_pred, C) and "pred_masks" (B, N_pred, N_points)
-            targets: Dict with "labels" (B, N_gt) and "masks" (B, N_gt, N_points)
-            mask: (B, N_points) indicating valid points
-        """
-        bs, n_pred = outputs["pred_probs"].shape[:2]
-        device = outputs["pred_probs"].device
-        # Initialize cost matrix (B, N_pred, N_gt)
-        cost_matrix = torch.zeros(bs, n_pred, len(targets["labels"][0]), device=device)
-
-        # Classification cost (B, N_pred, N_gt)
-        if self.cost_class != 0:
-            class_probs = outputs["pred_probs"]  # (B, N_pred, C)
-            gt_labels = targets["labels"]  # (B, N_gt)
-            
-            # Expand labels to match pred_probs dimensions
-            gt_labels_expanded = gt_labels.unsqueeze(1).expand(-1, class_probs.shape[1], -1)  # (B, N_pred, N_gt)
-            
-            # Gather probabilities for target classes
-            cost_class = -torch.gather(
-                class_probs, 
-                dim=2, 
-                index=gt_labels_expanded
-            )  # (B, N_pred, N_gt)
-            
-            cost_matrix += self.cost_class * cost_class
-
-        # Mask costs (B, N_pred, N_gt)
-        if self.cost_dice != 0:
-            cost_dice = batch_dice_loss(
-                outputs["pred_masks"],  # (B, N_pred, N_points)
-                targets["masks"],       # (B, N_gt, N_points)
-                mask                    # (B, N_points)
-            )
-            cost_matrix += self.cost_dice * cost_dice
-
-        if self.cost_focal != 0:
-            cost_focal = batch_focal_loss(
-                outputs["pred_masks"],  # (B, N_pred, N_points)
-                targets["masks"],       # (B, N_gt, N_points)
-                mask                    # (B, N_points)
-            )
-            cost_matrix += self.cost_focal * cost_focal
-
-        # Hungarian matching per batch element
-        #print(cost_matrix.shape)
-        indices = [linear_sum_assignment(c.cpu()) for c in cost_matrix]
-        return [
-            (torch.as_tensor(i, dtype=torch.int64, device=device),
-             torch.as_tensor(j, dtype=torch.int64, device=device))
-            for i, j in indices
-        ]
-
-    
     @torch.no_grad()
     def forward(self, outputs, targets, mask):
         """
@@ -351,56 +264,7 @@ class PointHungarianMatcher(torch.nn.Module):
         return indices
 
 
-def focal_loss_mc(logits: torch.Tensor,
-                  targets: torch.Tensor,
-                  gamma: float = 2.0,
-                  alpha: torch.Tensor | None = None,
-                  reduction: str = "mean") -> torch.Tensor:
-    """
-    Multi-class (single-label) focal loss.
-
-    Args
-    ----
-    logits     : (N, C)  raw scores from the network
-    targets    : (N,)    int64 class indices 0 … C-1
-    gamma      : focusing parameter (γ = 0 → CE)
-    alpha      : None | (C,) tensor of per-class weights
-    reduction  : 'mean' | 'sum' | 'none'
-
-    Returns
-    -------
-    Tensor scalar if reduced else (N,) tensor of per-sample losses
-    """
-    log_probs = F.log_softmax(logits, dim=-1)        # (N, C)
-    probs     = log_probs.exp()                      # (N, C)
-
-    # Probabilities of the true class for each sample
-    idx  = torch.arange(logits.size(0), device=logits.device)
-    p_t  = probs[idx, targets]                       # (N,)
-    log_p_t = log_probs[idx, targets]                # (N,)
-
-    # Class weighting
-    if alpha is not None:
-        alpha_t = alpha.to(logits.device)[targets]   # (N,)
-    else:
-        alpha_t = 1.0
-
-    # Focal term
-    focal_weight = (1.0 - p_t) ** gamma
-
-    loss = -alpha_t * focal_weight * log_p_t         # (N,)
-
-    if reduction == "mean":
-        return loss.mean()
-    if reduction == "sum":
-        return loss.sum()
-    return loss
-
-
-
-
-    
-def simple_point_loss(outputs, targets, mask, class_weights = None, option = "ce"):
+def simple_point_loss(outputs, targets, mask, class_weights=None):
     """
     Args:
         outputs: {
@@ -411,7 +275,6 @@ def simple_point_loss(outputs, targets, mask, class_weights = None, option = "ce
         }
         mask: (B, N)  # boolean or 0/1 mask indicating valid points
         class_weights: (C,)  # class weights for CE loss
-        option: str, either "ce" for cross-entropy or "focal" for focal loss
     Returns:
         dict: {
             'loss': classification loss (scalar)
@@ -435,137 +298,51 @@ def simple_point_loss(outputs, targets, mask, class_weights = None, option = "ce
     if pred_logits.shape[0] == 0:
         return {'loss': torch.tensor(0.0, device=pred_logits.device)}
 
-    loss = torch.tensor(0.0, device=pred_logits.device)
-    # Compute weighted CE loss
-    if option == "focal":
-        # Focal loss implementation
-        loss = focal_loss_mc(pred_logits, labels, alpha = torch.tensor([0.25, 0.75], device=pred_logits.device))
-    else:
-        loss = F.cross_entropy(pred_logits, labels, weight=class_weights, reduction='mean')
-
-    return {'loss': loss}
+    return {"loss": F.cross_entropy(pred_logits, labels, weight=class_weights)}
     
 
 
 
 
 def compute_point_loss(outputs, targets, mask, matcher, no_object_class=0):
-    """
-    Args:
-        outputs: {
-            "pred_probs": (B, N_pred, C),  # Class probabilities (softmax output)
-            "pred_masks": (B, N_pred, N_points)  # Mask probabilities (sigmoid output)
-            'track_reg_result': track_reg_result, # (B, C, num_track_features)
-            'pid_probs': pid_probs, # (B, C, num_pid_classes + 1)
-            'noise_logits': noise_logits, # (B, N, 2)
-        }
-        targets: list of dicts, each with: {
-            "labels": (N_gt),  # Class labels for GT instances
-            "masks": (N_gt, N_points)  # Binary GT masks
-            # Optional: "track_info": (N_gt, num_track_features)  # Track info for regression
-            # Optional: "valid_tracks" : (N_gt)  # Valid track info indicator
-            # Optional: "pid_labels": (N_gt)  # PIDs for classification
-            # Optional: "noise_labels": (N,)  # Noise labels for classification
-        }
-        mask: (B, N_points)  # Valid points mask
-        
-        matcher: PointHungarianMatcher instance
-    Returns:
-        Dict with classification, dice, and focal losses
-    """
-    device = outputs["pred_probs"].device
-    B, N_pred, C = outputs["pred_probs"].shape
-    
-    # 1. Perform Hungarian matching and get global indices
+    """Compute the four finding losses using one Hungarian assignment per event."""
+    probabilities = outputs["pred_probs"]
+    device = probabilities.device
+    batch_size, num_predictions, _ = probabilities.shape
     indices = matcher(outputs, targets, mask)
     src_batch_idx, src_idx = _get_src_permutation_idx(indices)
-    tgt_batch_idx, tgt_idx = _get_tgt_permutation_idx(indices)
-    num_matched = len(src_batch_idx)
-    # 2. Classification Losses ================================================
-    #target_classes = torch.full((B, N_pred), no_object_class, 
-                              #dtype=torch.int64, device=device)
+
     loss_matched_ce = torch.tensor(0., device=device)
     loss_unmatched_ce = torch.tensor(0., device=device)
-    loss_track_reg = torch.tensor(0., device=device)
-    loss_pid_ce = torch.tensor(0., device=device)
-
-    #optional perpoint noise classification loss
-    #first pad the input to (B, N, 1)
-    if "noise_probs" in outputs:
-        noise_logits = outputs["noise_logits"] # (B, N, 2)
-        noise_gt = torch.stack([t["noise_labels"] for t in targets], dim=0) # (B, N)
-        loss_noise_ce = compute_masked_cross_entropy_loss(noise_logits, noise_gt, mask)
-    else:
-        loss_noise_ce = torch.tensor(0., device=device)
-
-
-    # Matched classification loss
-    if num_matched > 0:
-        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)]) # (num_matched_total,)
-        #target_classes[src_batch_idx, src_idx] = target_classes_o
-        
-        matched_probs = outputs["pred_probs"][src_batch_idx, src_idx] #(num_matched_total, C)
-        loss_matched_ce = F.nll_loss(torch.log(matched_probs + 1e-6), 
-                                   target_classes_o, reduction='sum')
-    
-        # optional: matched track info regression loss
-        
-        if all("track_info" in t for t in targets):
-            target_track_info = torch.cat([t["track_info"][J] for t, (_, J) in zip(targets, indices)]) #(num_matched_total, num_track_features)
-            pred_track_info = outputs["track_reg_result"][src_batch_idx, src_idx] #(num_matched_total, num_track_features)
-            valid_track = torch.cat([t["valid_tracks"][J] for t, (_, J) in zip(targets, indices)]) #(num_matched_total,)
-            # Apply valid track mask
-            if valid_track.any():
-                pred_track_info = pred_track_info[valid_track]
-                target_track_info = target_track_info[valid_track]
-            loss_track_reg = F.l1_loss(pred_track_info, target_track_info, reduction='sum') #(num_matched_total, num_track_features)
-        # Matched PID classification loss (Cross Entropy)
-        if all("pid_labels" in t for t in targets):
-            target_pid_labels = torch.cat([t["pid_labels"][J] for t, (_, J) in zip(targets, indices)]) #(num_matched_total,)
-            pred_pid_probs = outputs["pid_probs"][src_batch_idx, src_idx]  #(num_matched_total, num_pid_classes + 1) 
-            loss_pid_ce = F.nll_loss(torch.log(pred_pid_probs + 1e-6), 
-                                     target_pid_labels, reduction='sum')
-        
-
-
-    # Unmatched classification loss
-    src_mask = torch.zeros((B, N_pred), dtype=torch.bool, device=device)
-    src_mask[src_batch_idx, src_idx] = True
-    if (~src_mask).any():
-        unmatched_probs = outputs["pred_probs"][~src_mask]
-        loss_unmatched_ce = F.nll_loss(torch.log(unmatched_probs + 1e-6),
-                                     torch.full((unmatched_probs.size(0),), 
-                                              no_object_class, device=device),
-                                     reduction='sum')
-
-    # 3. Mask Losses =========================================================
     loss_dice = torch.tensor(0., device=device)
     loss_focal = torch.tensor(0., device=device)
-    
-    if num_matched > 0:
-        # Gather matched pairs across all batches
-        src_masks = outputs["pred_masks"][src_batch_idx, src_idx]  # (M, P)
-        tgt_masks = torch.cat([t["masks"][i] for t, (_, i) in zip(targets, indices)]).to(device)
-        #tgt_masks = torch.cat([t["masks"] for t in targets])[tgt_batch_idx, tgt_idx]
-        valid = mask[src_batch_idx]  # (M, P)
-        #print(src_masks.shape, tgt_masks.shape, valid.shape)
 
-        # Compute losses
+    if len(src_batch_idx) > 0:
+        target_classes = torch.cat([target["labels"][j] for target, (_, j) in zip(targets, indices)])
+        matched_probs = probabilities[src_batch_idx, src_idx]
+        loss_matched_ce = F.nll_loss(torch.log(matched_probs + 1e-6), target_classes, reduction="sum")
+
+        src_masks = outputs["pred_masks"][src_batch_idx, src_idx]
+        tgt_masks = torch.cat([target["masks"][j] for target, (_, j) in zip(targets, indices)]).to(device)
+        valid = mask[src_batch_idx]
         loss_dice = matched_dice_loss(src_masks, tgt_masks, valid)
         loss_focal = matched_focal_loss(src_masks, tgt_masks, valid)
 
+    unmatched = torch.ones((batch_size, num_predictions), dtype=torch.bool, device=device)
+    unmatched[src_batch_idx, src_idx] = False
+    if unmatched.any():
+        unmatched_probs = probabilities[unmatched]
+        loss_unmatched_ce = F.nll_loss(
+            torch.log(unmatched_probs + 1e-6),
+            torch.full((unmatched_probs.size(0),), no_object_class, device=device),
+            reduction="sum",
+        )
 
-
-    # 4. Normalize classification losses
-    num_total = B * N_pred  # Or use num_matched for matched_ce
     return {
-        "loss_matched_ce": loss_matched_ce /B,
-        "loss_unmatched_ce": loss_unmatched_ce / B,
-        "loss_dice": loss_dice /B,
-        "loss_focal": loss_focal /B,
-        "loss_track_reg": loss_track_reg / B,
-        "loss_pid_ce": loss_pid_ce / B,
-        "loss_noise_ce": loss_noise_ce #this is normalized by all points in batch already so
+        "loss_matched_ce": loss_matched_ce / batch_size,
+        "loss_unmatched_ce": loss_unmatched_ce / batch_size,
+        "loss_dice": loss_dice / batch_size,
+        "loss_focal": loss_focal / batch_size,
     }
 
 
@@ -654,18 +431,6 @@ def _get_src_permutation_idx(indices):
     batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
     src_idx = torch.cat([src for (src, _) in indices])
     return batch_idx, src_idx
-
-def _get_tgt_permutation_idx(indices):
-    batch_idx = torch.cat([torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)])
-    tgt_idx = torch.cat([tgt for (_, tgt) in indices])
-    return batch_idx, tgt_idx
-
-
-
-
-
-
-
 
 def assign_points_to_masks(outputs, no_object_class=0, option=1, threshold=0.0):
     """

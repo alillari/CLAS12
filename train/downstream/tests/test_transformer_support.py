@@ -334,7 +334,11 @@ class TransformerPretrainingTest(unittest.TestCase):
                         torch.testing.assert_close(tensor, saved[name], rtol=0, atol=0)
                     for key, state in resumed.optimizer.state_dict()["state"].items():
                         for item, value in state.items():
-                            torch.testing.assert_close(value, optimizer["state"][key][item], rtol=0, atol=0)
+                            # Checkpoint mapping can move AdamW's scalar step counter to CUDA.
+                            torch.testing.assert_close(
+                                value, optimizer["state"][key][item], rtol=0, atol=0,
+                                check_device=item != "step",
+                            )
                     resumed.train_one_epoch()
                     self.assertEqual(resumed.iters, 2)
 

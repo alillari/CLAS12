@@ -126,8 +126,6 @@ default: &default
   num_heads_encoder: 2
   continue_from_best: true
 
-  # Track-finding loss weights; retained only for compatibility with shared trainer utilities.
-
 # ---------------------------------------------------------------------------
 # First config to run
 # ---------------------------------------------------------------------------

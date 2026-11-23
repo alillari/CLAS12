@@ -37,7 +37,7 @@ recipe. It provides these starting profiles:
 | Train / validation batch | 32 / 32 | 128 / 128 |
 | Validation samples | 5k events | 10k tracks |
 | Head | Width-256 attention decoder, 16 queries, zero Mamba layers | Width-256, one Mamba2 refinement layer, attention pooling |
-| Objective / selection | Class/Dice/focal loss / option-2 signal ARI | Standardized component MAE / validation loss |
+| Objective / selection | Class/Dice/focal loss / option-2 mean track Dice | Standardized component MAE / validation loss |
 
 Both profiles use 30k updates, validation every 1k updates, AdamW weight decay
 1e-4, norm clipping 0.1, dropout 0.1, seed 42 and LR 1e-5 → 3e-4 → approximately

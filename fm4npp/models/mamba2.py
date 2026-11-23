@@ -369,12 +369,6 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             # Fused Triton path: pack [z, x, B, C, dt] into one tensor and call the kernel.
             zxbcdt_fused = torch.cat([z0, x0, B_slice, C_slice, dt_slice], dim=-1)
 
-            try:
-                from fm4npp.models.lora import LoRALinear
-                out_proj_has_lora = isinstance(self.out_proj, LoRALinear)
-            except ImportError:
-                out_proj_has_lora = False
-
             out = mamba_split_conv1d_scan_combined(
                 zxbcdt_fused,
                 rearrange(self.conv1d.weight, "d 1 w -> d w"),
@@ -388,15 +382,13 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 activation=self.activation,
                 rmsnorm_weight=self.norm.weight if self.rmsnorm_enabled else None,
                 rmsnorm_eps=self.norm.eps if self.rmsnorm_enabled else 1e-6,
-                outproj_weight=None if out_proj_has_lora else self.out_proj.weight,
-                outproj_bias=None if out_proj_has_lora else self.out_proj.bias,
+                outproj_weight=self.out_proj.weight,
+                outproj_bias=self.out_proj.bias,
                 headdim=None if self.D_has_hdim else self.headdim,
                 ngroups=self.ngroups,
                 norm_before_gate=self.norm_before_gate,
                 **dt_limit_kwargs
             )
-            if out_proj_has_lora:
-                out = self.out_proj(out)
             if is_packed:
                 out = rearrange(out, "b l d -> (b l) d")
         else:

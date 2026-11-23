@@ -30,6 +30,8 @@ root and use absolute paths for data, checkpoints and external configs.
 The regression wrapper forces `num_embedder_layers: 0` and validates the
 regression target and validation-loss checkpoint-selection contract.
 Track finding forces event-level sampling and validates supported target modes.
+Pretrained finding runs use a frozen backbone. The evaluator rejects
+historical checkpoints that require LoRA weights.
 `train_momentum_regression.py` delegates to the regression CLI.
 
 ## Data, representation and sample selection
@@ -56,7 +58,7 @@ Track finding forces event-level sampling and validates supported target modes.
 | `return_dict`, `return_reg`, `return_reg_test`, `require_reg_target` | Batch/sidecar plumbing. Keep the task preset's values; regression requires real aligned targets. |
 | `return_coatjava_seg_pred`, `require_coatjava_seg_pred` | Load/require reconstruction segmentation sidecars when a comparison needs them. Finding evaluation has a separate `evaluate_coatjava` control. |
 | `return_knn_target` | Additional next-point targets; false for ordinary adapter fits. |
-| `compute_neighbors` | The CLAS12 adapter recipes set this to false for mmap and HDF5. Set it to true to compute nearest neighbors, or set `return_knn_target: true` to request their associated targets as well. |
+| `compute_neighbors` | Standard CLAS12 mmap and HDF5 adapter recipes set this to false. Skipped `knearest_points` entries carry padding values. Enable this option for neighbor coordinates, or set `return_knn_target: true` to compute neighbors and their labels. |
 | `num_data_workers` | CPU loader workers; affects preprocessing throughput, memory and debugging, not the training sample budget. |
 
 The loader radius-sorts before its final serialization step; `serialization:
@@ -180,9 +182,11 @@ rejects them.
 | `save_validation_checkpoints` | Finding: save every validation's adapter snapshot as well as metric histories. Snapshots omit optimizer/scheduler and are for evaluation; the normal best checkpoint is full. |
 | `continue_from_best` | Shared internal setting; the public CLIs start fresh fits and do not expose resume-from-checkpoint through this flag. |
 
-Momentum selects the lowest finite validation loss. Finding selects configured
-option-2 ARI with a validation-loss tie-break. Save resolved configuration,
-artifact receipt, normalizer, adapter weights and matching pretrained weights.
+Momentum selects the lowest finite validation loss. Finding selects mean track
+Dice at the configured option-2 threshold by default, with lower validation
+loss breaking ties. Set `validation_selection_metric: ari` to use option-2
+ARI. Save the resolved configuration, artifact receipt, normalizer, adapter
+weights and matching pretrained weights.
 Validation evaluates an accepted prefix of the configured test root; final
 evaluation requires a separately reserved population, with whole source events
 kept together for segment-level tasks.

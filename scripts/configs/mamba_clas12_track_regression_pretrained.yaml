@@ -123,8 +123,6 @@ default: &default
   num_heads_encoder: 2
   continue_from_best: true
 
-  # Retained for shared trainer compatibility.
-
 clas12_track_regression_pretrained:
   <<: *default
 

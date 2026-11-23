@@ -74,6 +74,7 @@ default: &default
   return_reg: true               # momentum task should receive reg_target from dataset
   return_reg_test: true
   return_knn_target: false
+  compute_neighbors: false
   adapter_sample_mode: event_segment  # one MC-truth segment per regression sample
   segment_target_source: mctrue       # authoritative v6 seg_target labels
   segment_min_clusters: 12            # event_segment: reject truth segments with fewer clusters
@@ -84,8 +85,6 @@ default: &default
   # === Compatibility flags that some trainers reference ===
   rep_aaai: false
   nexttoken: false
-  loss_reweight: false
-  ablate_loss_scale: false
   save_checkpoint: true
 
   # === Optimization ===
@@ -132,14 +131,7 @@ default: &default
   num_heads_backbone: 4
   num_heads_decoder: 2
   num_heads_encoder: 2
-  num_embedder_layers: 0
   continue_from_best: true
-
-  # Track-finding loss weights; retained only for compatibility with shared trainer utilities.
-  loss_matched_ce_weight: 0.5
-  loss_unmatched_ce_weight: 0.1
-  loss_dice_weight: 1
-  loss_focal_weight: 30
 
 # ---------------------------------------------------------------------------
 # First config to run

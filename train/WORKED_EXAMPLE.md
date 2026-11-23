@@ -138,8 +138,9 @@ python train/downstream/train_track_regression.py \
 Each task writes `checkpoints/adapter.pth`, `checkpoints/training.log`,
 `resolved.json` and `artifacts.json`. Check the actual final step (30,000),
 selected checkpoint and validation counts in the receipt/log. Finding selects
-option-2 signal ARI with a loss tie-break; momentum selects minimum validation
-loss. These receipts also record the backbone path used by each fit.
+the highest option-2 mean track Dice, with lower validation loss breaking ties.
+Momentum selects the lowest validation loss. The receipts also record the
+backbone path used by each fit.
 
 ## 5. Evaluate on the reserved final population
 

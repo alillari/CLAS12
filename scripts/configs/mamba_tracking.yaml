@@ -36,8 +36,6 @@ default: &default
   space_filling_curve: z # hilbert
   grad_clip_value: 0.1
   rep_aaai: false
-  loss_reweight: false
-  ablate_loss_scale: false
   save_checkpoint: true
 
   # === Optimization ===
@@ -65,7 +63,6 @@ default: &default
   num_heads_decoder: 2
   num_heads_encoder: 2
   num_embedder_layers: 0
-  use_attention_head: true
 
   # === Training Configuration ===
   continue_from_best: true

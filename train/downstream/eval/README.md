@@ -234,11 +234,12 @@ for its validation loader; it does not introduce cross-rank metric reduction.
 
 `save_validation_checkpoints: true` is the default. Every validation retains
 an immutable snapshot, including non-improving and early-stopping validations.
-Snapshots contain adapter weights, any active LoRA weights, configuration,
-and validation metrics. They omit optimizer/scheduler states and the frozen
-backbone. They load through the existing evaluator with `--checkpoint`; they
-are not training-resume checkpoints. The normal best checkpoint remains full.
-Keep the matching backbone checkpoint and rendered analysis/model YAMLs.
+Snapshots record adapter weights, configuration and validation metrics. Load
+them with the evaluator's `--checkpoint` flag. Keep the matching frozen
+backbone checkpoint and rendered analysis/model YAMLs. Resume training from
+the normal best checkpoint, which also stores optimizer and scheduler states.
+The evaluator accepts historical disabled-LoRA metadata and rejects checkpoints
+that require LoRA weights.
 
 To disable snapshots while retaining every metric record, set
 `save_validation_checkpoints: false`, or pass `--no-save-validation-checkpoints`

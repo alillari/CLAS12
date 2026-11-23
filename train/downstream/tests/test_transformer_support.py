@@ -307,7 +307,7 @@ class TransformerTransferTest(unittest.TestCase):
                     trainer.model = build_backbone(config(encoding)).eval()
                     trainer.device = next(trainer.model.parameters()).device
                     trainer.down_model = head(MambaAttentionHead, encoding=encoding).to(trainer.device)
-                    loss, *_ = trainer._compute_batch_loss(trainer.val_data_loader[0], pretrain=pretrain, train=True)
+                    loss, *_ = trainer._compute_batch_loss(trainer.val_data_loader[0], pretrain=pretrain)
                     self.assertTrue(torch.isfinite(loss))
                     loss.backward()
                     self.assertTrue(all(p.grad is None or torch.isfinite(p.grad).all()
@@ -334,7 +334,11 @@ class TransformerPretrainingTest(unittest.TestCase):
                         torch.testing.assert_close(tensor, saved[name], rtol=0, atol=0)
                     for key, state in resumed.optimizer.state_dict()["state"].items():
                         for item, value in state.items():
-                            torch.testing.assert_close(value, optimizer["state"][key][item], rtol=0, atol=0)
+                            # Checkpoint mapping can move AdamW's scalar step counter to CUDA.
+                            torch.testing.assert_close(
+                                value, optimizer["state"][key][item], rtol=0, atol=0,
+                                check_device=item != "step",
+                            )
                     resumed.train_one_epoch()
                     self.assertEqual(resumed.iters, 2)
 

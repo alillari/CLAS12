@@ -242,21 +242,6 @@ class DownstreamTrainer():
                 return i
         return len(self.bins) - 2  # Assign to last bin if out of range
 
-    def update_moving_average(self, bin_idx, loss_value):
-        """Update exponential moving average of loss per bin."""
-        self.loss_moving_avg[bin_idx] = (
-            self.smoothing_factor * self.loss_moving_avg[bin_idx] +
-            (1 - self.smoothing_factor) * loss_value
-        )
-
-    def compute_inverse_loss_weights(self):
-        """Compute inverse loss weights for each bin."""
-        weights = {i: 1 / (self.loss_moving_avg[i] + self.epsilon) for i in self.loss_moving_avg}
-        total_weight = sum(weights.values())
-        return {i: weights[i] / total_weight for i in weights}  # Normalize weights
-
-
-
     def cleanup(self):
         # 1) remove hooks
         for hook_list in ("fwd_hooks", "bwd_hooks"):
@@ -381,11 +366,6 @@ class DownstreamTrainer():
         self.train_data_loader, self.train_sampler, self.val_data_loader, _ = get_data_loader(self.params, 
                                                                                               dist.is_initialized())
 
-        # set loss functions
-        self.loss_func = nn.MSELoss(reduction='none')
-        self.centroid_loss_func = nn.MSELoss(reduction='none')
-        self.loss_func_eval = nn.MSELoss(reduction='none')
-
         # checkpointing
         self.iters = 0
         self.startEpoch = 0
@@ -411,24 +391,12 @@ class DownstreamTrainer():
     def inference(self, checkpoint_path, pretrain=True, logfile=None):
         """Initialize model and load weights for inference"""
         # 1. Initialize model architecture
-        #self.down_model = MambaHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
-        #                          d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone,
-        #                          num_embedder_layers= self.params.num_embedder_layers, 
-        #                          ).to(self.device)
-
-        #if self.params.use_attention_head:
-        #    self.down_model = AttentionHead(input_dim=self.params.embed_dim, num_layers=1, num_output_dim = self.params.num_output_classes,
-        #                  num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
-        #                  num_embedder_layers= self.params.num_embedder_layers, 
-        #                  ).to(self.device)
-        
-        #else:
         self.down_model = MambaTrackRegressionHead(
             **adapter_options(self.params), **adapter_dimensions(self.params),
             input_dim=self.params.embed_dim,
             num_output_dim=self.params.num_output_classes, d_state=64, d_conv=4, expand=2,
             num_feature_layers=self.params.num_layers_backbone,
-            num_embedder_layers=self.params.num_embedder_layers,
+            num_embedder_layers=getattr(self.params, "num_embedder_layers", 0),
             pooling=getattr(self.params, "pooling", "mean"),
             embed_method=self.params.embed_method, pe_method=self.params.pe_method,
             dropout=regression_dropout(self.params),
@@ -603,7 +571,7 @@ class DownstreamTrainer():
             d_conv=4,
             expand=2,
             num_feature_layers=self.params.num_layers_backbone,
-            num_embedder_layers=self.params.num_embedder_layers,
+            num_embedder_layers=getattr(self.params, "num_embedder_layers", 0),
             pooling=getattr(self.params, "pooling", "mean"),
             embed_method=self.params.embed_method,
             pe_method=self.params.pe_method,
@@ -738,15 +706,6 @@ class DownstreamTrainer():
 
             self.down_model.eval()
             print(f"✅ Model loaded from {checkpoint_path}")
-
-        
-
-        if getattr(self.params, "loss_reweight", False):
-            self.loss_bin = pickle_load(f"{self.params.stat_dir}/loss_bin_pp.pkl")
-            self.loss_weight = pickle_load(f"{self.params.stat_dir}/loss_weight_pp.pkl")
-        else:
-            self.loss_bin = None
-            self.loss_weight = None
 
         if max_optimizer_steps is not None:
             self._train_by_optimizer_step(

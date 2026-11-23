@@ -227,7 +227,7 @@ def build_head(trainer):
         d_conv=4,
         expand=2,
         num_feature_layers=params.num_layers_backbone,
-        num_embedder_layers=params.num_embedder_layers,
+        num_embedder_layers=getattr(params, "num_embedder_layers", 0),
         pooling=getattr(params, "pooling", "mean"),
         embed_method=params.embed_method,
         pe_method=params.pe_method,

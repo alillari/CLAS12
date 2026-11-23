@@ -53,6 +53,7 @@ class PretrainingIntegrationTest(unittest.TestCase):
             trainer.save_checkpoint(trainer.checkpoint_path)
             saved = torch.load(trainer.checkpoint_path, map_location="cpu", weights_only=False)
             self.assertEqual(saved["hilbert_angular_grid"], "unit_v2")
+            self.assertEqual(saved["backbone_config"]["coord_system"], "eta")
             self.assertEqual(saved["backbone_config"]["backbone_version"], "transformer")
             resolved = resolve_backbone({"checkpoint": trainer.checkpoint_path})
             build_backbone(resolved["config"]).load_state_dict(saved["model_state"], strict=True)
@@ -64,6 +65,24 @@ class PretrainingIntegrationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unmarked historical checkpoints"):
                 make_trainer(root, "transformer")
             make_trainer(root, "transformer", hilbert_angular_grid="legacy_v1")
+
+    def test_geometric_chord_and_checkpoint_contract(self):
+        with tempfile.TemporaryDirectory() as root:
+            options = dict(coord_system="theta", knn_rule="geometric", use_sincos_target=True)
+            trainer = make_trainer(root, "transformer", **options)
+            inputs = torch.rand(1, 2, 3)
+            targets = torch.tensor([[[.25, 0., .5], [-100., -100., -100.]]])
+            pred = torch.tensor([[[.75, 0., 1., .25], [2., 2., 2., 2.]]], requires_grad=True)
+            with patch.object(trainer.model, "forward", return_value=pred):
+                errors = trainer._squared_errors(inputs, targets, targets != -100)
+            torch.testing.assert_close(errors, torch.tensor([.5**2 + 4/(2*torch.pi)**2 + .25**2]))
+            errors.sum().backward()
+            self.assertEqual(pred.grad[:, 1].abs().sum(), 0.)
+            trainer.save_checkpoint(trainer.checkpoint_path)
+            self.assertEqual(resolve_backbone({"checkpoint": trainer.checkpoint_path})["config"]["coord_system"], "theta")
+            make_trainer(root, "transformer", **options)
+            with self.assertRaisesRegex(ValueError, "objective mismatch"):
+                make_trainer(root, "transformer", **dict(options, knn_rule="distance"))
 
     def test_short_cli_uses_the_hdf5_recipe(self):
         with patch("sys.argv", ["train.pretrain", "--data-root", "/sample/skim"]), \

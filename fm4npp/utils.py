@@ -831,6 +831,25 @@ def cartesian_to_polar_batched(arr):
     eta = torch.arctanh(z / np.sqrt(x**2 + y**2 + z**2))
     return torch.stack([eta, phi, r], axis=-1)
 
+def cvt_angular_limits(coord_system):
+    """Training normalization for the first angular coordinate of a CVT token."""
+    if coord_system == 'eta':
+        return {'min': -2.5, 'max': 1.5}
+    if coord_system == 'theta':
+        return {'min': math.radians(32.8), 'max': math.radians(167.0)}
+    raise ValueError(f"Unknown CVT coord_system {coord_system!r}; expected eta or theta")
+
+
+def cartesian_to_detector_batched(arr, coord_system):
+    if coord_system == 'eta':
+        return cartesian_to_polar_batched(arr)
+    if coord_system != 'theta':
+        raise ValueError(f"Unknown CVT coord_system {coord_system!r}")
+    x, y, z = arr.unbind(-1)
+    r = torch.sqrt(x.square() + y.square())
+    return torch.stack((torch.atan2(r, z), torch.atan2(y, x), r), dim=-1)
+
+
 def unit_test_on_batched(arr):
     ## Non-batch version
     nonbatch = []

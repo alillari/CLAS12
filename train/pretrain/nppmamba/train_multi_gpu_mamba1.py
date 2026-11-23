@@ -269,6 +269,11 @@ class Trainer():
                 group = self.optimizer.param_groups[index]
                 group['lr'] /= self.mup_matrix_ratio
 
+    def _objective_config(self):
+        return dict(coord_system=getattr(self.params, 'coord_system', 'eta'),
+                    knn_rule=getattr(self.params, 'knn_rule', 'distance'),
+                    use_sincos_target=getattr(self.params, 'use_sincos_target', False))
+
     def restore_checkpoint(self):
         """Restore from checkpoint if exists"""
         if os.path.isfile(self.checkpoint_path):
@@ -276,6 +281,10 @@ class Trainer():
                 print(f"Loading checkpoint from {self.checkpoint_path}")
 
             checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
+            legacy = dict(coord_system='eta', knn_rule='distance', use_sincos_target=False)
+            saved = checkpoint.get('pretraining_objective', legacy)
+            if saved != self._objective_config():
+                raise ValueError(f"Pretraining objective mismatch: checkpoint {saved}, requested {self._objective_config()}")
             validate_checkpoint_hilbert_grid(checkpoint, self.params)
             validate_checkpoint_architecture(checkpoint, self.model, 'backbone')
 
@@ -319,6 +328,7 @@ class Trainer():
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
             'validation_metric': VALIDATION_METRIC,
+            'pretraining_objective': self._objective_config(),
             'hilbert_angular_grid': self.params.hilbert_angular_grid,
             'backbone_architecture': architecture_metadata(self.model),
             'backbone_config': export_backbone_config(self.params, self.model),
@@ -342,6 +352,14 @@ class Trainer():
 
     def _squared_errors(self, inputs, targets, mask):
         predictions = self.model(inputs)[:, :targets.size(1)]
+        if getattr(self.params, 'use_sincos_target', False):
+            pred = predictions.unflatten(-1, (-1, 4))
+            angular, phi, radius = targets.unflatten(-1, (-1, 3)).unbind(-1)
+            phi = phi * (2 * torch.pi) - torch.pi
+            chord = (pred[..., 1] - phi.sin()).square() + (pred[..., 2] - phi.cos()).square()
+            errors = torch.stack(((pred[..., 0] - angular).square(), chord / (2 * torch.pi)**2,
+                                  (pred[..., 3] - radius).square()), dim=-1)
+            return errors.flatten(-2).masked_fill(~mask, 0.).sum(dim=(1, 2))
         return (predictions - targets).masked_fill(~mask, 0.).square().sum(dim=(1, 2))
 
     def train_one_epoch(self):

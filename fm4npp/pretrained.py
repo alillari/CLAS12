@@ -25,7 +25,7 @@ MODEL_KEYS = ("backbone_version", "embed_dim", "num_layers_backbone", "klen",
               "dropout", "num_heads_backbone", "backbone_sequence_encoding",
               "backbone_rope_theta", "backbone_mlp_ratio", "mlp_ratio", "window_size",
               "seq_len", "proj_dim", *BLOCK_KEYS)
-INPUT_KEYS = ("input_layout", "input_representation", "serialization", "clas12_band_config",
+INPUT_KEYS = ("coord_system", "input_layout", "input_representation", "serialization", "clas12_band_config",
               "hilbert_angular_grid", "use_sincos_target", "voxelize", "space_filling_order",
               "space_filling_curve", "order", "rep_aaai", "nexttoken", "aux_extra_feature")
 CONFIG_KEYS = frozenset((*MODEL_KEYS, *INPUT_KEYS))
@@ -291,6 +291,7 @@ def export_backbone_config(params, model):
     result = dict(model._backbone_config)
     values = _mapping(params)
     result.update({key: values[key] for key in INPUT_KEYS if key in values})
+    result.setdefault("coord_system", "eta")
     return result
 
 

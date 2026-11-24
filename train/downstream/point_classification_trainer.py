@@ -44,6 +44,7 @@ from fm4npp.models.rmsnorm import RMSNorm
 from fm4npp.models.mamba2 import Mamba2
 
 from train.downstream.model import *
+from train.downstream.feature_mix import attach_backbone_norm
 from train.downstream.loss import *
 from train.downstream.downstream_util import *
 from train.downstream.noise_metrics import (
@@ -432,6 +433,7 @@ class DownstreamTrainer():
                           num_heads = 4, num_feature_layers=self.params.num_layers_backbone,
                           num_embedder_layers= self.params.num_embedder_layers, 
                           ).to(self.device)
+            attach_backbone_norm(self.down_model, getattr(self, "model", None))  # feature_mix='last'
         
         else:
             self.down_model = MambaHead(**adapter_options(self.params), **adapter_dimensions(self.params),
@@ -441,6 +443,7 @@ class DownstreamTrainer():
                                       d_state=64, d_conv=4, expand=2, num_feature_layers=self.params.num_layers_backbone,
                                       num_embedder_layers= self.params.num_embedder_layers, 
                                       ).to(self.device)
+            attach_backbone_norm(self.down_model, getattr(self, "model", None))  # feature_mix='last'
 
     
         return self.down_model

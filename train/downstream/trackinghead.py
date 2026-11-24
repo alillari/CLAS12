@@ -183,7 +183,7 @@ class MambaAttentionHead(nn.Module):
                                  **(dict(pos_dim=pos_dim, aux_dim=aux_dim) if embed_method == "pos_plus_aux" else {}))
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
         # None for the historical raw mix (state dict unchanged); see feature_mix.py
-        self.feature_standardizer = make_layer_mixer(num_feature_layers, input_dim, feature_mix, feature_stat_batches)
+        self.feature_mixer = make_layer_mixer(num_feature_layers, input_dim, feature_mix, feature_stat_batches)
 
     def make_predictions(self, refined_protos, point_features):
         # Prepare prototypes
@@ -264,7 +264,7 @@ class MambaAttentionHead(nn.Module):
             x = x.masked_fill(~padding_mask[..., None], 0.)
         # Input processing
         if pretrain:
-            x = mix_layers(feature, self.weighted_avg_weights, self.feature_standardizer,
+            x = mix_layers(feature, self.weighted_avg_weights, self.feature_mixer,
                            valid_tokens(x, padding_mask))
         else:
             x = self.embedder(x)

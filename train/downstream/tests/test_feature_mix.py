@@ -7,7 +7,8 @@ from pathlib import Path
 import torch
 
 from fm4npp.models.mamba_config import adapter_options, architecture_metadata, validate_checkpoint_architecture
-from train.downstream.feature_mix import LayerStandardizer, mix_layers, valid_tokens
+from fm4npp.models.rmsnorm import RMSNorm
+from train.downstream.feature_mix import LastLayerNorm, LayerStandardizer, attach_backbone_norm, mix_layers, valid_tokens
 from train.downstream.model import AttentionHead, MambaHead, MambaTrackRegressionHead
 from train.downstream.trackinghead import MambaAttentionHead
 
@@ -43,11 +44,33 @@ class FeatureMixTest(unittest.TestCase):
         torch.testing.assert_close(mix_layers(f, w), old, rtol=0, atol=0)
         for cls in HEADS:
             model = head(cls)
-            self.assertIsNone(model.feature_standardizer)
-            self.assertFalse(any("feature_standardizer" in k for k in model.state_dict()))
+            self.assertIsNone(model.feature_mixer)
+            self.assertFalse(any("feature_mixer" in k for k in model.state_dict()))
             self.assertNotIn("feature_mix", architecture_metadata(model))
         with self.assertRaisesRegex(ValueError, "feature_mix"):
             adapter_options({"feature_mix": "layernorm"})
+
+    def test_last_is_the_backbone_final_norm_of_the_last_layer(self):
+        f, w = massive_features(), torch.randn(3)
+        for norm in (RMSNorm(32), torch.nn.LayerNorm(32)):
+            with torch.no_grad():
+                norm.weight.uniform_(0.5, 2)
+                if isinstance(norm, torch.nn.LayerNorm):
+                    norm.bias.uniform_(-1, 1)
+            mixer = LastLayerNorm(32)
+            with self.assertRaisesRegex(RuntimeError, "attach_backbone_norm"):
+                mix_layers(f, w, mixer)
+            mixer.attach(norm)
+            with torch.no_grad():
+                torch.testing.assert_close(mix_layers(f, w, mixer), norm(f[-1]))
+        model = head(MambaHead, feature_mix="last")
+        self.assertEqual(architecture_metadata(model)["feature_mix"], "last")
+        backbone = torch.nn.Module(); backbone.norm = RMSNorm(32)
+        with torch.no_grad():
+            backbone.norm.weight.fill_(3.)
+        attach_backbone_norm(model, backbone)
+        self.assertEqual(model.feature_mixer.weight.unique().item(), 3.)
+        attach_backbone_norm(head(MambaHead), backbone)        # no effect on the other mixes
 
     def test_standardize_uses_valid_clusters_then_freezes(self):
         s = LayerStandardizer(3, 32, stat_batches=2).train()
@@ -86,9 +109,11 @@ class FeatureMixTest(unittest.TestCase):
 
     def test_heads_train_save_and_reload(self):
         torch.manual_seed(0)
-        for cls in HEADS:
-            model = head(cls, feature_mix="standardize", feature_stat_batches=1)
-            self.assertEqual(architecture_metadata(model)["feature_mix"], "standardize")
+        backbone = torch.nn.Module(); backbone.norm = RMSNorm(32)
+        for cls, mix in [(c, m) for c in HEADS for m in ("standardize", "last")]:
+            model = head(cls, feature_mix=mix, feature_stat_batches=1)
+            attach_backbone_norm(model, backbone)
+            self.assertEqual(architecture_metadata(model)["feature_mix"], mix)
             x = torch.rand(2, 10, 3)
             x[1, 8:] = -100
             mask = valid_tokens(x, None)
@@ -100,9 +125,10 @@ class FeatureMixTest(unittest.TestCase):
                 path = Path(tmp) / "head.pth"
                 torch.save({"model_state_dict": model.state_dict(), "adapter_architecture": architecture_metadata(model)}, path)
                 saved = torch.load(path, weights_only=False)
-            again = head(cls, feature_mix="standardize")
+            again = head(cls, feature_mix=mix)
             again.load_state_dict(saved["model_state_dict"], strict=True)
-            torch.testing.assert_close(again.feature_standardizer.mean, model.feature_standardizer.mean)
+            for name, buf in model.feature_mixer.named_buffers():
+                torch.testing.assert_close(getattr(again.feature_mixer, name), buf)
             validate_checkpoint_architecture(saved, again, "adapter")
             with self.assertRaises(ValueError):                   # a raw head must not load these weights
                 validate_checkpoint_architecture(saved, head(cls), "adapter")

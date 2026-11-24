@@ -145,7 +145,7 @@ def main():
     ap.add_argument('arm', choices=PRETRAIN)
     ap.add_argument('--probe', action='store_true')
     ap.add_argument('--task', choices=TASKS, help='Run one task with the same matched configuration')
-    ap.add_argument('--feature-mix', default='raw', choices=('raw', 'standardize'),
+    ap.add_argument('--feature-mix', default='raw', choices=('raw', 'standardize', 'last'),
                     help="How the adapter combines the backbone's layers; raw reproduces the original fits")
     args = ap.parse_args()
     configs = {task: configure(args.arm, task, args.feature_mix) for task in TASKS}

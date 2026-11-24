@@ -13,7 +13,7 @@ import torch
 MAMBA_VERSIONS = {"mamba1", "mamba2", "mamba3"}
 ADAPTER_VERSIONS = MAMBA_VERSIONS | {"transformer"}
 BACKBONE_VERSIONS = ADAPTER_VERSIONS | {"longformer", "linformer"}
-FEATURE_MIXES = ("raw", "standardize")  # train/downstream/feature_mix.py
+FEATURE_MIXES = ("raw", "standardize", "last")  # train/downstream/feature_mix.py
 
 
 def value(params, key, default=None):
@@ -261,8 +261,9 @@ def architecture_metadata(model):
     }
     if hasattr(model, "_transformer_input_config"):
         metadata["input_embedding"] = model._transformer_input_config
-    if getattr(model, "feature_standardizer", None) is not None:
-        metadata["feature_mix"] = "standardize"  # raw heads add nothing: old metadata unchanged
+    mixer = getattr(model, "feature_mixer", None)
+    if mixer is not None:  # raw heads add nothing: old metadata unchanged
+        metadata["feature_mix"] = "last" if hasattr(mixer, "attach") else "standardize"
     return metadata
 
 

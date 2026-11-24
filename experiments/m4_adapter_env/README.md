@@ -44,9 +44,15 @@ the original runs are in the package (`FIT_SETTINGS.md`, `REPLAY.md`, `provenanc
 
 ## Layer mixing study
 
-`--feature-mix standardize` trains the same heads with each backbone layer standardized
-before the learned layer average (`train/downstream/feature_mix.py`). The default `raw`
-reproduces the original fits. The motivation: the geometric θ M4's residual stream grows
+`--feature-mix` selects how the heads combine the frozen backbone's layers
+(`train/downstream/feature_mix.py`):
+
+| Value | Input to the head |
+|---|---|
+| `raw` (default) | learned average of the raw layer outputs; reproduces the original fits |
+| `standardize` | learned average after standardizing each layer's channels |
+| `last` | the final layer through the backbone's own final norm (what pretraining read) |
+ The motivation: the geometric θ M4's residual stream grows
 from ~130 to ~11,600 across its layers, with one near-constant direction added at layer 7,
 so the raw average is dominated by layers 7-12 and the mixed feature has an effective
 dimension of ~8 against ~19 for the plain backbones.

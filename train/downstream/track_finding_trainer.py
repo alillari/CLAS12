@@ -26,6 +26,7 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
+from train.downstream.feature_mix import attach_backbone_norm
 from train.downstream.input_representation import (
     AUX_REPRESENTATION, input_config, representation_input,
     validate_input_representation, validate_checkpoint_inputs,
@@ -432,6 +433,7 @@ class DownstreamTrainer():
             pos_dim=int(getattr(self.params, "pos_dim", 3)), aux_dim=int(getattr(self.params, "aux_dim", 4)),
             dropout=getattr(self.params, "downstream_dropout", 0.0),
         ).to(self.device)
+        attach_backbone_norm(self.down_model, getattr(self, "model", None))  # feature_mix='last'
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
         print(f"Total parameters in down_model: {total_params}")
@@ -721,6 +723,7 @@ class DownstreamTrainer():
             pos_dim=int(getattr(self.params, "pos_dim", 3)), aux_dim=int(getattr(self.params, "aux_dim", 4)),
             dropout=getattr(self.params, "downstream_dropout", 0.0),
         ).to(self.device)
+        attach_backbone_norm(self.down_model, getattr(self, "model", None))  # feature_mix='last'
         
         initialize_mamba2(self.down_model, 3, num_residuals=1)
 

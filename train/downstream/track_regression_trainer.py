@@ -25,6 +25,7 @@ sys.path.append('../..')
 
 from fm4npp.utils import *
 from fm4npp.pretrained import configure_pretrained_backbone, load_pretrained_checkpoint
+from train.downstream.feature_mix import attach_backbone_norm
 from train.downstream.input_representation import representation_input, validate_input_representation
 from fm4npp.datasets.dataset import *
 from fm4npp.hilbert import (
@@ -405,6 +406,7 @@ class DownstreamTrainer():
             input_representation=getattr(self.params, "input_representation", "center_only"),
             pos_dim=getattr(self.params, "pos_dim", 3), aux_dim=getattr(self.params, "aux_dim", 4),
         ).to(self.device)
+        attach_backbone_norm(self.down_model, getattr(self, "model", None))  # feature_mix='last'
 
     
         total_params = sum(p.numel() for p in self.down_model.parameters())
@@ -582,6 +584,7 @@ class DownstreamTrainer():
             pos_dim=getattr(self.params, "pos_dim", 3),
             aux_dim=getattr(self.params, "aux_dim", 4),
         ).to(self.device)
+        attach_backbone_norm(self.down_model, getattr(self, "model", None))  # feature_mix='last'
 
         #print number of parameters in the model
         total_params = sum(p.numel() for p in self.down_model.parameters())

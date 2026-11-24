@@ -13,6 +13,11 @@ selects f_l; fm4npp.models.mamba_config.adapter_options passes it to the heads.
                constant offsets and puts every layer on the same scale, so the
                learned weights alone decide each layer's share. The statistics are
                buffers of the head and are saved with its checkpoint.
+  last         only the final layer, through the backbone's own final norm: exactly
+               the representation the pretraining head read (the usual "last hidden
+               state"). The layer weights are kept but unused. The norm's parameters
+               are copied from the frozen backbone when the head is built
+               (attach_backbone_norm) and saved with the head.
 """
 import torch
 from torch import nn
@@ -72,14 +77,75 @@ class LayerStandardizer(nn.Module):
         return out.to(feature.dtype)
 
 
+class LastLayerNorm(nn.Module):
+    """The backbone's final norm applied to its last layer. The norm (RMSNorm for Mamba
+    backbones, LayerNorm for transformers) is held as frozen buffers copied by
+    attach_backbone_norm; `kind` 0 means not attached yet."""
+    RMS, LAYER = 1, 2
+
+    def __init__(self, dim):
+        super().__init__()
+        self.register_buffer("kind", torch.zeros((), dtype=torch.long))
+        self.register_buffer("eps", torch.zeros((), dtype=torch.float64))
+        self.register_buffer("weight", torch.ones(dim))
+        self.register_buffer("bias", torch.zeros(dim))
+
+    @torch.no_grad()
+    def attach(self, norm):
+        self.weight.copy_(norm.weight.detach().float())
+        if isinstance(norm, nn.LayerNorm):
+            self.kind.fill_(self.LAYER)
+            self.eps.fill_(norm.eps)
+            if norm.bias is not None:
+                self.bias.copy_(norm.bias.detach().float())
+        elif hasattr(norm, "eps") and not hasattr(norm, "bias"):
+            self.kind.fill_(self.RMS)
+            self.eps.fill_(norm.eps)
+        else:
+            raise TypeError(f"Unsupported backbone final norm {type(norm).__name__}")
+
+    def forward(self, feature, valid=None):
+        kind = int(self.kind)
+        if kind == 0:
+            raise RuntimeError("feature_mix='last' needs the backbone's final norm: call attach_backbone_norm "
+                               "after building the head, or load a checkpoint")
+        x, eps = feature[-1].float(), float(self.eps)
+        if kind == self.RMS:
+            x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps) * self.weight
+        else:
+            x = nn.functional.layer_norm(x, x.shape[-1:], self.weight, self.bias, eps)
+        return x.to(feature.dtype)
+
+
 def make_layer_mixer(num_layers, dim, feature_mix="raw", feature_stat_batches=DEFAULT_STAT_BATCHES):
     if feature_mix not in FEATURE_MIXES:
         raise ValueError(f"Unknown feature_mix {feature_mix!r}; choose one of {FEATURE_MIXES}")
-    return None if feature_mix == "raw" else LayerStandardizer(num_layers, dim, feature_stat_batches)
+    if feature_mix == "raw":
+        return None
+    if feature_mix == "last":
+        return LastLayerNorm(dim)
+    return LayerStandardizer(num_layers, dim, feature_stat_batches)
+
+
+def feature_mix_name(mixer):
+    return "raw" if mixer is None else "last" if isinstance(mixer, LastLayerNorm) else "standardize"
+
+
+def attach_backbone_norm(head, backbone):
+    """For feature_mix='last': copy the frozen backbone's final norm into the head.
+    No effect for the other mixes. Call once both are built and the backbone is loaded."""
+    head = getattr(head, "module", head)
+    mixer = getattr(head, "feature_mixer", None)
+    if isinstance(mixer, LastLayerNorm) and backbone is not None:
+        mixer.attach(getattr(backbone, "module", backbone).norm)
+    return head
 
 
 def mix_layers(feature, weights, standardizer=None, valid=None):
-    """feature (L, B, N, D) -> (B, N, D): sum_l softmax(weights)_l f_l(x_l)."""
+    """feature (L, B, N, D) -> (B, N, D): sum_l softmax(weights)_l f_l(x_l), or the
+    normed last layer for feature_mix='last'."""
+    if isinstance(standardizer, LastLayerNorm):
+        return standardizer(feature, valid)
     if standardizer is not None:
         feature = standardizer(feature, valid)
     x = feature.permute(1, 2, 0, 3)

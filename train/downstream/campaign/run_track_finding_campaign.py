@@ -336,6 +336,7 @@ def collate_summary(
                 table_row["metric_view"] = summary_data.get("metric_view", "canonical")
                 table_row["noise_attribution_mode"] = summary_data.get("noise_attribution_mode")
                 table_row["assignment_threshold"] = summary_data.get("assignment_threshold")
+                table_row["query_confidence_threshold"] = summary_data.get("query_confidence_threshold")
                 table_row["final_evaluation_events"] = summary_data.get(
                     "final_evaluation_events", summary_data.get("max_samples")
                 )

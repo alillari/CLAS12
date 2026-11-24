@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -42,6 +43,8 @@ from train.downstream.track_finding_contract import (
 )
 from track_finding_trainer import DownstreamTrainer  # noqa: E402
 from train.downstream.input_representation import representation_input
+from train.downstream.eval.finding_decoding import query_winners
+from train.downstream.eval.finding_prediction_archive import probability, sha256
 
 
 ENV_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
@@ -134,6 +137,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", help="Override output directory.")
     parser.add_argument("--max-samples", type=int, help="Override maximum evaluated events.")
     parser.add_argument("--save-per-point-predictions", action="store_true")
+    parser.add_argument("--save-raw-predictions", action="store_true",
+                        help="Export an HDF5 split's full-event assignment archive for calibration.")
+    parser.add_argument("--save-query-scores", action="store_true",
+                        help="Include all binary option-2 query candidates for joint calibration.")
     parser.add_argument(
         "--noise-attribution-mode",
         choices=("native",),
@@ -379,6 +386,48 @@ def apply_assignment_threshold(inferred: dict[str, torch.Tensor], threshold: flo
     return assignments, classes
 
 
+def binary_query_candidates(pred_dict):
+    classes = pred_dict["class_probs"]
+    if classes.shape[-1] != 2:
+        raise ValueError("A query-confidence cutoff requires a binary track/no-object head")
+    confidence = classes[..., 1]
+    scores = pred_dict["mask_probs"] * confidence[:, None, :]
+    return confidence.cpu().numpy(), scores.cpu().numpy()
+
+
+def infer_assignments(pred_dict, option, threshold, query_threshold=None, candidates=None):
+    if query_threshold is None:
+        return assign_points_to_masks(
+            {"pred_probs": pred_dict["class_probs"], "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1)},
+            option=option, threshold=threshold,
+        )
+    if option != 2:
+        raise ValueError("A query-confidence cutoff requires assignment option 2")
+    if candidates is None:
+        candidates = binary_query_candidates(pred_dict)
+    pred, scores, signal = query_winners(*candidates, query_threshold)
+    signal &= scores > threshold
+    return {"assignments": torch.from_numpy(np.where(signal, pred, -1)),
+            "classes": torch.from_numpy(signal.astype(np.int64)),
+            "scores": torch.from_numpy(scores)}
+
+
+def save_assignment_archive(path, events, contract):
+    if not events:
+        raise ValueError("Raw prediction export requires at least one complete event")
+    offsets = np.cumsum([0, *(len(event["truth"]) for event in events)], dtype=np.int64)
+    arrays = {name: np.concatenate([event[name] for event in events])
+              for name in events[0] if name != "query_confidence"}
+    if "query_confidence" in events[0]:
+        arrays["query_confidence"] = np.stack([event["query_confidence"] for event in events])
+    # Publish the complete file atomically and fail if another evaluation already wrote it.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=path.parent) as directory:
+        temporary = Path(directory) / path.name
+        np.savez_compressed(temporary, offsets=offsets, evaluation_contract=json.dumps(contract), **arrays)
+        os.link(temporary, path)
+
+
 def run_threshold_sweep(
     *,
     args: argparse.Namespace,
@@ -388,6 +437,7 @@ def run_threshold_sweep(
     match_config: MatchConfig,
     assignment_option: int,
     evaluate_coatjava: bool,
+    query_threshold: float | None = None,
 ) -> None:
     if not args.output_dir:
         raise ValueError("--assignment-thresholds requires an explicit --output-dir")
@@ -438,11 +488,7 @@ def run_threshold_sweep(
                 )
             else:
                 pred_dict = trainer.down_model(model_input, feature=None, padding_mask=valid_mask)
-            outputs = {
-                "pred_probs": pred_dict["class_probs"],
-                "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1),
-            }
-            inferred = assign_points_to_masks(outputs, option=assignment_option, threshold=0.0)
+            inferred = infer_assignments(pred_dict, assignment_option, 0.0, query_threshold)
             thresholded = {
                 threshold: apply_assignment_threshold(inferred, threshold)
                 for threshold in thresholds
@@ -544,6 +590,7 @@ def run_threshold_sweep(
         "checkpoint": str(Path(analysis["checkpoint"]).resolve()),
         "max_samples": max_samples,
         "assignment_option": assignment_option,
+        "query_confidence_threshold": query_threshold,
         "track_target_mode": str(getattr(trainer.params, "track_target_mode", "signal_only")),
         "validation_ari_mode": str(getattr(trainer.params, "validation_ari_mode", "signal")),
         "noise_attribution_mode": "native",
@@ -603,6 +650,22 @@ def main() -> None:
     params = YParams(os.path.abspath(analysis["model_yaml"]), analysis["model_config"])
     if getattr(params, "reader_type", None) == "hdf5":
         params.validation_split = analysis.get("evaluation_split", "test")
+    assignment_option = int(analysis.get("assignment_option", getattr(params, "assignment_option", 2)))
+    query_threshold = analysis.get("query_confidence_threshold")
+    if query_threshold is not None:
+        query_threshold = probability(query_threshold, "query_confidence_threshold")
+    save_queries = args.save_query_scores
+    save_raw = args.save_raw_predictions or save_queries
+    if (save_queries or query_threshold is not None) and assignment_option != 2:
+        raise ValueError("Query scores and query-confidence cutoffs require assignment option 2")
+    if save_raw:
+        if getattr(params, "reader_type", None) != "hdf5" or getattr(params, "chunk_training", False):
+            raise ValueError("Raw prediction export requires whole-event HDF5 evaluation")
+        if args.assignment_thresholds is not None:
+            raise ValueError("Raw prediction export requires ordinary evaluation without --assignment-thresholds")
+        if params.validation_split not in {"validation", "test"}:
+            raise ValueError("Raw prediction export requires the validation or test split")
+        params.return_point_ids = True
     validate_track_finding_modes(vars(params), source="evaluation model")
     evaluate_coatjava = bool(analysis.get("evaluate_coatjava", True))
     params.limit_data = True
@@ -643,10 +706,15 @@ def main() -> None:
     event_rows: list[dict[str, Any]] = []
     track_rows: list[dict[str, Any]] = []
     point_rows: list[dict[str, Any]] = []
+    raw_events: list[dict[str, Any]] = []
     per_track_metric_rows: list[dict[str, Any]] = []
+    archive_path = output_dir / "raw_predictions.npz"
+    if save_raw and archive_path.exists():
+        raise FileExistsError(archive_path)
     try:
         trainer.launch()
         evaluation_metadata = finding_evaluation_metadata(trainer.val_data_loader.dataset)
+        checkpoint_digest = sha256(checkpoint) if save_raw else None
         load_checkpoint(trainer, checkpoint, use_pretrained)
         match_config = MatchConfig(
             background_label=int(analysis.get("background_label", getattr(params, "background_label", -1))),
@@ -656,8 +724,11 @@ def main() -> None:
         )
         if match_config.background_label != evaluation_metadata["track_eligibility_contract"]["background_label"]:
             raise ValueError("Match background_label differs from the evaluation dataset's eligibility contract")
-        assignment_option = int(analysis.get("assignment_option", getattr(params, "assignment_option", 2)))
         assignment_threshold = float(analysis.get("assignment_threshold", getattr(params, "assignment_threshold", 0.0)))
+        if save_raw or query_threshold is not None:
+            probability(assignment_threshold, "assignment_threshold")
+        if save_raw and trainer.val_data_loader.dataset.split != params.validation_split:
+            raise ValueError("Loaded split differs from the requested archive split")
         momentum_scale = float(analysis.get("target_momentum_scale_to_gev",
                                            1.0 if getattr(params, "reader_type", None) == "hdf5" else 0.001))
         if getattr(params, "reader_type", None) == "hdf5" and momentum_scale != 1.0:
@@ -673,6 +744,7 @@ def main() -> None:
                 match_config=match_config,
                 assignment_option=assignment_option,
                 evaluate_coatjava=evaluate_coatjava,
+                query_threshold=query_threshold,
             )
             return
 
@@ -703,22 +775,35 @@ def main() -> None:
                     pred_dict = trainer.down_model(model_input, feature, pretrain=True, padding_mask=valid_mask)
                 else:
                     pred_dict = trainer.down_model(model_input, feature=None, padding_mask=valid_mask)
-                outputs = {
-                    "pred_probs": pred_dict["class_probs"],
-                    "pred_masks": pred_dict["mask_probs"].permute(0, 2, 1),
-                }
-                inferred = assign_points_to_masks(
-                    outputs,
-                    option=assignment_option,
-                    threshold=assignment_threshold,
-                )
+                candidates = binary_query_candidates(pred_dict) if save_queries else None
+                inferred = infer_assignments(pred_dict, assignment_option,
+                                             0.0 if save_raw else assignment_threshold,
+                                             query_threshold, candidates)
+                assignments, classes = (apply_assignment_threshold(inferred, assignment_threshold)
+                                        if save_raw else (inferred["assignments"], inferred["classes"]))
                 for sample_index in range(b):
                     if event_offset + sample_index >= max_samples:
                         break
                     valid = valid_mask[sample_index].detach().cpu().numpy().astype(bool)
                     truth = labels_device[sample_index].detach().cpu().numpy()
-                    pred = inferred["assignments"][sample_index].detach().cpu().numpy()
-                    pred_signal = (inferred["classes"][sample_index] != 0).detach().cpu().numpy()
+                    pred = assignments[sample_index].detach().cpu().numpy()
+                    pred_signal = (classes[sample_index] != 0).detach().cpu().numpy()
+                    if save_raw:
+                        raw_event = {
+                            key: batch[key][sample_index:sample_index + 1].cpu().numpy()
+                            for key in ("source_id", "original_ordinal")
+                        }
+                        raw_event.update(
+                            truth=truth[valid],
+                            pred=inferred["assignments"][sample_index].cpu().numpy()[valid],
+                            scores=inferred["scores"][sample_index].cpu().numpy()[valid],
+                            signal=inferred["classes"][sample_index].cpu().numpy()[valid] != 0,
+                            point_ids=batch["point_ids"][sample_index].cpu().numpy()[valid],
+                        )
+                        if save_queries:
+                            raw_event.update(query_confidence=candidates[0][sample_index],
+                                             candidate_scores=candidates[1][sample_index, valid])
+                        raw_events.append(raw_event)
                     reg_np = None
                     if reg is not None and trainer.val_data_loader.dataset.has_reg_target:
                         reg_np = reg[sample_index].detach().cpu().numpy()
@@ -782,6 +867,17 @@ def main() -> None:
                                 })
                 event_offset += b
 
+        if save_raw:
+            if sha256(checkpoint) != checkpoint_digest:
+                raise RuntimeError("Adapter checkpoint changed during raw prediction export")
+            save_assignment_archive(archive_path, raw_events, {
+                "split": trainer.val_data_loader.dataset.split,
+                "checkpoint_sha256": checkpoint_digest,
+                "backbone_sha256": trainer.backbone_sha256 if use_pretrained else None,
+                "assignment_option": assignment_option,
+                "query_confidence_threshold": query_threshold,
+                "track_eligibility_contract": evaluation_metadata["track_eligibility_contract"],
+            })
         methods = sorted({row["method"] for row in event_rows})
         method_summaries = {
             method: summarize_event_metrics([
@@ -822,6 +918,7 @@ def main() -> None:
             "noise_attribution_mode": "native",
             "assignment_option": assignment_option,
             "assignment_threshold": assignment_threshold,
+            "query_confidence_threshold": query_threshold,
             "max_samples": requested_final_evaluation_events,
             "final_evaluation_events": requested_final_evaluation_events,
             "background_label": match_config.background_label,
@@ -839,6 +936,8 @@ def main() -> None:
             "coatjava_background_label": int(analysis.get("coatjava_background_label", -1)),
             "momentum_binned_metrics_available": any(row["p_gev"] is not None for row in per_track_metric_rows),
         }
+        if save_raw:
+            summary["raw_prediction_archive"] = archive_path.name
         write_json(output_dir / "summary.json", summary)
         write_csv(output_dir / "per_event_metrics.csv", event_rows)
         write_csv(

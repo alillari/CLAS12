@@ -5,22 +5,38 @@ support arbitrary model names and cohort sizes. They require NumPy, SciPy and
 scikit-learn; plotting also uses Matplotlib. Neither tool imports the trainer or
 runs inference.
 
-## Select an assignment threshold
+## Export predictions and select an assignment threshold
+
+For an HDF5 checkpoint, set `evaluation_split: validation` in the analysis YAML
+and run the ordinary evaluator once. Export the test split with a separate YAML
+and destination if you want the calibrator to report both splits from archives.
+Use the same model profile, checkpoint and decoder settings for both exports.
+
+```bash
+python -m train.downstream.eval.evaluate_track_finding \
+  --analysis-config /path/to/validation_analysis.yaml \
+  --output-dir /path/to/validation_eval --save-raw-predictions
+```
+
+The evaluator writes `raw_predictions.npz` beside its ordinary results. The
+archive captures winners and scores before the configured assignment cut. The
+export requires whole HDF5 events and carries the original cluster indices
+through serialization. Use `--save-query-scores` in place of
+`--save-raw-predictions` to retain all binary option-2 candidates for a query
+confidence scan.
 
 ```bash
 python -m train.downstream.eval.calibrate_track_finding \
-  --validation /path/to/validation_predictions.npz \
-  --metadata /path/to/validation_metadata.npz \
-  --test /path/to/test_predictions.npz \
-  --test-metadata /path/to/test_metadata.npz \
-  --truth-policy primary_mc_min4_v1 \
+  --validation /path/to/validation_eval/raw_predictions.npz \
   --objective dice \
   --output-dir /path/to/new_dice_calibration
 ```
 
-Omit the metadata options when the prediction archives already contain the
-required metadata. Omit both test options for calibration without held-out
-reporting. Run once per model; no model tiers or training sizes are assumed.
+Add `--test /path/to/test_eval/raw_predictions.npz` for held-out reporting.
+Older archives can supply aligned sidecars via `--metadata` and
+`--test-metadata`. Run once per checkpoint. For the ordinary held-out evaluator,
+copy the selected `threshold` into `analysis.assignment_threshold` and set
+`analysis.evaluation_split: test`.
 
 The two supported objectives are:
 
@@ -48,16 +64,46 @@ Cached contingency-table results are checked against the shared evaluator at
 the selected point. Regression tests cover other thresholds, sparse IDs,
 matching ties, empty events and asymmetric quality cuts.
 
+### Compare a fixed query cutoff with a joint scan
+
+Use archives from `--save-query-scores` for both arms. Run two calibrations with
+the same assignment grid, assignment refinement steps, match cuts and optional
+F1 floor. For the first, pass `--fixed-query-confidence 0.5`. For the second,
+replace that option with a query grid such as
+`--query-confidence-thresholds 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0`.
+Each joint refinement stage searches both axes around the current best point.
+Specify `--query-refine-steps` to set one step per assignment refinement stage.
+The default query steps are ten times the assignment steps, capped at 1.
+The query cut is strict. The cluster goes to the highest-scoring eligible
+query only if its product score is strictly above the assignment cutoff.
+
+`--min-matched-track-f1` restricts validation selection to scanned points
+meeting an absolute floor in [0, 1]. Matched-track F1 is
+`2 * n_qualified_tracks / (n_true_tracks + n_pred_tracks)` and uses the
+specified IoU, purity and completeness cuts. To use the historical 0.5
+matching cuts, pass `--min-iou 0.5 --min-purity 0.5 --min-completeness 0.5`.
+Both selected validation and fixed test reports include this F1 alongside
+mean Dice and pooled hit purity/completeness. The floor belongs to validation
+selection. If every scanned point misses it, calibration fails.
+
+Use separate output directories for the two scans and supply the same
+held-out archive to both. The evaluator accepts the selected
+`query_confidence_threshold` in the analysis YAML with assignment option 2
+and a binary track/no-object head. Its existing query gate applies when the
+field is omitted.
+
 Outputs in a **new** directory are `validation_scan.json`, `selection.json` and
 `summary.json`. The validation choice and its receipt are persisted before test
 predictions are opened; its hash is checked after reporting. When test data are
 supplied, validation and test must carry physical identities and must be disjoint.
+Evaluator-produced archive pairs also verify the split, adapter and backbone
+digests, assignment settings and truth policy.
 If held-out validation fails, the selection remains available and no successful
 summary is written. Existing outputs are never overwritten.
 
 ## Archive contract
 
-Every NPZ uses one-dimensional flat arrays plus complete-event offsets:
+An NPZ uses flattened cluster arrays plus complete-event offsets:
 
 | Field | Contract |
 | --- | --- |
@@ -67,6 +113,8 @@ Every NPZ uses one-dimensional flat arrays plus complete-event offsets:
 | `scores`, `signal` | Required for raw candidates: finite scores and boolean native gate |
 | `source_id`, `original_ordinal` | One integer per event; together form its unique physical identity |
 | `point_ids` | Unique original cluster indices within each event |
+| `query_confidence`, `candidate_scores` | Optional binary option-2 probabilities shaped `(n_events, n_queries)` and product scores shaped `(n_points, n_queries)` |
+| `evaluation_contract` | Optional scalar JSON with split, checkpoint digests, assignment settings and eligibility policy |
 | `provenance` | Optional shared `ClusterProvenance` integer codes |
 | `xyz` | Optional finite `(n_points, 3)` saved cluster centers in cm |
 | `endpoints` | Optional finite `(n_points, 6)` measurement-support endpoints in cm |

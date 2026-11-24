@@ -26,10 +26,31 @@ From the repository root, inside the GPU container, with these mounts (as on a02
 | `/results` | empty writable output directory, one per run |
 
 ```bash
+export PYTHONPATH=$PWD
 python3 experiments/m4_adapter_env/run_matched.py adopted --probe          # preflight only
 python3 experiments/m4_adapter_env/run_matched.py adopted --task finding    # one task
+# tuned finding cutoffs (validation search, then test), as in the package's calibration/
+M4_FINDING_FIT=/results/finding M4_FINDING_SCORE=/results/calibration \
+    python3 experiments/m4_adapter_env/calibrate_finding.py
 ```
+
+Arms: `plain` (η), `adopted` (geometric θ) and `plain_theta`; the last reads the
+backbone-only export `plain_theta/plain_theta_m4.tar` from the package's `backbones/`, which
+is the file its original heads loaded (`run_downstream.py` registered it the same way).
 
 The preflight checks the skim manifest, the backbone SHA-256 and that downstream tokens
 equal the pretraining tokens for eight events. Results, settings and per-fit receipts of
 the original runs are in the package (`FIT_SETTINGS.md`, `REPLAY.md`, `provenance/`).
+
+## Layer mixing study
+
+`--feature-mix standardize` trains the same heads with each backbone layer standardized
+before the learned layer average (`train/downstream/feature_mix.py`). The default `raw`
+reproduces the original fits. The motivation: the geometric θ M4's residual stream grows
+from ~130 to ~11,600 across its layers, with one near-constant direction added at layer 7,
+so the raw average is dominated by layers 7-12 and the mixed feature has an effective
+dimension of ~8 against ~19 for the plain backbones.
+
+```bash
+python3 experiments/m4_adapter_env/run_matched.py adopted --task finding --feature-mix standardize
+```

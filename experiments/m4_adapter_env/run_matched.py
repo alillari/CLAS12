@@ -17,6 +17,9 @@ PRETRAIN = {
               'a6ea644b035cc9cb851824b7999a5d7895d45e973ad52e87fdc99bfebf00ed61'),
     'adopted': ('theta', 'mike_adopted_m4_20261123/ckpt_best.tar',
                 '7740ceb44b0349701121997093d01f920e59612c9626f4e547740ddc618cc26c'),
+    # backbone-only export the plain theta heads loaded (package backbones/plain_theta/)
+    'plain_theta': ('theta', 'plain_theta/plain_theta_m4.tar',
+                    '75c09f2e315cbed891a5d4d3f811ce1f11a7cc838136fa631d4ee60fc203dcff'),
 }
 Y = YAML(typ='safe')
 TASKS = {'noise': 'point_classification', 'finding': 'track_finding', 'momentum': 'track_regression'}
@@ -26,7 +29,7 @@ def save(path, obj):
     path.write_text(json.dumps(obj, indent=2, allow_nan=False) + '\n')
 
 
-def configure(arm, task):
+def configure(arm, task, feature_mix='raw'):
     angle, filename, digest = PRETRAIN[arm]
     checkpoint = str(Path('/backbones') / filename)
     d = ROOT / task
@@ -41,6 +44,8 @@ def configure(arm, task):
     model.update(pretrained_backbone=descriptor, pretrained_ckpt=checkpoint, data_root=str(SKIM),
                  data_root_train=str(SKIM), data_root_test=str(SKIM), stat_dir='/cvt/stats',
                  checkpoint_dir=str(d / 'checkpoints'), downstream_dir=str(d), limit_size=100000)
+    if feature_mix != 'raw':
+        model['feature_mix'] = feature_mix  # train/downstream/feature_mix.py
     if task == 'momentum':
         model['regression_target_stats'] = str(RECIPES / 'momentum_100000_stats.json')
     if task == 'finding':
@@ -140,8 +145,10 @@ def main():
     ap.add_argument('arm', choices=PRETRAIN)
     ap.add_argument('--probe', action='store_true')
     ap.add_argument('--task', choices=TASKS, help='Run one task with the same matched configuration')
+    ap.add_argument('--feature-mix', default='raw', choices=('raw', 'standardize'),
+                    help="How the adapter combines the backbone's layers; raw reproduces the original fits")
     args = ap.parse_args()
-    configs = {task: configure(args.arm, task) for task in TASKS}
+    configs = {task: configure(args.arm, task, args.feature_mix) for task in TASKS}
     preflight(args.arm, configs)
     if args.probe:
         return

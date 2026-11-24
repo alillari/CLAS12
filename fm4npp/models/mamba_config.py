@@ -13,6 +13,7 @@ import torch
 MAMBA_VERSIONS = {"mamba1", "mamba2", "mamba3"}
 ADAPTER_VERSIONS = MAMBA_VERSIONS | {"transformer"}
 BACKBONE_VERSIONS = ADAPTER_VERSIONS | {"longformer", "linformer"}
+FEATURE_MIXES = ("raw", "standardize")  # train/downstream/feature_mix.py
 
 
 def value(params, key, default=None):
@@ -31,7 +32,18 @@ def adapter_options(params):
     if version not in ADAPTER_VERSIONS:
         raise ValueError(f"Unknown adapter_version {version!r}; choose {sorted(ADAPTER_VERSIONS)}")
     options = transformer_options(params, "adapter") if version == "transformer" else block_options(params, "adapter")
-    return {"adapter_version": version, "adapter_block_kwargs": options}
+    return {"adapter_version": version, "adapter_block_kwargs": options, **feature_mix_options(params)}
+
+
+def feature_mix_options(params):
+    """How the adapter combines the backbone's layer outputs; empty for the historical
+    raw mix, so heads built without the option are unchanged."""
+    mix = value(params, "feature_mix", None) or "raw"
+    if mix not in FEATURE_MIXES:
+        raise ValueError(f"Unknown feature_mix {mix!r}; choose {list(FEATURE_MIXES)}")
+    if mix == "raw":
+        return {}
+    return {"feature_mix": mix, "feature_stat_batches": int(value(params, "feature_stat_batches", None) or 200)}
 
 
 def transformer_options(params, prefix):
@@ -249,6 +261,8 @@ def architecture_metadata(model):
     }
     if hasattr(model, "_transformer_input_config"):
         metadata["input_embedding"] = model._transformer_input_config
+    if getattr(model, "feature_standardizer", None) is not None:
+        metadata["feature_mix"] = "standardize"  # raw heads add nothing: old metadata unchanged
     return metadata
 
 

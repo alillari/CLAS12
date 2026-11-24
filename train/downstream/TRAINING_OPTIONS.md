@@ -103,6 +103,7 @@ limit and task filters.
 | `klen` | Number of coordinate triples in the backbone's next-point output (`3*klen`). Required for checkpoint compatibility even when only layer features are used. |
 | `backbone_*` | Overrides shared block options for the backbone. See [Mamba support](../MAMBA_SUPPORT.md). |
 | `adapter_version`, `adapter_*` | Independently select the head's Mamba family/block settings. They do not change an attention decoder or the frozen backbone. |
+| `feature_mix`, `feature_stat_batches` | How a frozen-backbone head combines the backbone's per-layer outputs before its input projection. `raw` (default) is the historical softmax-weighted sum of the raw residual streams, so a layer with a large stream dominates. `standardize` first centres and scales each layer's channels with statistics from the real clusters of the first `feature_stat_batches` (default 200) training batches, then frozen and saved with the head. See [feature_mix.py](feature_mix.py). |
 
 ### Track-finding head and objective
 

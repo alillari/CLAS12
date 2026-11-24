@@ -4,6 +4,7 @@ import torch.nn as nn
 from fm4npp.models.embed import *
 from fm4npp.models.rmsnorm import RMSNorm
 from fm4npp.models.mamba_config import build_adapter_layer, apply_adapter_layer
+from train.downstream.feature_mix import make_layer_mixer, mix_layers, valid_tokens
 
 
 class SelfAttentionBlock(nn.Module):
@@ -96,7 +97,8 @@ class MambaAttentionHead(nn.Module):
     def __init__(self, input_dim, embed_dim=256, num_layers=3, d_state=64, d_conv=4, expand=2, 
                  num_embedder_layers=1, d_state_embedder=64, d_conv_embedder=4, expand_embedder=2,
                  num_feature_layers=15, num_output_dim=256, num_prototypes=10, num_heads=4, ffn_dim=512,
-                 num_self_attn_layers=2, softmax_mask=False, do_masked_attn=True, return_embedding=False, embed_method='add', pe_method = 'nerf', dropout=0.0, *, adapter_version="mamba2", adapter_block_kwargs=None, pos_dim=3, aux_dim=4):
+                 num_self_attn_layers=2, softmax_mask=False, do_masked_attn=True, return_embedding=False, embed_method='add', pe_method = 'nerf', dropout=0.0, *, adapter_version="mamba2", adapter_block_kwargs=None, pos_dim=3, aux_dim=4,
+                 feature_mix="raw", feature_stat_batches=200):
         super().__init__()
         self.adapter_version = adapter_version
         if adapter_version == "transformer" and num_layers < 1:
@@ -180,6 +182,8 @@ class MambaAttentionHead(nn.Module):
         self.embedder = Embedder(pe_method=pe_method, embed_dim=input_dim,
                                  **(dict(pos_dim=pos_dim, aux_dim=aux_dim) if embed_method == "pos_plus_aux" else {}))
         self.weighted_avg_weights = nn.Parameter(torch.ones(num_feature_layers))
+        # None for the historical raw mix (state dict unchanged); see feature_mix.py
+        self.feature_standardizer = make_layer_mixer(num_feature_layers, input_dim, feature_mix, feature_stat_batches)
 
     def make_predictions(self, refined_protos, point_features):
         # Prepare prototypes
@@ -260,11 +264,8 @@ class MambaAttentionHead(nn.Module):
             x = x.masked_fill(~padding_mask[..., None], 0.)
         # Input processing
         if pretrain:
-            x = feature.permute(1, 2, 0, 3)
-            weights = torch.softmax(self.weighted_avg_weights, dim=0)
-            # Ensure dtype consistency for einsum operation
-            weights = weights.to(x.dtype)
-            x = torch.einsum('bsnd,n->bsd', x, weights)
+            x = mix_layers(feature, self.weighted_avg_weights, self.feature_standardizer,
+                           valid_tokens(x, padding_mask))
         else:
             x = self.embedder(x)
             if isinstance(x, tuple):

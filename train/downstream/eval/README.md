@@ -67,6 +67,7 @@ finding takes those fields from the analysis YAML.
 | `evaluate_coatjava` | Finding baseline evaluation; true requires its segmentation sidecar. Set false for adapter-only diagnostics without that sidecar. |
 | `save_per_point_predictions` / `--save-per-point-predictions` | Finding point assignments; off by default because this can produce a large table. |
 | `assignment_option`, `assignment_threshold` | Finding assignment policy and rejection threshold. Use the same operating point across comparisons. |
+| `query_confidence_threshold` | Optional minimum track-class probability for binary finding option 2, applied before clusters choose a query. |
 | `match_iou_threshold`, `match_min_purity`, `match_min_efficiency` | Finding truth-match metric cuts. Changing them changes the reported task definition. |
 | `momentum_bins_gev`, `pt_bins_gev`, `theta_bins_deg`, `pid_labels` | Differential result bins/labels; fields depend on the task. Check occupancy and compare with common binning. |
 | `target_momentum_scale_to_gev`, `auxiliary_momentum_scale_to_gev` | Momentum unit conversions. Current MC targets use 0.001 and auxiliary momenta use 1.0. Finding uses the target scale for momentum-binned diagnostics. |
@@ -94,11 +95,11 @@ reports the held-out partition separately. Inspect `threshold_metrics.csv`,
 `threshold_sweep.json` and `selected_heldout_summary.json`; selecting an operating
 point from final test performance would reuse the test labels.
 
-For validation-only **Dice or quality-efficiency calibration from saved raw
-predictions**, and paired failure-event selection/plots with arbitrary named
-models, see [Saved-prediction finding analysis](FINDING_ANALYSIS.md). Those CPU
-tools use the MC reconstruction evaluator, retain the native gate, verify paired
-point identities and keep held-out reporting separate from threshold selection.
+For validation-only **Dice or quality-efficiency calibration**, export raw
+predictions with `--save-raw-predictions` or export all candidates with
+`--save-query-scores` to tune query confidence as well. The
+[saved-prediction guide](FINDING_ANALYSIS.md) covers matched-track F1 floors,
+held-out reporting and paired failure-event diagnostics.
 
 ## Track-finding background policy
 

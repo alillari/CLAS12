@@ -9,9 +9,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
 from train.downstream.eval import evaluate_track_finding as evaluator
+from train.downstream.eval.finding_prediction_archive import load_archive
 from fm4npp.datasets.track_eligibility import primary_track_eligibility_contract
 
 with patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "campaign"), *sys.path]):
@@ -145,6 +147,74 @@ class TrackFindingRetirementTest(unittest.TestCase):
                         self.assertTrue(headlines)
                         for headline in headlines:
                             self.assertEqual(headline['track_eligibility_contract'], primary_track_eligibility_contract())
+
+    def test_exported_cutoffs_match_direct_evaluation(self):
+        points = torch.zeros(1, 7, 3)
+        points[:, -1] = -100
+        batch = dict(points=points, labels=torch.tensor([[0, 0, 0, 0, -1, -1, -100]]),
+                     point_ids=torch.tensor([[2, 0, 1, 3, 5, 4, -1]]),
+                     source_id=torch.tensor([17]), original_ordinal=torch.tensor([21]),
+                     source_event_index=torch.tensor([0]))
+        probabilities = torch.tensor([[[.25, .75], [.625, .375]]])
+        masks = torch.tensor([[[.5, 1.], [.25, 1.], [.75, 1.], [.125, .75],
+                               [.125, .25], [.25, .25], [0., 0.]]])
+
+        class FakeLoader(list):
+            dataset = SimpleNamespace(split="validation",
+                                      track_eligibility_contract=primary_track_eligibility_contract())
+
+        class FakeTrainer:
+            def __init__(self, params, args):
+                self.params = params
+                self.device = "cpu"
+                self.val_data_loader = FakeLoader([batch])
+                self.val_data_loader.dataset.split = params.validation_split
+                self.down_model = lambda *a, **kw: {"class_probs": probabilities, "mask_probs": masks}
+
+            def launch(self):
+                pass
+
+            def cleanup(self):
+                pass
+
+            def _unpack_batch(self, batch):
+                return batch["points"], batch["labels"], None, None
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "head.pth"
+            checkpoint.write_bytes(b"head fixture")
+            model = root / "model.yaml"
+            model.write_text("model:\n  reader_type: hdf5\n")
+            config = root / "analysis.json"
+            analysis = dict(model_yaml=str(model), model_config="model", checkpoint=str(checkpoint),
+                            max_samples=1, assignment_option=2, evaluate_coatjava=False)
+
+            def run(name, flags, **settings):
+                output = root / name
+                config.write_text(json.dumps({"analysis": dict(analysis, output_dir=str(output), **settings)}))
+                with patch.object(sys, "argv", ["eval", "--analysis-config", str(config), *flags]), \
+                     patch.object(evaluator, "DownstreamTrainer", FakeTrainer), \
+                     patch.object(evaluator, "load_checkpoint"):
+                    evaluator.main()
+                return output
+
+            validation = run("validation", ["--save-query-scores"], evaluation_split="validation",
+                             assignment_threshold=.5)
+            archive = load_archive(validation / "raw_predictions.npz", require_scores=True)
+            self.assertEqual(archive.physical_keys(), [(17, 21)])
+            self.assertEqual(archive.receipt["evaluation_contract"]["split"], "validation")
+            np.testing.assert_array_equal(archive.arrays["offsets"], [0, 6])
+            np.testing.assert_array_equal(archive.arrays["point_ids"], [2, 0, 1, 3, 5, 4])
+            np.testing.assert_array_equal(archive.final_predictions(.2, .25), [0, 1, 0, 1, -1, -1])
+            np.testing.assert_array_equal(archive.final_predictions(.2, .5), archive.final_predictions(.2))
+            for index, (query, threshold) in enumerate(((None, .2), (.25, .2), (.25, .375), (1., .2))):
+                with self.subTest(query=query, threshold=threshold):
+                    out = run(f"test-{index}", ["--save-per-point-predictions"], assignment_threshold=threshold,
+                              query_confidence_threshold=query)
+                    with (out / "per_point_predictions.csv").open() as stream:
+                        direct = [int(row["pred_label"]) for row in csv.DictReader(stream)]
+                    np.testing.assert_array_equal(archive.final_predictions(threshold, query), direct)
 
 
 if __name__ == "__main__":

@@ -116,7 +116,8 @@ class CalibrationTest(unittest.TestCase):
                     quality=metrics.event_track_metrics(truth,final,config=config)
                     actual=calibration.score_cached(cache,t,config)
                     self.assertAlmostEqual(actual[0],row['mc_track_dice_sum'])
-                    self.assertEqual(actual[1:],(row['n_mc_correct_points'],row['n_mc_associated_pred_points'],quality['n_matched_tracks']))
+                    self.assertEqual(actual[1:], (row['n_mc_correct_points'], row['n_mc_associated_pred_points'],
+                                                  quality['n_matched_tracks'], quality['n_pred_tracks']))
 
     def test_dice_and_quality_objectives_select_different_thresholds(self):
         with tempfile.TemporaryDirectory() as d:
@@ -137,6 +138,46 @@ class CalibrationTest(unittest.TestCase):
             actual=calibration.score_cached(calibration.cache_event(event),.2,
                 metrics.MatchConfig(min_purity=.9,min_efficiency=.9))
             self.assertEqual(actual[3],count)
+
+    def test_joint_scan_uses_f1_floor_and_freezes_both_cutoffs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidates = np.zeros((12, 3), dtype=np.float32)
+            candidates[:4, 0] = candidates[4:8, 1] = .6
+            candidates[8:, 0] = .35
+            candidates[8:, 2] = .4
+            data = dict(truth=np.array([0]*4 + [1]*4 + [-1]*4), point_ids=np.arange(12),
+                        pred=np.array([0]*4 + [1]*4 + [0]*4), scores=candidates.max(axis=1),
+                        query_confidence=np.array([[.9, .85, .45]], dtype=np.float32),
+                        candidate_scores=candidates, provenance=np.array([1]*8 + [2]*4))
+            val = write_fixture(root, 'validation.npz', **data)
+            test = write_fixture(root, 'test.npz', ordinal=2, **data)
+            options = dict(thresholds=[.2], refine_steps=(), min_purity=.5, min_completeness=.5)
+            fixed = calibration.calibrate(val, root/'fixed', fixed_query_confidence=.5, **options)
+            joint = calibration.calibrate(val, root/'joint', test=test,
+                                           query_confidence_thresholds=[.3, .5], **options)
+            guarded = calibration.calibrate(val, root/'guarded', test=test, min_matched_track_f1=.9,
+                                             query_confidence_thresholds=[.3, .5], **options)
+            self.assertEqual(fixed['selection']['selected'], guarded['selection']['selected'])
+            self.assertEqual(joint['selection']['selected']['query_confidence_threshold'], .3)
+            self.assertEqual(joint['heldout']['metrics']['matched_track_f1'], .8)
+            self.assertEqual(guarded['heldout']['metrics']['matched_track_f1'], 1.)
+            with self.assertRaisesRegex(ValueError, 'passed the minimum matched-track F1'):
+                calibration.calibrate(val, root/'no-pass', min_matched_track_f1=.9,
+                                      query_confidence_thresholds=[.3], **options)
+            self.assertFalse((root/'no-pass').exists())
+
+    def test_tagged_archive_checks_split_and_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            val = write_fixture(root, 'val.npz', evaluation_contract=json.dumps(
+                {'split': 'validation', 'checkpoint_sha256': 'head-a'}))
+            test = write_fixture(root, 'test.npz', ordinal=2, evaluation_contract=json.dumps(
+                {'split': 'test', 'checkpoint_sha256': 'head-b'}))
+            with self.assertRaisesRegex(ValueError, 'requires a validation archive'):
+                calibration.calibrate(test, root/'wrong-split', refine_steps=(), thresholds=[.2])
+            with self.assertRaisesRegex(ValueError, 'evaluation contracts differ'):
+                calibration.calibrate(val, root/'wrong-checkpoint', test=test, refine_steps=(), thresholds=[.2])
 
     def test_selection_persisted_before_test_access_and_test_does_not_select(self):
         with tempfile.TemporaryDirectory() as d:

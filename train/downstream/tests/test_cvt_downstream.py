@@ -127,12 +127,16 @@ class DownstreamHDF5Test(unittest.TestCase):
                                         hilbert_angular_grid=grid, normalize=True,
                                         voxelize=False, return_dict=True, compute_neighbors=False,
                                         input_representation='clas12_pos_plus_aux_v1',
+                                        return_point_ids=True,
                                         return_coatjava_seg_pred=True)
                 single = loader[1]
                 self.assertEqual(single['points'].shape, (1, 3))
                 self.assertEqual(single['target'].shape, (1,))
                 self.assertEqual(single['noise_target'].tolist(), [0])
                 samples.append(loader[0])
+                batch = MyCollator()([samples[-1], single])
+                torch.testing.assert_close(batch['point_ids'][0], samples[-1]['token_context'][:, 3].long())
+                self.assertEqual(batch['point_ids'][1].tolist(), [0] + [-1] * 7)
             old, new = samples
             old_ids, new_ids = old['token_context'][:, 3], new['token_context'][:, 3]
             self.assertFalse(torch.equal(old_ids, new_ids))

@@ -20,6 +20,7 @@ except Exception:
     clas12_band_hilbert_order = None
 
 from torch.utils.data import DataLoader, Dataset
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data.distributed import DistributedSampler
 from .cvt_downstream import CVTDownstreamSource, downstream_split
 from .track_eligibility import (
@@ -373,7 +374,8 @@ class TPCBatchDataset(Dataset):
                  hilbert_angular_grid=DEFAULT_HILBERT_GRID,
                  reader_type='ragged_mmap',
                  compute_neighbors=True,
-                 apply_primary_track_cut=False):
+                 apply_primary_track_cut=False,
+                 return_point_ids=False):
 
         self.data_root = data_root
         self.split = split
@@ -382,6 +384,7 @@ class TPCBatchDataset(Dataset):
         if reader_type == 'hdf5' and input_layout != 'xyz':
             raise ValueError('HDF5 clusters.xyz requires input_layout=xyz (coordinates in cm)')
         self.apply_primary_track_cut = bool(apply_primary_track_cut)
+        self.return_point_ids = return_point_ids
         self.hdf5_source = (CVTDownstreamSource(data_root, split,
             apply_primary_track_cut=self.apply_primary_track_cut) if reader_type == 'hdf5' else None)
         self.compute_neighbors = bool(compute_neighbors or return_knn_target)
@@ -878,6 +881,12 @@ class TPCBatchDataset(Dataset):
             }
             if self.hdf5_source is not None:
                 out.update(self.hdf5_source.identity(real_idx), source_event_index=int(real_idx))
+            if self.return_point_ids:
+                point_ids = r_sort_1d[sorter]
+                if self.chunk_training:
+                    point_ids = (point_ids + start_idx if not self.train
+                                 else point_ids[start_idx:start_idx + self.len_chunk])
+                out['point_ids'] = point_ids
             if self.has_mid_target:
                 out['mid_target'] = serialized_mid_target
             if self.has_coatjava_seg_pred:
@@ -994,6 +1003,9 @@ class MyCollator:
             out['target_segment_mask'] = target_segment_mask
         if has_source_event_index:
             out['source_event_index'] = source_event_index
+        if 'point_ids' in batch[0]:
+            out['point_ids'] = pad_sequence([item['point_ids'] for item in batch],
+                                            batch_first=True, padding_value=-1)
         if has_segment_label:
             out['segment_label'] = segment_label
         for key, dtype in (
@@ -1416,6 +1428,7 @@ def get_data_loader(params, distributed):
                                    bin_dir = params.stat_dir,
                                    order = params.order,
                                    return_dict = getattr(params, 'return_dict', False),
+                                   return_point_ids=getattr(params, 'return_point_ids', False),
                                    return_knn_target = getattr(params, 'return_knn_target', False),
                                    return_reg=getattr(params, 'return_reg_test', False),
                                    voxelize = getattr(params, 'voxelize', False),
@@ -1530,6 +1543,7 @@ def get_val_loader(params, distributed):
                                    space_filling_order=getattr(params, 'space_filling_order', None),
                                    space_filling_curve=getattr(params, 'space_filling_curve', 'z'),
                                    return_dict=getattr(params, 'return_dict', False),
+                                   return_point_ids=getattr(params, 'return_point_ids', False),
                                    return_knn_target=getattr(params, 'return_knn_target', False),
                                    require_reg_target=getattr(params, 'require_reg_target', False),
                                    require_pid_target=getattr(params, 'require_pid_target', False),

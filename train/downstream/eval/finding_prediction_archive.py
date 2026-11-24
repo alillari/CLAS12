@@ -10,6 +10,7 @@ import numpy as np
 
 from fm4npp.datasets.track_eligibility import PRIMARY_TRACK_POLICY, eligible_primary_labels
 from train.downstream import track_finding_metrics as metrics
+from train.downstream.eval.finding_decoding import query_winners
 
 
 def sha256(path):
@@ -65,15 +66,35 @@ class PredictionArchive:
 
     def event(self, event):
         sl = self.event_slice(event)
-        return {key: value[sl] for key, value in self.arrays.items()
-                if key not in ('offsets', 'source_id', 'original_ordinal')}
+        row = {key: value[sl] for key, value in self.arrays.items()
+               if key not in ('offsets', 'source_id', 'original_ordinal', 'query_confidence')}
+        if 'query_confidence' in self.arrays:
+            row['query_confidence'] = self.arrays['query_confidence'][event]
+        return row
 
     def physical_keys(self):
         if 'source_id' not in self.arrays or 'original_ordinal' not in self.arrays:
             raise ValueError('Physical event identities (source_id and original_ordinal) are required')
         return list(zip(self.arrays['source_id'].tolist(), self.arrays['original_ordinal'].tolist()))
 
-    def final_predictions(self, threshold=None):
+    def event_with_query_cut(self, event, threshold):
+        row = self.event(event)
+        if 'query_confidence' not in row:
+            raise ValueError('A query-confidence cutoff requires an archive exported with --save-query-scores')
+        row['pred'], row['scores'], row['signal'] = query_winners(
+            row['query_confidence'], row['candidate_scores'], threshold
+        )
+        return row
+
+    def final_predictions(self, threshold=None, query_threshold=None):
+        if query_threshold is not None:
+            threshold = probability(threshold, 'assignment threshold')
+            query_threshold = probability(query_threshold, 'query-confidence threshold')
+            pred = np.full(len(self.arrays['truth']), -1, dtype=np.int64)
+            for e in range(self.n_events):
+                row = self.event_with_query_cut(e, query_threshold)
+                pred[self.event_slice(e)] = np.where(row['scores'] > threshold, row['pred'], -1)
+            return pred
         if threshold is None:
             return np.where(self.arrays['pred'] >= 0, self.arrays['pred'], -1)
         threshold = probability(threshold, 'assignment threshold')
@@ -150,6 +171,18 @@ def load_archive(path, *, metadata=None, prediction_key='pred', truth_policy='as
                 or np.any((scores[active] < 0) | (scores[active] > 1))):
             raise ValueError('Invalid assignment scores; active candidates must lie in [0, 1]')
         arrays.update(scores=scores, signal=signal)
+        if 'query_confidence' in raw or 'candidate_scores' in raw:
+            if 'query_confidence' not in raw or 'candidate_scores' not in raw:
+                raise ValueError('Query replay requires both query_confidence and candidate_scores')
+            confidence, candidates = raw['query_confidence'], raw['candidate_scores']
+            if (confidence.ndim != 2 or confidence.shape[0] != n_events or not confidence.shape[1]
+                    or candidates.shape != (len(truth), confidence.shape[1])):
+                raise ValueError('Query candidates must align with the event and cluster axes')
+            for values in (confidence, candidates):
+                if (values.dtype.kind != 'f' or not np.isfinite(values).all()
+                        or np.any((values < 0) | (values > 1))):
+                    raise ValueError('Query confidence and candidate scores must be finite probabilities')
+            arrays.update(query_confidence=confidence, candidate_scores=candidates)
     for key, shape in (('xyz', (len(truth), 3)), ('endpoints', (len(truth), 6))):
         if key in raw:
             value = np.asarray(raw[key])
@@ -177,6 +210,14 @@ def load_archive(path, *, metadata=None, prediction_key='pred', truth_policy='as
                    original_point_ids_supplied='point_ids' in raw,
                    archive_reader_sha256=sha256(__file__), numpy_version=np.__version__,
                    metrics_source_sha256=sha256(metrics.__file__))
+    if 'evaluation_contract' in raw:
+        try:
+            contract = json.loads(raw['evaluation_contract'].item())
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Invalid evaluation_contract JSON') from exc
+        if not isinstance(contract, dict) or contract.get('split') not in ('validation', 'test'):
+            raise ValueError('Invalid evaluation_contract split')
+        receipt['evaluation_contract'] = contract
     return PredictionArchive(arrays, receipt)
 
 

@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "data_root": "/data/cvt",
+  "split": "train",
+  "reader_type": "hdf5",
+  "data_contract": {
+    "format": "cvt-clusters-h5-v1",
+    "plan_id": "1adb071fbb72eb24b7518f836c64e22c83a67df39685b5cee8f56fe5b458dcf2",
+    "split": "train",
+    "noise_policy": "primary_unassigned_is_noise_v1",
+    "momentum_unit": "GeV/c",
+    "target": "observed_direct_primary_momentum"
+  },
+  "task": "mom",
+  "columns": [
+    "mc_entrance_px",
+    "mc_entrance_py",
+    "mc_entrance_pz"
+  ],
+  "filters": {
+    "low_thr": 1,
+    "high_thr": 100,
+    "adapter_sample_mode": "event_segment",
+    "segment_target_source": "mctrue",
+    "segment_min_clusters": 12,
+    "segment_exact_clusters": false,
+    "segment_min_truth_purity": 1.0
+  },
+  "selected_events": 100000,
+  "count": [
+    100000,
+    100000,
+    100000
+  ],
+  "mean": [
+    0.002282569735915488,
+    0.012917493386852445,
+    0.9323644656834108
+  ],
+  "std": [
+    1.4519317543289256,
+    1.4131837193544392,
+    1.0514035004436342
+  ]
+}
